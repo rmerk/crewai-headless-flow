@@ -123,6 +123,35 @@ After adding a worker, update `config.py` resolution, the worker factory in `flo
 - Run the full offline test suite before proposing changes that affect the Flow, workers, or skill loading.
 - When extending for new use cases, prefer adding configuration options over forking the Flow topology.
 
+## Future Work & Opportunities
+
+These are the main directions worth considering next (as of June 2026). The official high-level list lives in `DESIGN.md`, but here is a more concrete, prioritized view:
+
+### Official Future Directions (from DESIGN.md)
+- Add more adapters (Claude Code headless, Gemini CLI, etc.)
+- Richer task decomposition and parallel execution inside `do_work`
+- Better structured output extraction (stronger JSON repair loops, schema tools)
+- Integration with actual CrewAI `Crew` objects for richer multi-agent stages
+
+### Prioritized Opportunities
+
+| Priority | Idea | Why | Effort |
+|----------|------|-----|--------|
+| **Highest** | **Claude Code adapter** | Validates the "pluggable workers" architecture. Currently the biggest missing piece. | Medium |
+| **High** | **Activate & polish Human-in-the-Loop** | Wiring and tests already exist (`worker.yaml`, `FlowConfig`, `test_hitl.py`). Currently disabled by default. | Low–Medium |
+| **High** | **Strengthen structured output** | Grok adapter has a basic repair retry. Make it more robust and consistent across workers. | Medium |
+| **Medium** | **Parallel task execution in `do_work`** | Allow the implementation stage to break work into parallel tasks. | Medium–High |
+| **Medium** | **Improve CI & DX** | Add mypy/ruff to CI, better formatting gates, optional smoke jobs. | Low |
+| **Longer** | Deeper CrewAI `Crew` integration inside stages | Move beyond simple Flow topology to real multi-agent Crews per stage. | High |
+
+### Other Sensible Ideas
+- Expand real-world examples and documentation
+- Add runtime observability (which skill + worker + model is active per stage)
+- Make the project easier to consume as a library (`pip install`)
+- Establish a clean process for refreshing the vendored `agent-skills`
+
+When picking the next piece of work, the Claude Code adapter + finishing/polishing Human-in-the-Loop are currently the highest-leverage moves.
+
 ## Related Documentation
 
 - `README.md` — User-facing installation, demo, and configuration guide.

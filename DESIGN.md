@@ -81,7 +81,14 @@ These trade-offs were accepted in exchange for zero dependency on any vendor's P
 
 ## Future Directions
 
+See `AGENTS.md` → "Future Work & Opportunities" for a more detailed and prioritized view.
+
+High-level directions:
 - Add more adapters (e.g. Claude Code headless, Gemini CLI, etc.)
 - Richer task decomposition and parallel execution inside `do_work`
 - Better structured output extraction (JSON repair loops, schema enforcement tools)
 - Integration with actual CrewAI `Crew` objects for more complex multi-agent orchestration inside a stage
+
+The two highest-leverage near-term moves currently appear to be:
+1. Implementing a Claude Code adapter
+2. Activating and hardening the existing Human-in-the-Loop (HITL) wiring (already partially built in `config/worker.yaml`, `FlowConfig`, and `test_hitl.py`)
