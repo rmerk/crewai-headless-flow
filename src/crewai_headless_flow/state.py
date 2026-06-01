@@ -47,6 +47,10 @@ class FlowState(BaseModel):
     final_artifact: str | None = None
 
     # Internal / diagnostics
+    status: Literal["pending", "running", "completed", "aborted_by_human", "failed"] = (
+        "pending"
+    )
+    aborted_stage: str | None = None
     last_stage: str | None = None
     errors: list[str] = Field(default_factory=list)
 

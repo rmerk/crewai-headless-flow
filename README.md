@@ -150,6 +150,18 @@ stages:
 
 The Review Crew still receives only an inspect-mode tool, so review remains read-only.
 
+### Enable Human-in-the-Loop
+Human-in-the-Loop (HITL) checkpoints are available but disabled by default so normal runs remain non-interactive. Enable them in `config/worker.yaml`:
+
+```yaml
+human_feedback:
+  enabled: true
+  before_do_work: true
+  before_finalize: true
+```
+
+HITL v1 is approve/abort only. It pauses before the mutating `do_work` stage and before `finalize`, shows the stage, worker, skill, target repository, and mutation risk, then asks `Proceed? [y/N]`. The default is no: empty input, EOF, Ctrl-C, `n`, or anything other than `y`/`yes` aborts the flow with `status: "aborted_by_human"` and records the aborted stage.
+
 ## Testing
 
 ```bash

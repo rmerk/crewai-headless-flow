@@ -87,6 +87,33 @@ class CrewAIHeadlessFlow(Flow[FlowState]):
     def _is_human_feedback_enabled(self) -> bool:
         return bool(self.config.human_feedback.get("enabled", False))
 
+    def _is_terminal_status(self) -> bool:
+        return self.state.status in {"completed", "aborted_by_human", "failed"}
+
+    def _mark_running(self) -> None:
+        if not self._is_terminal_status():
+            self.state.status = "running"
+
+    def _terminal_result(self) -> str:
+        if self.state.status == "aborted_by_human":
+            return "aborted-by-human"
+        return f"terminal-status-{self.state.status}"
+
+    def _human_feedback_prompt(self, stage: str, message: str) -> str:
+        stage_cfg = self.config.get_stage(stage)
+        can_mutate = "yes" if stage in {"do_work", "finalize"} else "no"
+        return f"""
+[Human Feedback]
+{message}
+
+Stage: {stage}
+Can mutate files: {can_mutate}
+Worker: {stage_cfg.worker}
+Skill: {stage_cfg.skill}
+Target repo: {self.state.target_repo or "(not set)"}
+Default: no
+""".strip()
+
     def _maybe_ask_human(self, stage: str, message: str) -> bool:
         """
         If human feedback is enabled for this point, ask the user.
@@ -102,7 +129,7 @@ class CrewAIHeadlessFlow(Flow[FlowState]):
         if not hf.get(gate, True):
             return True
 
-        print(f"\n[Human Feedback] {message}")
+        print(f"\n{self._human_feedback_prompt(stage, message)}")
         try:
             answer = input("Proceed? [y/N]: ").strip().lower()
             return answer in ("y", "yes")
@@ -110,11 +137,18 @@ class CrewAIHeadlessFlow(Flow[FlowState]):
             print("\n[Human Feedback] No input received. Aborting this step.")
             return False
 
+    def _mark_human_abort(self, stage: str) -> None:
+        self.state.status = "aborted_by_human"
+        self.state.aborted_stage = stage
+        self.state.last_stage = stage
+        self.state.errors.append(f"Aborted by human before {stage}")
+
     # ------------------------------------------------------------------
     # Planning stage (orchestration LLM + skills)
     # ------------------------------------------------------------------
     @start()
     def plan(self) -> str:
+        self._mark_running()
         print_stage_mapping()  # Visibility into current wiring
 
         stage_cfg = self.config.get_stage("plan")
@@ -185,12 +219,18 @@ Output format:
     # ------------------------------------------------------------------
     @listen("plan")
     def do_work(self, plan_output: str) -> str:
+        if self._is_terminal_status():
+            print(
+                f"[Flow] Skipping do_work because flow is terminal: {self.state.status}"
+            )
+            return self._terminal_result()
+        self._mark_running()
         if not self._maybe_ask_human(
             "do_work",
             "About to run the expensive edit stage (do_work). This will let the headless coder modify files.",
         ):
             print("[Flow] Human aborted before do_work.")
-            self.state.errors.append("Aborted by human before do_work")
+            self._mark_human_abort("do_work")
             return "aborted-by-human"
 
         worker_tool = self._get_worker("do_work")
@@ -230,7 +270,13 @@ Execute the work. After you are done, summarize what changed and whether tests n
     # Review router - uses configured worker in INSPECT (read-only) mode
     # ------------------------------------------------------------------
     @router("do_work")
-    def review(self, work_summary: str) -> Literal["pass", "revise"]:
+    def review(self, work_summary: str) -> Literal["pass", "revise", "aborted"]:
+        if self._is_terminal_status():
+            print(
+                f"[Flow] Skipping review because flow is terminal: {self.state.status}"
+            )
+            return "aborted"
+        self._mark_running()
         worker_tool = self._get_worker("review")
         stage_cfg = self.config.get_stage("review")
 
@@ -321,6 +367,12 @@ Otherwise use "revise" and list the concrete issues that must be addressed.
     # ------------------------------------------------------------------
     @listen("revise")
     def revise(self, decision: str) -> str:
+        if self._is_terminal_status():
+            print(
+                f"[Flow] Skipping revise because flow is terminal: {self.state.status}"
+            )
+            return self._terminal_result()
+        self._mark_running()
         self.state.increment_revision()
         print(
             f"\n[Flow] Revising (revision {self.state.revisions}/{self.state.max_revisions})"
@@ -340,12 +392,18 @@ Otherwise use "revise" and list the concrete issues that must be addressed.
     # ------------------------------------------------------------------
     @listen("pass")
     def finalize(self, _decision: str) -> str:
+        if self._is_terminal_status():
+            print(
+                f"[Flow] Skipping finalize because flow is terminal: {self.state.status}"
+            )
+            return self._terminal_result()
+        self._mark_running()
         if not self._maybe_ask_human(
             "finalize",
             "About to finalize and write documentation/ADR. This is the last step.",
         ):
             print("[Flow] Human aborted before finalize.")
-            self.state.errors.append("Aborted by human before finalize")
+            self._mark_human_abort("finalize")
             return "aborted-by-human"
 
         worker_tool = self._get_worker("finalize")
@@ -372,9 +430,15 @@ Write a concise ADR or completion report suitable for the repository.
 
         self.state.final_artifact = result.summary or result.raw_output
         self.state.last_stage = "finalize"
+        self.state.status = "completed"
 
         print("[Flow] Flow completed successfully.")
         return self.state.final_artifact or "Flow completed"
+
+    @listen("aborted")
+    def aborted(self, _decision: str) -> str:
+        print(f"[Flow] Flow stopped at terminal status: {self.state.status}")
+        return self._terminal_result()
 
 
 # Convenience runner for demos / CLI

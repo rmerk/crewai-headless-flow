@@ -74,6 +74,12 @@ The `review` stage can optionally run a sequential CrewAI `Crew` before the Flow
 
 The Review Crew is disabled by default in `config/worker.yaml`. When enabled, it exposes only a custom inspect-mode tool backed by the configured review worker, so the read-only review invariant remains unchanged.
 
+## Human-in-the-Loop v1
+
+Human-in-the-Loop (HITL) is an opt-in approve/abort checkpoint system configured through `config/worker.yaml`. It is disabled by default and currently supports only `before_do_work` and `before_finalize`, the two checkpoints before mutating stages.
+
+When enabled, the Flow prints the stage name, mutation risk, configured worker, configured skill, target repository, and default-no behavior before asking `Proceed? [y/N]`. HITL v1 does not accept human instructions or alter the next-stage prompt. Any response other than `y` or `yes`, including empty input, EOF, or Ctrl-C, marks the Flow state as `aborted_by_human` and records the aborted stage.
+
 ## CLI Automation Caveats
 
 This project deliberately uses **subprocess + CLI automation**, not native SDKs. This has consequences:
@@ -94,7 +100,8 @@ High-level directions:
 - Richer task decomposition and parallel execution inside `do_work`
 - Better structured output extraction (JSON repair loops, schema enforcement tools)
 - Expand CrewAI `Crew` usage beyond the optional Review Crew into planning or implementation stages
+- Extend HITL beyond v1 with instruction injection, resume-from-abort, CLI/runtime overrides, additional gates, or a persisted approval audit log
 
 The two highest-leverage near-term moves currently appear to be:
 1. Implementing a Claude Code adapter
-2. Activating and hardening the existing Human-in-the-Loop (HITL) wiring (already partially built in `config/worker.yaml`, `FlowConfig`, and `test_hitl.py`)
+2. Strengthening structured output and review-loop semantics

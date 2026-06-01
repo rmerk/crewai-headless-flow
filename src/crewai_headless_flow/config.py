@@ -40,6 +40,18 @@ def _discover_config_dir() -> Path:
 
 
 DEFAULT_CONFIG_DIR = _discover_config_dir()
+HUMAN_FEEDBACK_BOOLEAN_KEYS = {"enabled", "before_do_work", "before_finalize"}
+
+
+def _validate_human_feedback(raw: dict[str, Any] | None) -> dict[str, Any]:
+    human_feedback = raw or {"enabled": False}
+    for key in HUMAN_FEEDBACK_BOOLEAN_KEYS:
+        if key in human_feedback and not isinstance(human_feedback[key], bool):
+            value_type = type(human_feedback[key]).__name__
+            raise ValueError(
+                f"human_feedback.{key} must be a boolean, got {value_type}"
+            )
+    return human_feedback
 
 
 @dataclass
@@ -67,7 +79,7 @@ class FlowConfig:
         self.skills = skills
         self.workers = workers
         self.defaults = defaults
-        self.human_feedback = human_feedback or {"enabled": False}
+        self.human_feedback = _validate_human_feedback(human_feedback)
         self._stage_cache: dict[str, StageConfig] = {}
 
     def get_stage(self, stage: str) -> StageConfig:

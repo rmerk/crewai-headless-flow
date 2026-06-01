@@ -146,3 +146,65 @@ def test_default_review_crew_is_configured_but_disabled():
     assert crew_cfg["enabled"] is False
     assert crew_cfg["process"] == "sequential"
     assert crew_cfg["llm"]["model"] == "ollama/llama3.2"
+
+
+def test_valid_boolean_human_feedback_loads(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["human_feedback"] = {
+        "enabled": True,
+        "before_do_work": True,
+        "before_finalize": False,
+    }
+    worker_file.write_text(yaml.safe_dump(data))
+
+    cfg = load_config(sample_config_dir)
+
+    assert cfg.human_feedback["enabled"] is True
+    assert cfg.human_feedback["before_do_work"] is True
+    assert cfg.human_feedback["before_finalize"] is False
+
+
+@pytest.mark.parametrize(
+    ("key", "message"),
+    [
+        ("enabled", "human_feedback.enabled must be a boolean, got str"),
+        (
+            "before_do_work",
+            "human_feedback.before_do_work must be a boolean, got str",
+        ),
+        (
+            "before_finalize",
+            "human_feedback.before_finalize must be a boolean, got str",
+        ),
+    ],
+)
+def test_human_feedback_known_keys_must_be_booleans(
+    sample_config_dir: Path, key: str, message: str
+):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["human_feedback"] = {
+        "enabled": False,
+        "before_do_work": True,
+        "before_finalize": True,
+        key: "false",
+    }
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ValueError, match=message):
+        load_config(sample_config_dir)
+
+
+def test_human_feedback_unknown_keys_are_preserved(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["human_feedback"] = {
+        "enabled": False,
+        "future_gate": "allowed for later",
+    }
+    worker_file.write_text(yaml.safe_dump(data))
+
+    cfg = load_config(sample_config_dir)
+
+    assert cfg.human_feedback["future_gate"] == "allowed for later"

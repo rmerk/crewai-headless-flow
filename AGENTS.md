@@ -44,7 +44,7 @@ The Flow (`flow.py`) only knows about stages, state, and the abstract tool. It n
 
 At startup the system prints a clear table of the resolved mapping. Always verify this table when debugging "why is X using Y?".
 
-Human-in-the-loop is wired but disabled by default in `worker.yaml`.
+Human-in-the-loop v1 is an opt-in approve/abort checkpoint system. It is disabled by default in `worker.yaml` and supports only `before_do_work` and `before_finalize`.
 
 ## Development Commands
 
@@ -138,7 +138,6 @@ These are the main directions worth considering next (as of June 2026). The offi
 | Priority | Idea | Why | Effort |
 |----------|------|-----|--------|
 | **Highest** | **Claude Code adapter** | Validates the "pluggable workers" architecture. Currently the biggest missing piece. | Medium |
-| **High** | **Activate & polish Human-in-the-Loop** | Wiring and tests already exist (`worker.yaml`, `FlowConfig`, `test_hitl.py`). Currently disabled by default. | Low–Medium |
 | **High** | **Strengthen structured output** | Grok adapter has a basic repair retry. Make it more robust and consistent across workers. | Medium |
 | **Medium** | **Parallel task execution in `do_work`** | Allow the implementation stage to break work into parallel tasks. | Medium–High |
 | **Medium** | **Improve CI & DX** | Add mypy/ruff to CI, better formatting gates, optional smoke jobs. | Low |
@@ -149,8 +148,9 @@ These are the main directions worth considering next (as of June 2026). The offi
 - Add runtime observability (which skill + worker + model is active per stage)
 - Make the project easier to consume as a library (`pip install`)
 - Establish a clean process for refreshing the vendored `agent-skills`
+- Extend HITL beyond v1 with instruction injection, resume-from-abort, CLI/runtime overrides, extra gates, or a persisted approval audit log
 
-When picking the next piece of work, the Claude Code adapter + finishing/polishing Human-in-the-Loop are currently the highest-leverage moves.
+When picking the next piece of work, the Claude Code adapter and stronger structured output are currently the highest-leverage moves.
 
 ## Related Documentation
 

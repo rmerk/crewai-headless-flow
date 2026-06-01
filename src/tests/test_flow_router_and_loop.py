@@ -146,6 +146,59 @@ def test_max_revisions_caps_the_loop():
     assert flow.state.revisions <= flow.state.max_revisions
 
 
+def test_human_abort_routes_to_terminal_without_review_worker():
+    flow = CrewAIHeadlessFlow()
+    flow._state = FlowState(  # type: ignore[attr-defined]
+        request="test",
+        target_repo="/tmp/fake",
+        status="aborted_by_human",
+        aborted_stage="do_work",
+    )
+    stub = StubWorker(review_outcome="pass")
+    flow._workers["review"] = stub  # type: ignore
+
+    decision = flow.review("aborted-by-human")
+
+    assert decision == "aborted"
+    assert stub.call_count == 0
+    assert flow.state.status == "aborted_by_human"
+    assert flow.state.aborted_stage == "do_work"
+
+
+def test_human_abort_does_not_increment_revise_loop():
+    flow = CrewAIHeadlessFlow()
+    flow._state = FlowState(  # type: ignore[attr-defined]
+        request="test",
+        target_repo="/tmp/fake",
+        status="aborted_by_human",
+        aborted_stage="do_work",
+    )
+
+    result = flow.revise("revise")
+
+    assert result == "aborted-by-human"
+    assert flow.state.revisions == 0
+    assert flow.state.status == "aborted_by_human"
+
+
+def test_human_abort_does_not_run_finalize_worker():
+    flow = CrewAIHeadlessFlow()
+    flow._state = FlowState(  # type: ignore[attr-defined]
+        request="test",
+        target_repo="/tmp/fake",
+        status="aborted_by_human",
+        aborted_stage="do_work",
+    )
+    stub = StubWorker()
+    flow._workers["finalize"] = stub  # type: ignore
+
+    result = flow.finalize("pass")
+
+    assert result == "aborted-by-human"
+    assert stub.call_count == 0
+    assert flow.state.status == "aborted_by_human"
+
+
 def test_review_crew_path_is_used_when_enabled(monkeypatch):
     cfg = FlowConfig(
         skills={"review": "code-review-and-quality"},
