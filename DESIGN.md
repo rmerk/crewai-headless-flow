@@ -68,6 +68,12 @@ These differences are explicitly normalized inside the adapters so the rest of t
 - **Safety & Cost Control**: Inspect stages can never accidentally mutate the user's repository. All heavy work is opt-in and can be mocked for free offline testing.
 - **Observability**: `print_stage_mapping()` makes the current wiring completely transparent at startup.
 
+## Optional Review Crew
+
+The `review` stage can optionally run a sequential CrewAI `Crew` before the Flow router makes its pass/revise decision. This keeps the Flow responsible for state and routing while letting specialized review agents collect evidence, check correctness, evaluate test coverage, and merge findings into one structured decision.
+
+The Review Crew is disabled by default in `config/worker.yaml`. When enabled, it exposes only a custom inspect-mode tool backed by the configured review worker, so the read-only review invariant remains unchanged.
+
 ## CLI Automation Caveats
 
 This project deliberately uses **subprocess + CLI automation**, not native SDKs. This has consequences:
@@ -87,7 +93,7 @@ High-level directions:
 - Add more adapters (e.g. Claude Code headless, Gemini CLI, etc.)
 - Richer task decomposition and parallel execution inside `do_work`
 - Better structured output extraction (JSON repair loops, schema enforcement tools)
-- Integration with actual CrewAI `Crew` objects for more complex multi-agent orchestration inside a stage
+- Expand CrewAI `Crew` usage beyond the optional Review Crew into planning or implementation stages
 
 The two highest-leverage near-term moves currently appear to be:
 1. Implementing a Claude Code adapter

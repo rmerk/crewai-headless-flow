@@ -31,6 +31,14 @@ stages:
     worker: "codex"
     # Explicitly request read-only sandbox (enforced by adapter)
     sandbox: "read-only"
+    crew:
+      # Optional richer multi-agent review. Disabled by default to preserve v0.1 behavior.
+      enabled: false
+      process: "sequential"
+      llm:
+        model: "ollama/llama3.2"
+        base_url: "http://localhost:11434"
+        temperature: 0.2
 
   finalize:
     worker: "codex"
@@ -43,4 +51,3 @@ human_feedback:
   enabled: false          # Master switch
   before_do_work: true    # Pause before expensive edit stage
   before_finalize: true   # Pause before writing final docs/ADR
-

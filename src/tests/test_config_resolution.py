@@ -66,6 +66,29 @@ def test_loads_and_resolves_stages(sample_config_dir: Path):
     assert review.extra.get("sandbox") == "read-only"
 
 
+def test_review_crew_config_loads_through_stage_extra(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["stages"]["review"]["crew"] = {
+        "enabled": True,
+        "process": "sequential",
+        "llm": {
+            "model": "ollama/llama3.2",
+            "base_url": "http://localhost:11434",
+            "temperature": 0.2,
+        },
+    }
+    worker_file.write_text(yaml.safe_dump(data))
+
+    cfg = load_config(sample_config_dir)
+
+    crew_cfg = cfg.get_stage("review").extra["crew"]
+    assert crew_cfg["enabled"] is True
+    assert crew_cfg["process"] == "sequential"
+    assert crew_cfg["llm"]["model"] == "ollama/llama3.2"
+    assert crew_cfg["llm"]["temperature"] == 0.2
+
+
 def test_worker_switch_changes_resolution_without_code_change(sample_config_dir: Path):
     """
     This is the core M4 claim: editing worker.yaml changes which CLI/argv
@@ -111,3 +134,15 @@ def test_default_config_loads_from_real_files():
     for stage in cfg.stages:
         resolved = cfg.get_stage(stage)
         assert resolved.worker in {"codex", "grok"}
+
+
+def test_default_review_crew_is_configured_but_disabled():
+    cfg = load_config()
+
+    review = cfg.get_stage("review")
+    crew_cfg = review.extra.get("crew")
+
+    assert crew_cfg is not None
+    assert crew_cfg["enabled"] is False
+    assert crew_cfg["process"] == "sequential"
+    assert crew_cfg["llm"]["model"] == "ollama/llama3.2"

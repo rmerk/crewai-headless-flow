@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import pytest
 
+from crewai_headless_flow.config import FlowConfig
 from crewai_headless_flow.flow import CrewAIHeadlessFlow
+from crewai_headless_flow.review_crew import ReviewCrewDecision
 from crewai_headless_flow.state import FlowState
 from crewai_headless_flow.workers.base import CoderResult
 
@@ -21,9 +23,15 @@ pytestmark = pytest.mark.offline
 class StubWorker:
     """Minimal stub that returns controllable results for testing the Flow logic."""
 
-    def __init__(self, review_outcome: str = "pass", issues: list[str] | None = None):
+    def __init__(
+        self,
+        review_outcome: str = "pass",
+        issues: list[str] | None = None,
+        raw_review_output: str | None = None,
+    ):
         self.review_outcome = review_outcome
         self.issues = issues or []
+        self.raw_review_output = raw_review_output
         self.call_count = 0
 
     def run(self, task: str, cwd: str, mode: str = "edit", **kwargs):
@@ -31,7 +39,9 @@ class StubWorker:
 
         if "review" in task.lower() or mode == "inspect":
             # Simulate review worker output
-            if self.review_outcome == "pass":
+            if self.raw_review_output is not None:
+                raw = self.raw_review_output
+            elif self.review_outcome == "pass":
                 raw = '{"status": "pass", "issues": [], "summary": "Looks good"}'
             else:
                 raw = f'{{"status": "revise", "issues": {self.issues}, "summary": "Needs work"}}'
@@ -65,6 +75,7 @@ def test_router_returns_pass_on_good_review():
 
     assert decision == "pass"
     assert flow.state.review_status == "pass"
+    assert stub.call_count == 1
 
 
 def test_router_returns_revise_and_loop_works():
@@ -91,6 +102,33 @@ def test_router_returns_revise_and_loop_works():
     assert decision2 == "pass"
 
 
+def test_router_normalizes_invalid_review_status_to_revise():
+    flow = CrewAIHeadlessFlow()
+    flow._state = FlowState(request="test", target_repo="/tmp/fake")  # type: ignore[attr-defined]
+    flow._workers["review"] = StubWorker(
+        raw_review_output='{"status": "approve", "issues": [], "summary": "Bad status"}'
+    )  # type: ignore
+
+    decision = flow.review("work summary")
+
+    assert decision == "revise"
+    assert flow.state.review_status == "revise"
+    assert flow.state.issues == ["Review returned invalid status: approve"]
+
+
+def test_router_coerces_non_list_review_issues_to_list():
+    flow = CrewAIHeadlessFlow()
+    flow._state = FlowState(request="test", target_repo="/tmp/fake")  # type: ignore[attr-defined]
+    flow._workers["review"] = StubWorker(
+        raw_review_output='{"status": "revise", "issues": "Missing tests", "summary": "Needs work"}'
+    )  # type: ignore
+
+    decision = flow.review("work summary")
+
+    assert decision == "revise"
+    assert flow.state.issues == ["Missing tests"]
+
+
 def test_max_revisions_caps_the_loop():
     flow = CrewAIHeadlessFlow()
     flow._state = FlowState(request="test", target_repo="/tmp/fake", max_revisions=1)  # type: ignore[attr-defined]
@@ -106,3 +144,73 @@ def test_max_revisions_caps_the_loop():
 
     # State should respect the cap
     assert flow.state.revisions <= flow.state.max_revisions
+
+
+def test_review_crew_path_is_used_when_enabled(monkeypatch):
+    cfg = FlowConfig(
+        skills={"review": "code-review-and-quality"},
+        workers={
+            "review": {
+                "worker": "codex",
+                "sandbox": "read-only",
+                "crew": {"enabled": True, "process": "sequential"},
+            }
+        },
+        defaults={"worker": "codex", "timeout": 300},
+    )
+    flow = CrewAIHeadlessFlow(config=cfg)
+    flow._state = FlowState(request="test", target_repo="/tmp/fake")  # type: ignore[attr-defined]
+    flow._workers["review"] = StubWorker(review_outcome="pass")  # type: ignore
+
+    calls: list[dict] = []
+
+    def fake_run_review_crew(**kwargs):
+        calls.append(kwargs)
+        return ReviewCrewDecision(
+            status="pass",
+            issues=[],
+            summary="Crew approved.",
+        )
+
+    monkeypatch.setattr(
+        "crewai_headless_flow.flow.run_review_crew",
+        fake_run_review_crew,
+    )
+
+    decision = flow.review("work summary")
+
+    assert decision == "pass"
+    assert flow.state.review_status == "pass"
+    assert calls
+    assert calls[0]["worker_tool"] is flow._workers["review"]
+
+
+def test_review_crew_path_fails_closed_to_revise(monkeypatch):
+    cfg = FlowConfig(
+        skills={"review": "code-review-and-quality"},
+        workers={
+            "review": {
+                "worker": "codex",
+                "sandbox": "read-only",
+                "crew": {"enabled": True, "process": "sequential"},
+            }
+        },
+        defaults={"worker": "codex", "timeout": 300},
+    )
+    flow = CrewAIHeadlessFlow(config=cfg)
+    flow._state = FlowState(request="test", target_repo="/tmp/fake")  # type: ignore[attr-defined]
+    flow._workers["review"] = StubWorker(review_outcome="pass")  # type: ignore
+
+    def fake_run_review_crew(**kwargs):
+        raise RuntimeError("crew unavailable")
+
+    monkeypatch.setattr(
+        "crewai_headless_flow.flow.run_review_crew",
+        fake_run_review_crew,
+    )
+
+    decision = flow.review("work summary")
+
+    assert decision == "revise"
+    assert flow.state.review_status == "revise"
+    assert flow.state.issues == ["Review Crew failed: crew unavailable"]

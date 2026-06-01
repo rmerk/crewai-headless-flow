@@ -23,6 +23,7 @@ The workflow is fully re-targetable (any repo + any request) and re-shapeable (s
   - `CodexAdapter` — uses native `--sandbox` + `--output-schema`
   - `GrokAdapter` — uses disposable worktrees for safe inspect mode + prompt-based structured output + repair retry
 - **Per-stage configuration**: Choose `codex` or `grok` (and model) independently for `plan`, `do_work`, `review`, and `finalize`.
+- **Optional Review Crew**: The `review` stage can run a config-gated sequential CrewAI Crew for richer multi-agent review while still using read-only worker inspection.
 - **Safe by design**:
   - Edit stages are fully non-interactive
   - Inspect/review stages are read-only (Codex native sandbox or Grok disposable worktree)
@@ -131,6 +132,23 @@ finalize     documentation-and-adrs           codex      (default)
 
 ### Switch a stage to the other worker
 Just edit one line in `config/worker.yaml`.
+
+### Enable the Review Crew
+The richer Review Crew is available but disabled by default to preserve the v0.1 behavior:
+
+```yaml
+stages:
+  review:
+    crew:
+      enabled: true
+      process: "sequential"
+      llm:
+        model: "ollama/llama3.2"
+        base_url: "http://localhost:11434"
+        temperature: 0.2
+```
+
+The Review Crew still receives only an inspect-mode tool, so review remains read-only.
 
 ## Testing
 

@@ -18,6 +18,7 @@ from crewai import Agent, LLM, Task
 from crewai.flow.flow import Flow, listen, router, start
 
 from .config import FlowConfig, get_default_config, print_stage_mapping
+from .review_crew import ReviewCrewDecision, run_review_crew
 from .skills.loader import get_default_loader
 from .state import FlowState
 from .tools.coder_tool import HeadlessCoderTool
@@ -61,6 +62,27 @@ class CrewAIHeadlessFlow(Flow[FlowState]):
         if stage not in self._workers:
             raise KeyError(f"No worker configured for stage '{stage}'")
         return self._workers[stage]
+
+    def _normalize_review_payload(
+        self, data: dict
+    ) -> tuple[Literal["pass", "revise"], list[str]]:
+        raw_status = data.get("status")
+        status: Literal["pass", "revise"] = "pass" if raw_status == "pass" else "revise"
+
+        raw_issues = data.get("issues", [])
+        if isinstance(raw_issues, list):
+            issues = [str(issue) for issue in raw_issues]
+        elif raw_issues:
+            issues = [str(raw_issues)]
+        else:
+            issues = []
+
+        if raw_status not in {"pass", "revise"}:
+            issues = [f"Review returned invalid status: {raw_status}"]
+        if status == "pass" and issues:
+            status = "revise"
+
+        return status, issues
 
     def _is_human_feedback_enabled(self) -> bool:
         return bool(self.config.human_feedback.get("enabled", False))
@@ -241,33 +263,52 @@ If everything looks good according to the review procedure, use "pass".
 Otherwise use "revise" and list the concrete issues that must be addressed.
 """
 
-        result = worker_tool.run(
-            task=prompt,
-            cwd=self.state.target_repo,
-            mode="inspect",  # Critical: read-only guarantee
-            timeout=stage_cfg.timeout,
-        )
-
         self.state.last_stage = "review"
 
-        raw = result.raw_output or result.summary or ""
-
-        # Try to extract JSON from the output
-        status = "revise"
+        crew_cfg = stage_cfg.extra.get("crew", {}) or {}
+        status: str = "revise"
         issues: list[str] = []
+        if crew_cfg.get("enabled", False):
+            try:
+                decision = run_review_crew(
+                    review_context=prompt,
+                    worker_tool=worker_tool,
+                    cwd=self.state.target_repo,
+                    timeout=stage_cfg.timeout,
+                    crew_config=crew_cfg,
+                )
+            except Exception as exc:
+                decision = ReviewCrewDecision(
+                    status="revise",
+                    issues=[f"Review Crew failed: {exc}"],
+                    summary="Review Crew failed before producing a decision.",
+                )
 
-        try:
-            # Look for a JSON object in the output
-            start = raw.find("{")
-            end = raw.rfind("}") + 1
-            if start != -1 and end > start:
-                data = json.loads(raw[start:end])
-                status = data.get("status", "revise")
-                issues = data.get("issues", [])
-        except Exception:
-            # Fallback: treat as revise if we can't parse
-            status = "revise"
-            issues = ["Review output could not be parsed as structured JSON"]
+            status = decision.status
+            issues = decision.issues
+        else:
+            result = worker_tool.run(
+                task=prompt,
+                cwd=self.state.target_repo,
+                mode="inspect",  # Critical: read-only guarantee
+                timeout=stage_cfg.timeout,
+            )
+
+            raw = result.raw_output or result.summary or ""
+
+            # Try to extract JSON from the output
+            try:
+                # Look for a JSON object in the output
+                start = raw.find("{")
+                end = raw.rfind("}") + 1
+                if start != -1 and end > start:
+                    data = json.loads(raw[start:end])
+                    if isinstance(data, dict):
+                        status, issues = self._normalize_review_payload(data)
+            except Exception:
+                # Fallback: treat as revise if we can't parse
+                status = "revise"
+                issues = ["Review output could not be parsed as structured JSON"]
 
         self.state.review_status = status  # type: ignore
         self.state.issues = issues
