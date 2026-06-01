@@ -21,8 +21,8 @@ dev = [
     "mypy>=1.10.0,<2.0.0",
 ]
 
-[tool.uv]
-dev-dependencies = [
+[dependency-groups]
+dev = [
     "pytest>=8.0.0,<9.0.0",
     "pytest-mock>=3.14.0,<4.0.0",
     "ruff>=0.5.0,<1.0.0",
@@ -36,7 +36,7 @@ markers = [
     "live_codex: optional live smoke against real codex CLI (requires auth + env gate)",
     "live_grok: optional live smoke against real grok CLI (requires XAI_API_KEY + env gate)",
 ]
-testpaths = ["tests"]
+testpaths = ["src/tests"]
 python_files = ["test_*.py"]
 
 [build-system]
