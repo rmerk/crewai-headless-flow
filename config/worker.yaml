@@ -1,0 +1,46 @@
+# =============================================================================
+# worker.yaml — Per-stage control of the headless coding worker
+# =============================================================================
+# This is the PRIMARY reusability lever.
+#
+# You can switch any stage from "codex" to "grok" (or vice versa) by editing
+# only this file. No Python code changes required.
+#
+# Supported workers: "codex" | "grok"
+
+defaults:
+  worker: "codex"
+  model: null
+  timeout: 300
+
+stages:
+  plan:
+    # Planning is light reasoning — Codex is often excellent and cheap here
+    worker: "codex"
+    model: null
+
+  do_work:
+    # The heavy lifting stage — choose your preferred coding agent
+    worker: "grok"
+    model: "grok-3-latest"   # or whatever model you want for this stage
+    # Grok-specific behavior for edit stages
+    always_approve: true
+
+  review:
+    # Reviews should be read-only / inspect mode
+    worker: "codex"
+    # Explicitly request read-only sandbox (enforced by adapter)
+    sandbox: "read-only"
+
+  finalize:
+    worker: "codex"
+    model: null
+
+# =============================================================================
+# Human-in-the-Loop (HITL) configuration (Milestone 6)
+# =============================================================================
+human_feedback:
+  enabled: false          # Master switch
+  before_do_work: true    # Pause before expensive edit stage
+  before_finalize: true   # Pause before writing final docs/ADR
+

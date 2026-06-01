@@ -1,0 +1,5 @@
+{
+  "text": "{\"summary\": \"Added hello function and passing test.\", \"changed_files\": [\"src/hello.py\", \"tests/test_hello.py\"], \"tests_passed\": true}",
+  "stopReason": "EndTurn",
+  "usage": {"inputTokens": 1240, "outputTokens": 87}
+}

@@ -1,0 +1,33 @@
+crewai-headless-flow
+====================
+
+This project vendors a snapshot of the agent-skills repository for reproducibility and offline use.
+
+Vendored Component
+------------------
+
+- Repository: https://github.com/addyosmani/agent-skills
+- Pinned commit: 6ce029897d2b794940325fc7148774a6ec51111c
+- Date pinned: 2026-06-01
+- Files included: Only the SKILL.md files for the eight skills used by this project (see vendor/agent-skills/skills/)
+
+License of Vendored Component
+-----------------------------
+
+The agent-skills project is licensed under the MIT License (or Apache-2.0 at the author's discretion — see original repository).
+
+A copy of the original license text can be found in the upstream repository at the pinned commit.
+
+Attribution
+-----------
+
+All credit for the skill content goes to Addy Osmani and contributors to the agent-skills project.
+
+This project (crewai-headless-flow) only provides orchestration, adapters, and configuration around those skills. The methodology and prose inside the vendored SKILL.md files remain the intellectual property of their original authors.
+
+No Modifications
+----------------
+
+The vendored skill files are copied verbatim from the pinned commit. No modifications have been made to the skill content itself.
+
+For the full original content and updates, see the upstream repository.

@@ -1,0 +1,6 @@
+{"type":"session","id":"sess_123"}
+{"type":"message","role":"assistant","content":"I'll add a hello function and a test for it."}
+{"type":"file_write","path":"src/hello.py","content":"def hello():\n    return 'Hello, world!'\n"}
+{"type":"file_write","path":"tests/test_hello.py","content":"from src.hello import hello\ndef test_hello():\n    assert hello() == 'Hello, world!'\n"}
+{"type":"message","role":"assistant","content":"Done. Two files changed."}
+{"type":"end","status":"success"}

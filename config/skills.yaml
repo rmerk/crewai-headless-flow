@@ -1,0 +1,18 @@
+# =============================================================================
+# skills.yaml — Maps workflow stages to agent-skills (operating procedures)
+# =============================================================================
+# This file defines *what* procedure each stage follows.
+# Change a skill here → the injected guidance to the headless coder changes.
+
+stages:
+  # Planning stage: turns a vague request into a structured spec + task list
+  plan: planning-and-task-breakdown
+
+  # Core implementation stage: the actual coding, running, testing work
+  do_work: incremental-implementation
+
+  # Review / quality gate stage
+  review: code-review-and-quality
+
+  # Final documentation and decision records
+  finalize: documentation-and-adrs
