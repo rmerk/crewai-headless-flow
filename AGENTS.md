@@ -66,6 +66,19 @@ uv run python -m crewai_headless_flow \
   --request "..." \
   --target-repo /path/to/target
 
+# Equivalent explicit run command
+uv run python -m crewai_headless_flow run \
+  --request "..." \
+  --target-repo /path/to/target \
+  --config-dir config
+
+# Detect-only environment/config checks; no model prompts or adapter runs
+uv run python -m crewai_headless_flow doctor --config-dir config
+uv run python -m crewai_headless_flow doctor --target-repo /path/to/target --format json
+
+# Read-only target-repo readiness check
+uv run python -m crewai_headless_flow preflight --target-repo /path/to/target
+
 # Linting & types (run before committing non-trivial work)
 uv run ruff check .
 uv run ruff format --check .

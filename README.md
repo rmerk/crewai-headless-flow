@@ -105,7 +105,37 @@ uv run python -m crewai_headless_flow \
   --target-repo /tmp/demo-target
 ```
 
-### 3. Switch the worker for any stage (YAML only)
+The explicit subcommand form is equivalent:
+
+```bash
+uv run python -m crewai_headless_flow run \
+  --request "Add a subtract function and a corresponding test using TDD" \
+  --target-repo /tmp/demo-target \
+  --config-dir config
+```
+
+### 3. Check readiness without running a model
+
+`doctor` is detect-only: it checks config, referenced skills, configured CLIs,
+required CLI flags, Ollama metadata readiness, and optional target-repo
+preflight. It does not send model prompts, consume auth, construct the Flow, or
+run worker adapters.
+
+```bash
+uv run python -m crewai_headless_flow doctor --config-dir config
+uv run python -m crewai_headless_flow doctor --target-repo /tmp/demo-target --format json
+```
+
+`preflight` is a read-only target-repo check. It fails missing paths, file paths,
+and merge conflicts before any adapter can create or mutate the target. Dirty,
+staged, unstaged, untracked, detached-HEAD, non-git, and missing-tooling states
+are reported as warnings or fields.
+
+```bash
+uv run python -m crewai_headless_flow preflight --target-repo /tmp/demo-target
+```
+
+### 4. Switch the worker for any stage (YAML only)
 
 Edit `config/worker.yaml`:
 
@@ -198,6 +228,9 @@ uv run pytest -m offline --cov=src
 
 ```
 src/crewai_headless_flow/
+├── __main__.py             # python -m entrypoint
+├── cli.py                  # argparse CLI: run, doctor, preflight
+├── diagnostics.py          # detect-only doctor + read-only preflight checks
 ├── flow.py                 # The main CrewAI Flow
 ├── state.py                # Pydantic persisted state
 ├── config.py               # YAML resolver + pretty printer
