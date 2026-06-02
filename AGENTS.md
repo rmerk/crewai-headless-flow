@@ -6,9 +6,9 @@ Guidelines for AI agents (and humans using agents) working in this repository.
 
 **crewai-headless-flow** is a reusable, multi-agent CrewAI Flow that treats **Addy Osmani's agent-skills** as operating procedures ("the how") and delegates actual code editing, running, and testing to **pluggable headless coding CLIs** ("the hands").
 
-- **Core idea**: The Flow provides the orchestration and state machine. Skills provide consistent methodology. Workers (CodexAdapter, GrokAdapter) provide the execution capability.
+- **Core idea**: The Flow provides the orchestration and state machine. Skills provide consistent methodology. Workers (CodexAdapter, GrokAdapter, ClaudeAdapter) provide the execution capability.
 - **Primary reusability levers**: Two small YAML files (`config/skills.yaml` and `config/worker.yaml`). Changing procedures or which brain actually edits the code requires **zero Python changes**.
-- **Safety model**: Inspect/review stages are always read-only. Edit stages are non-interactive. Grok inspect mode uses disposable copies/worktrees.
+- **Safety model**: Inspect/review stages are always read-only. Edit stages are non-interactive. Grok inspect mode uses disposable copies; Claude inspect mode uses a disposable copy plus `dontAsk`.
 - **Testing guarantee**: 100% of core behavior is offline-testable (`pytest -m offline`). Live CLI smoke tests are opt-in and gated.
 
 **GitHub**: https://github.com/rmerk/crewai-headless-flow  
@@ -28,9 +28,10 @@ Guidelines for AI agents (and humans using agents) working in this repository.
 
 ### 2. Pluggable Headless Coders
 - Protocol defined in `workers/base.py` (`HeadlessCoder`).
-- Two production adapters:
+- Three production adapters:
   - `CodexAdapter`: Uses native `--sandbox` + `--output-schema`.
-  - `GrokAdapter`: Uses disposable worktrees for safe inspect mode + prompt-based structured output + one repair retry.
+  - `GrokAdapter`: Uses disposable copies for safe inspect mode + prompt-based structured output + one repair retry.
+  - `ClaudeAdapter`: Uses disposable copies plus `--permission-mode dontAsk` for inspect mode, real target repositories plus `--permission-mode bypassPermissions` for edit mode, and native `--json-schema`.
 - All heavy lifting happens through `tools/coder_tool.py` (the thin wrapper that combines worker + skill).
 
 The Flow (`flow.py`) only knows about stages, state, and the abstract tool. It never imports concrete adapters directly in normal operation.
@@ -40,7 +41,7 @@ The Flow (`flow.py`) only knows about stages, state, and the abstract tool. It n
 **Never** change Python code to alter behavior if it can be achieved by editing the YAML.
 
 - `config/skills.yaml` — Maps each stage to the agent-skill that supplies the operating procedure.
-- `config/worker.yaml` — Controls per-stage worker (`codex` | `grok`), model, sandbox mode, timeouts, and human-in-the-loop flags.
+- `config/worker.yaml` — Controls per-stage worker (`codex` | `grok` | `claude`), model, sandbox mode, timeouts, and human-in-the-loop flags.
 
 At startup the system prints a clear table of the resolved mapping. Always verify this table when debugging "why is X using Y?".
 
@@ -85,7 +86,8 @@ The old `main.py` is a legacy M0 spike and is not the primary entrypoint.
 - Inspect and review stages **must never** be allowed to mutate the target repository.
   - Codex: the adapter enforces `sandbox: read-only`.
   - Grok: the adapter creates a disposable copy under `/tmp/grok-inspect-*` and deletes it afterward.
-- Edit stages (`do_work`, and potentially others) run with full workspace-write + `--always-approve` (Codex) or equivalent.
+  - Claude: the adapter creates a disposable copy and runs with `--permission-mode dontAsk`.
+- Edit stages (`do_work`, and potentially others) run non-interactively in the real target repository using each adapter's edit-mode approval flags: Codex `--dangerously-bypass-approvals-and-sandbox`, Grok `--always-approve`, and Claude `--permission-mode bypassPermissions`.
 - Never bypass the adapter layer to call the raw CLIs in new code.
 - Auth (API keys, `gh` auth, etc.) is the user's responsibility via `.env` / keychain. Do not hardcode secrets.
 
@@ -128,17 +130,17 @@ After adding a worker, update `config.py` resolution, the worker factory in `flo
 These are the main directions worth considering next (as of June 2026). The official high-level list lives in `DESIGN.md`, but here is a more concrete, prioritized view:
 
 ### Official Future Directions (from DESIGN.md)
-- Add more adapters (Claude Code headless, Gemini CLI, etc.)
+- Add more adapters (Gemini CLI, etc.)
 - Richer task decomposition and parallel execution inside `do_work`
-- Better structured output extraction (stronger JSON repair loops, schema tools)
+- Better structured output and review-loop semantics (stronger JSON repair loops, schema tools, consistent validation behavior)
 - Integration with actual CrewAI `Crew` objects for richer multi-agent stages
 
 ### Prioritized Opportunities
 
 | Priority | Idea | Why | Effort |
 |----------|------|-----|--------|
-| **Highest** | **Claude Code adapter** | Validates the "pluggable workers" architecture. Currently the biggest missing piece. | Medium |
-| **High** | **Strengthen structured output** | Grok adapter has a basic repair retry. Make it more robust and consistent across workers. | Medium |
+| **Done** | **Claude Code adapter** | Validates the "pluggable workers" architecture as a third opt-in production adapter. | Implemented |
+| **Highest** | **Strengthen structured output/review-loop semantics** | Grok has a basic repair retry and Claude/Codex have native schema paths; make validation, retries, and review decisions more consistent across workers. | Medium |
 | **Medium** | **Parallel task execution in `do_work`** | Allow the implementation stage to break work into parallel tasks. | Medium–High |
 | **Medium** | **Improve CI & DX** | Add mypy/ruff to CI, better formatting gates, optional smoke jobs. | Low |
 | **Longer** | Deeper CrewAI `Crew` integration inside stages | Move beyond simple Flow topology to real multi-agent Crews per stage. | High |
@@ -150,7 +152,7 @@ These are the main directions worth considering next (as of June 2026). The offi
 - Establish a clean process for refreshing the vendored `agent-skills`
 - Extend HITL beyond v1 with instruction injection, resume-from-abort, CLI/runtime overrides, extra gates, or a persisted approval audit log
 
-When picking the next piece of work, the Claude Code adapter and stronger structured output are currently the highest-leverage moves.
+When picking the next piece of work, stronger structured output/review-loop semantics and parallel task execution are currently high-leverage moves.
 
 ## Related Documentation
 

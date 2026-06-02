@@ -113,6 +113,24 @@ def test_worker_switch_changes_resolution_without_code_change(sample_config_dir:
     assert cfg2.get_stage("review").worker == "codex"
 
 
+def test_worker_yaml_can_select_claude_without_code_change(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["stages"]["do_work"] = {
+        "worker": "claude",
+        "model": "sonnet",
+        "timeout": 450,
+    }
+    worker_file.write_text(yaml.safe_dump(data))
+
+    cfg = load_config(sample_config_dir)
+    do_work = cfg.get_stage("do_work")
+
+    assert do_work.worker == "claude"
+    assert do_work.model == "sonnet"
+    assert do_work.timeout == 450
+
+
 def test_print_mapping_runs_without_crashing(sample_config_dir: Path, capsys):
     cfg = load_config(sample_config_dir)
     cfg.print_mapping()
@@ -133,7 +151,7 @@ def test_default_config_loads_from_real_files():
     # At minimum the structure must be valid
     for stage in cfg.stages:
         resolved = cfg.get_stage(stage)
-        assert resolved.worker in {"codex", "grok"}
+        assert resolved.worker in {"codex", "grok", "claude"}
 
 
 def test_default_review_crew_is_configured_but_disabled():

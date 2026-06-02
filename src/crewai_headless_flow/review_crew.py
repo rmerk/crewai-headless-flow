@@ -51,6 +51,7 @@ class HeadlessInspectTool(BaseTool):
     worker_tool: Any
     cwd: str
     timeout: int = 300
+    model: str | None = None
 
     def _run(self, prompt: str) -> str:
         result = self.worker_tool.run(
@@ -58,6 +59,7 @@ class HeadlessInspectTool(BaseTool):
             cwd=self.cwd,
             mode="inspect",
             timeout=self.timeout,
+            model=self.model,
         )
         return result.summary or result.raw_output or ""
 
@@ -143,6 +145,7 @@ def run_review_crew(
     worker_tool: HeadlessCoderTool,
     cwd: str,
     timeout: int,
+    model: str | None = None,
     crew_config: dict[str, Any] | None = None,
 ) -> ReviewCrewDecision:
     """Run the optional sequential Review Crew and normalize its decision."""
@@ -153,6 +156,7 @@ def run_review_crew(
         worker_tool=worker_tool,
         cwd=cwd,
         timeout=timeout,
+        model=model,
     )
 
     evidence_agent = Agent(

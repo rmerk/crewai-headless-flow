@@ -22,15 +22,22 @@ from .review_crew import ReviewCrewDecision, run_review_crew
 from .skills.loader import get_default_loader
 from .state import FlowState
 from .tools.coder_tool import HeadlessCoderTool
-from .workers import CodexAdapter, GrokAdapter
+from .workers import ClaudeAdapter, CodexAdapter, GrokAdapter
 from .workers.base import HeadlessCoder
+
+
+WORKER_ADAPTERS: dict[str, type[HeadlessCoder]] = {
+    "codex": CodexAdapter,
+    "grok": GrokAdapter,
+    "claude": ClaudeAdapter,
+}
 
 
 class CrewAIHeadlessFlow(Flow[FlowState]):
     """
     Reusable, config-driven, multi-agent Flow that uses agent-skills as
     operating procedures and delegates actual code work to pluggable
-    headless coders (Codex or Grok).
+    headless coders (Codex, Grok, or Claude).
     """
 
     def __init__(self, config: FlowConfig | None = None):
@@ -46,11 +53,14 @@ class CrewAIHeadlessFlow(Flow[FlowState]):
             stage_cfg = self.config.get_stage(stage)
             skill_name = stage_cfg.skill
 
-            base_worker: HeadlessCoder
-            if stage_cfg.worker == "grok":
-                base_worker = GrokAdapter()
-            else:
-                base_worker = CodexAdapter()
+            adapter_cls = WORKER_ADAPTERS.get(stage_cfg.worker)
+            if adapter_cls is None:
+                supported = ", ".join(sorted(WORKER_ADAPTERS))
+                raise ValueError(
+                    f"Unsupported worker '{stage_cfg.worker}' configured for stage "
+                    f"'{stage}'. Supported workers: {supported}"
+                )
+            base_worker = adapter_cls()
 
             tool = HeadlessCoderTool(
                 worker=base_worker,
@@ -83,6 +93,35 @@ class CrewAIHeadlessFlow(Flow[FlowState]):
             status = "revise"
 
         return status, issues
+
+    def _extract_review_payload(self, raw: str) -> dict | None:
+        if not raw:
+            return None
+
+        try:
+            start = raw.find("{")
+            end = raw.rfind("}") + 1
+            if start == -1 or end <= start:
+                return None
+            data = json.loads(raw[start:end])
+        except (TypeError, ValueError):
+            return None
+
+        if not isinstance(data, dict):
+            return None
+        if "status" in data:
+            return data
+
+        for key in ("result", "text", "content", "message", "summary"):
+            value = data.get(key)
+            if isinstance(value, dict) and "status" in value:
+                return value
+            if isinstance(value, str):
+                nested = self._extract_review_payload(value)
+                if nested is not None:
+                    return nested
+
+        return None
 
     def _is_human_feedback_enabled(self) -> bool:
         return bool(self.config.human_feedback.get("enabled", False))
@@ -258,6 +297,7 @@ Execute the work. After you are done, summarize what changed and whether tests n
             cwd=self.state.target_repo,
             mode="edit",
             timeout=stage_cfg.timeout,
+            model=stage_cfg.model,
         )
 
         if result.changed_files:
@@ -321,6 +361,7 @@ Otherwise use "revise" and list the concrete issues that must be addressed.
                     worker_tool=worker_tool,
                     cwd=self.state.target_repo,
                     timeout=stage_cfg.timeout,
+                    model=stage_cfg.model,
                     crew_config=crew_cfg,
                 )
             except Exception as exc:
@@ -338,21 +379,15 @@ Otherwise use "revise" and list the concrete issues that must be addressed.
                 cwd=self.state.target_repo,
                 mode="inspect",  # Critical: read-only guarantee
                 timeout=stage_cfg.timeout,
+                model=stage_cfg.model,
             )
 
-            raw = result.raw_output or result.summary or ""
-
-            # Try to extract JSON from the output
-            try:
-                # Look for a JSON object in the output
-                start = raw.find("{")
-                end = raw.rfind("}") + 1
-                if start != -1 and end > start:
-                    data = json.loads(raw[start:end])
-                    if isinstance(data, dict):
-                        status, issues = self._normalize_review_payload(data)
-            except Exception:
-                # Fallback: treat as revise if we can't parse
+            for raw in (result.raw_output, result.summary):
+                data = self._extract_review_payload(raw or "")
+                if data is not None:
+                    status, issues = self._normalize_review_payload(data)
+                    break
+            else:
                 status = "revise"
                 issues = ["Review output could not be parsed as structured JSON"]
 
@@ -426,6 +461,7 @@ Write a concise ADR or completion report suitable for the repository.
             cwd=self.state.target_repo,
             mode="edit",
             timeout=stage_cfg.timeout,
+            model=stage_cfg.model,
         )
 
         self.state.final_artifact = result.summary or result.raw_output

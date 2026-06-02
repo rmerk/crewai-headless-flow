@@ -1,10 +1,10 @@
 # crewai-headless-flow
 
-A reusable, multi-agent CrewAI Flow that uses **Addy Osmani's agent-skills** as operating procedures and delegates actual coding work to **pluggable headless coding CLIs** (Codex and Grok).
+A reusable, multi-agent CrewAI Flow that uses **Addy Osmani's agent-skills** as operating procedures and delegates actual coding work to **pluggable headless coding CLIs** (Codex, Grok, and Claude Code).
 
 **CrewAI** = orchestrator / control plane  
 **agent-skills** = the "how" (operating procedures)  
-**Headless coders** (Codex `exec` / Grok `-p`) = the "hands" that edit, run, and test code in a target repository
+**Headless coders** (Codex `exec` / Grok `-p` / Claude Code `-p`) = the "hands" that edit, run, and test code in a target repository
 
 The workflow is fully re-targetable (any repo + any request) and re-shapeable (swap skills or swap the coding worker per stage) **using only YAML**.
 
@@ -14,19 +14,21 @@ The workflow is fully re-targetable (any repo + any request) and re-shapeable (s
 - The actual coding work → pluggable headless coder (**opt-in**)
   - Codex (ChatGPT plan or OpenAI API)
   - Grok (XAI_API_KEY)
+  - Claude Code (user-managed Claude CLI install/auth)
 - All tests are fully mocked — development and CI cost **$0** and require **no network**.
 
 ## Features
 
 - **Skills as procedures**: Real agent-skills (planning-and-task-breakdown, incremental-implementation, code-review-and-quality, doubt-driven-development, etc.) are injected into every prompt.
-- **Pluggable workers**: One `HeadlessCoder` interface with two production adapters:
+- **Pluggable workers**: One `HeadlessCoder` interface with three production adapters:
   - `CodexAdapter` — uses native `--sandbox` + `--output-schema`
-  - `GrokAdapter` — uses disposable worktrees for safe inspect mode + prompt-based structured output + repair retry
-- **Per-stage configuration**: Choose `codex` or `grok` (and model) independently for `plan`, `do_work`, `review`, and `finalize`.
+  - `GrokAdapter` — uses disposable copies for safe inspect mode + prompt-based structured output + repair retry
+  - `ClaudeAdapter` — uses disposable copies for safe inspect mode + native `--json-schema`
+- **Per-stage configuration**: Choose `codex`, `grok`, or `claude` (and model) independently for `plan`, `do_work`, `review`, and `finalize`.
 - **Optional Review Crew**: The `review` stage can run a config-gated sequential CrewAI Crew for richer multi-agent review while still using read-only worker inspection.
 - **Safe by design**:
   - Edit stages are fully non-interactive
-  - Inspect/review stages are read-only (Codex native sandbox or Grok disposable worktree)
+  - Inspect/review stages are read-only (Codex native sandbox or Grok/Claude disposable copy)
 - **Bounded revise loop** with `max_revisions`
 - **Optional human-in-the-loop** (config-gated)
 - **100% offline testable** (`pytest -m offline`)
@@ -45,7 +47,9 @@ uv sync --all-extras
 cp .env.example .env
 ```
 
-### Required CLIs
+### CLI Dependencies for Live Runs
+
+Install only the headless worker CLIs you configure; Claude Code is required only when a stage uses `worker: "claude"`.
 
 **Codex**
 ```bash
@@ -57,6 +61,12 @@ codex --version
 ```bash
 # Install via your preferred method
 grok --version
+```
+
+**Claude Code**
+```bash
+# Install and authenticate via Anthropic's Claude Code instructions
+claude --version
 ```
 
 **Ollama (orchestration LLM — free)**
@@ -76,6 +86,8 @@ Edit `.env`:
 # For Grok
 XAI_API_KEY=xai-...
 ```
+
+Claude Code authentication is managed by the Claude CLI, keychain, or environment. This project does not require a Claude-specific `.env` value.
 
 ## Running the Demo
 
@@ -103,6 +115,16 @@ stages:
     worker: "codex"        # was "grok"
 ```
 
+To opt in to Claude Code for a stage:
+
+```yaml
+stages:
+  do_work:
+    worker: "claude"
+    model: "sonnet"
+    timeout: 300
+```
+
 Re-run the same command — no code changes required. The startup banner will show the new mapping.
 
 ## Configuration
@@ -110,7 +132,7 @@ Re-run the same command — no code changes required. The startup banner will sh
 The entire behavior is driven by two small YAML files:
 
 - `config/skills.yaml` — which agent-skill provides the operating procedure for each stage
-- `config/worker.yaml` — which headless coder (`codex`/`grok`), model, and flags to use per stage
+- `config/worker.yaml` — which headless coder (`codex`/`grok`/`claude`), model, and flags to use per stage
 
 At startup the project prints a clear table:
 
@@ -130,7 +152,7 @@ finalize     documentation-and-adrs           codex      (default)
 1. Vendor the new `SKILL.md` under `vendor/agent-skills/skills/`
 2. Update `config/skills.yaml` to point a stage at the new skill name
 
-### Switch a stage to the other worker
+### Switch a stage to another worker
 Just edit one line in `config/worker.yaml`.
 
 ### Enable the Review Crew
@@ -183,7 +205,8 @@ src/crewai_headless_flow/
 ├── workers/
 │   ├── base.py             # HeadlessCoder protocol + results
 │   ├── codex.py            # CodexAdapter
-│   └── grok.py             # GrokAdapter (with worktree safety)
+│   ├── grok.py             # GrokAdapter (with disposable-copy safety)
+│   └── claude.py           # ClaudeAdapter (with disposable-copy safety)
 └── tools/coder_tool.py     # Skill injection wrapper
 
 config/
@@ -200,7 +223,7 @@ This project was built so that:
 - Changing *what* procedure is followed = edit `skills.yaml`
 - Changing *who* actually edits the code = edit `worker.yaml`
 - Changing the target repo or request = command line / API
-- Adding a third worker (Claude Code, etc.) = implement one more adapter
+- Adding another worker (Gemini CLI, etc.) = implement one more adapter
 
 No changes to the Flow topology or core logic are required.
 

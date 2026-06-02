@@ -3,10 +3,10 @@
 # =============================================================================
 # This is the PRIMARY reusability lever.
 #
-# You can switch any stage from "codex" to "grok" (or vice versa) by editing
-# only this file. No Python code changes required.
+# You can switch any stage between "codex", "grok", and "claude" by editing only
+# this file. No Python code changes required.
 #
-# Supported workers: "codex" | "grok"
+# Supported workers: "codex" | "grok" | "claude"
 
 defaults:
   worker: "codex"

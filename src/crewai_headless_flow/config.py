@@ -58,7 +58,7 @@ def _validate_human_feedback(raw: dict[str, Any] | None) -> dict[str, Any]:
 class StageConfig:
     stage: str
     skill: str
-    worker: str  # "codex" | "grok"
+    worker: str  # "codex" | "grok" | "claude"
     model: Optional[str] = None
     timeout: int = 300
     extra: dict[str, Any] = field(default_factory=dict)

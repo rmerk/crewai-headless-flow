@@ -7,6 +7,7 @@ touching any real CLI or network.
 
 from __future__ import annotations
 
+import json
 
 import pytest
 
@@ -14,6 +15,7 @@ from crewai_headless_flow.config import FlowConfig
 from crewai_headless_flow.flow import CrewAIHeadlessFlow
 from crewai_headless_flow.review_crew import ReviewCrewDecision
 from crewai_headless_flow.state import FlowState
+from crewai_headless_flow.workers import ClaudeAdapter
 from crewai_headless_flow.workers.base import CoderResult
 
 
@@ -59,6 +61,103 @@ class StubWorker:
             raw_output="Implemented the requested change.",
             exit_code=0,
         )
+
+
+class RecordingWorker:
+    def __init__(self, inspect_raw: str | None = None):
+        self.calls: list[dict] = []
+        self.inspect_raw = inspect_raw or (
+            '{"status": "pass", "issues": [], "summary": "Looks good"}'
+        )
+
+    def run(self, **kwargs):
+        self.calls.append(kwargs)
+        if kwargs.get("mode") == "inspect":
+            return CoderResult(
+                summary="review complete",
+                raw_output=self.inspect_raw,
+                exit_code=0,
+            )
+        return CoderResult(
+            summary="work complete",
+            changed_files=[],
+            raw_output="work complete",
+            exit_code=0,
+        )
+
+
+def test_flow_builds_claude_worker_from_worker_config():
+    cfg = FlowConfig(
+        skills={"do_work": "incremental-implementation"},
+        workers={"do_work": {"worker": "claude"}},
+        defaults={"worker": "codex", "timeout": 300},
+    )
+
+    flow = CrewAIHeadlessFlow(config=cfg)
+
+    assert isinstance(flow._get_worker("do_work").worker, ClaudeAdapter)
+
+
+def test_flow_rejects_unknown_worker_name():
+    cfg = FlowConfig(
+        skills={"do_work": "incremental-implementation"},
+        workers={"do_work": {"worker": "claude-typo"}},
+        defaults={"worker": "codex", "timeout": 300},
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Unsupported worker 'claude-typo' configured for stage 'do_work'",
+    ):
+        CrewAIHeadlessFlow(config=cfg)
+
+
+def test_do_work_passes_configured_model_to_worker():
+    cfg = FlowConfig(
+        skills={"do_work": "incremental-implementation"},
+        workers={"do_work": {"worker": "claude", "model": "sonnet"}},
+        defaults={"worker": "codex", "timeout": 300},
+    )
+    flow = CrewAIHeadlessFlow(config=cfg)
+    flow._state = FlowState(request="test", target_repo="/tmp/fake")  # type: ignore[attr-defined]
+    worker = RecordingWorker()
+    flow._workers["do_work"] = worker  # type: ignore
+
+    flow.do_work("plan")
+
+    assert worker.calls[0]["model"] == "sonnet"
+
+
+def test_review_passes_configured_model_to_worker():
+    cfg = FlowConfig(
+        skills={"review": "code-review-and-quality"},
+        workers={"review": {"worker": "claude", "model": "sonnet"}},
+        defaults={"worker": "codex", "timeout": 300},
+    )
+    flow = CrewAIHeadlessFlow(config=cfg)
+    flow._state = FlowState(request="test", target_repo="/tmp/fake")  # type: ignore[attr-defined]
+    worker = RecordingWorker()
+    flow._workers["review"] = worker  # type: ignore
+
+    flow.review("work summary")
+
+    assert worker.calls[0]["model"] == "sonnet"
+
+
+def test_finalize_passes_configured_model_to_worker():
+    cfg = FlowConfig(
+        skills={"finalize": "documentation-and-adrs"},
+        workers={"finalize": {"worker": "claude", "model": "sonnet"}},
+        defaults={"worker": "codex", "timeout": 300},
+    )
+    flow = CrewAIHeadlessFlow(config=cfg)
+    flow._state = FlowState(request="test", target_repo="/tmp/fake")  # type: ignore[attr-defined]
+    worker = RecordingWorker()
+    flow._workers["finalize"] = worker  # type: ignore
+
+    flow.finalize("pass")
+
+    assert worker.calls[0]["model"] == "sonnet"
 
 
 def test_router_returns_pass_on_good_review():
@@ -127,6 +226,33 @@ def test_router_coerces_non_list_review_issues_to_list():
 
     assert decision == "revise"
     assert flow.state.issues == ["Missing tests"]
+
+
+def test_router_parses_claude_json_wrapper_review_payload():
+    flow = CrewAIHeadlessFlow()
+    flow._state = FlowState(request="test", target_repo="/tmp/fake")  # type: ignore[attr-defined]
+    inner = '{"status": "pass", "issues": [], "summary": "Looks good"}'
+
+    class ClaudeWrappedReviewWorker:
+        call_count = 0
+
+        def run(self, task: str, cwd: str, mode: str = "edit", **kwargs):
+            self.call_count += 1
+            return CoderResult(
+                summary=inner,
+                raw_output='{"type": "result", "result": ' + json.dumps(inner) + "}",
+                exit_code=0,
+            )
+
+    stub = ClaudeWrappedReviewWorker()
+    flow._workers["review"] = stub  # type: ignore
+
+    decision = flow.review("work summary")
+
+    assert decision == "pass"
+    assert flow.state.review_status == "pass"
+    assert flow.state.issues == []
+    assert stub.call_count == 1
 
 
 def test_max_revisions_caps_the_loop():
@@ -205,6 +331,7 @@ def test_review_crew_path_is_used_when_enabled(monkeypatch):
         workers={
             "review": {
                 "worker": "codex",
+                "model": "sonnet",
                 "sandbox": "read-only",
                 "crew": {"enabled": True, "process": "sequential"},
             }
@@ -236,6 +363,7 @@ def test_review_crew_path_is_used_when_enabled(monkeypatch):
     assert flow.state.review_status == "pass"
     assert calls
     assert calls[0]["worker_tool"] is flow._workers["review"]
+    assert calls[0]["model"] == "sonnet"
 
 
 def test_review_crew_path_fails_closed_to_revise(monkeypatch):

@@ -88,7 +88,12 @@ def test_normalize_fails_closed_on_malformed_output():
 
 def test_headless_inspect_tool_always_calls_inspect_mode():
     worker_tool = RecordingWorkerTool()
-    tool = HeadlessInspectTool(worker_tool=worker_tool, cwd="/tmp/repo", timeout=17)
+    tool = HeadlessInspectTool(
+        worker_tool=worker_tool,
+        cwd="/tmp/repo",
+        timeout=17,
+        model="sonnet",
+    )
 
     result = tool._run(prompt="Review these changes")
 
@@ -99,6 +104,7 @@ def test_headless_inspect_tool_always_calls_inspect_mode():
             "cwd": "/tmp/repo",
             "mode": "inspect",
             "timeout": 17,
+            "model": "sonnet",
         }
     ]
 

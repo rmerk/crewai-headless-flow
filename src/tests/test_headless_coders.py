@@ -13,12 +13,18 @@ Run with: pytest -m offline
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-from crewai_headless_flow.workers.base import CoderResult
+from crewai_headless_flow.workers.base import (
+    CoderResult,
+    WorkerInvocationError,
+    WorkerTimeout,
+)
+from crewai_headless_flow.workers.claude import ClaudeAdapter
 from crewai_headless_flow.workers.codex import CodexAdapter
 from crewai_headless_flow.workers.grok import GrokAdapter
 
@@ -155,6 +161,177 @@ def test_grok_structured_output_injects_schema_into_prompt():
 
 
 # =============================================================================
+# ClaudeAdapter argv + safety tests
+# =============================================================================
+
+
+def test_claude_inspect_mode_uses_disposable_copy_and_dontask_permissions():
+    adapter = ClaudeAdapter(binary="claude")
+    original = Path("/tmp/original-repo")
+
+    with (
+        patch("subprocess.run") as mock_run,
+        patch.object(adapter, "_create_disposable_copy") as mock_copy,
+        patch.object(adapter, "_cleanup_disposable") as mock_cleanup,
+    ):
+        disposable = Path("/tmp/claude-inspect-xyz/original-repo")
+        mock_copy.return_value = disposable
+        mock_run.return_value.stdout = '{"result": "reviewed"}'
+        mock_run.return_value.stderr = ""
+        mock_run.return_value.returncode = 0
+
+        adapter.run("review this", cwd=original, mode="inspect")
+
+        mock_copy.assert_called_once_with(original)
+        mock_cleanup.assert_called_once_with(disposable)
+        args = mock_run.call_args[0][0]
+        assert args[0] == "claude"
+        assert "-p" in args
+        assert "--output-format" in args
+        assert "json" in args
+        assert "--permission-mode" in args
+        permission_idx = args.index("--permission-mode")
+        assert args[permission_idx + 1] == "dontAsk"
+        assert "--cwd" not in args
+        assert mock_run.call_args.kwargs["cwd"] == disposable
+
+
+def test_claude_edit_mode_uses_real_cwd_and_bypass_permissions():
+    adapter = ClaudeAdapter(binary="claude")
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value.stdout = '{"result": "done"}'
+        mock_run.return_value.stderr = ""
+        mock_run.return_value.returncode = 0
+
+        adapter.run("edit the code", cwd="/tmp/testrepo", mode="edit")
+
+        args = mock_run.call_args[0][0]
+        assert "--permission-mode" in args
+        permission_idx = args.index("--permission-mode")
+        assert args[permission_idx + 1] == "bypassPermissions"
+        assert "--cwd" not in args
+        assert mock_run.call_args.kwargs["cwd"] == Path("/tmp/testrepo")
+
+
+def test_claude_relative_cwd_is_normalized_to_absolute_path(tmp_path, monkeypatch):
+    adapter = ClaudeAdapter(binary="claude")
+    monkeypatch.chdir(tmp_path)
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value.stdout = '{"result": "done"}'
+        mock_run.return_value.stderr = ""
+        mock_run.return_value.returncode = 0
+
+        adapter.run("edit the code", cwd=Path("relative-repo"), mode="edit")
+
+        used_cwd = Path(mock_run.call_args.kwargs["cwd"])
+        assert used_cwd.is_absolute()
+        assert used_cwd.name == "relative-repo"
+
+
+def test_claude_disposable_copy_cleans_temp_root_when_copytree_fails(tmp_path):
+    adapter = ClaudeAdapter(binary="claude")
+    src = tmp_path / "source-repo"
+    tmp_root = tmp_path / "claude-inspect-known"
+
+    def fake_mkdtemp(prefix: str) -> str:
+        assert prefix == "claude-inspect-"
+        tmp_root.mkdir()
+        return str(tmp_root)
+
+    with (
+        patch("tempfile.mkdtemp", side_effect=fake_mkdtemp),
+        patch("shutil.copytree", side_effect=OSError("copy failed")),
+    ):
+        with pytest.raises(OSError, match="copy failed"):
+            adapter._create_disposable_copy(src)
+
+    assert not tmp_root.exists()
+
+
+def test_claude_disposable_copy_does_not_preserve_absolute_symlink(tmp_path):
+    adapter = ClaudeAdapter(binary="claude")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("original")
+    outside_dir = tmp_path / "outside-dir"
+    outside_dir.mkdir()
+    (outside_dir / "secret.txt").write_text("secret")
+
+    src = tmp_path / "source-repo"
+    src.mkdir()
+    (src / "absolute-link.txt").symlink_to(outside)
+    (src / "absolute-dir-link").symlink_to(outside_dir)
+
+    disposable = adapter._create_disposable_copy(src)
+
+    assert not (disposable / "absolute-link.txt").exists()
+    assert not (disposable / "absolute-dir-link").exists()
+    assert outside.read_text() == "original"
+
+    adapter._cleanup_disposable(disposable)
+
+
+def test_claude_passes_json_schema_when_given():
+    adapter = ClaudeAdapter(binary="claude")
+    schema = {
+        "type": "object",
+        "properties": {"summary": {"type": "string"}},
+        "required": ["summary"],
+    }
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value.stdout = '{"result": {"summary": "ok"}}'
+        mock_run.return_value.stderr = ""
+        mock_run.return_value.returncode = 0
+
+        adapter.run("task", cwd="/tmp/r", mode="edit", schema=schema)
+
+        args = mock_run.call_args[0][0]
+        assert "--json-schema" in args
+        schema_idx = args.index("--json-schema")
+        assert '"summary"' in args[schema_idx + 1]
+
+
+def test_claude_passes_model_when_given():
+    adapter = ClaudeAdapter(binary="claude")
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value.stdout = '{"result": "ok"}'
+        mock_run.return_value.stderr = ""
+        mock_run.return_value.returncode = 0
+
+        adapter.run("task", cwd="/tmp/r", mode="edit", model="sonnet")
+
+        args = mock_run.call_args[0][0]
+        assert "--model" in args
+        model_idx = args.index("--model")
+        assert args[model_idx + 1] == "sonnet"
+
+
+def test_grok_disposable_copy_does_not_preserve_absolute_symlink(tmp_path):
+    adapter = GrokAdapter(binary="grok")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("original")
+    outside_dir = tmp_path / "outside-dir"
+    outside_dir.mkdir()
+    (outside_dir / "secret.txt").write_text("secret")
+
+    src = tmp_path / "source-repo"
+    src.mkdir()
+    (src / "absolute-link.txt").symlink_to(outside)
+    (src / "absolute-dir-link").symlink_to(outside_dir)
+
+    disposable = adapter._create_disposable_copy(src)
+
+    assert not (disposable / "absolute-link.txt").exists()
+    assert not (disposable / "absolute-dir-link").exists()
+    assert outside.read_text() == "original"
+
+    adapter._cleanup_disposable(disposable)
+
+
+# =============================================================================
 # Result normalization
 # =============================================================================
 
@@ -184,6 +361,52 @@ def test_grok_returns_normalized_coder_result():
 
         assert isinstance(result, CoderResult)
         assert result.exit_code == 0
+
+
+def test_claude_returns_normalized_coder_result_from_json_result_string():
+    adapter = ClaudeAdapter(binary="claude")
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value.stdout = '{"result": "Claude changed the files."}'
+        mock_run.return_value.stderr = ""
+        mock_run.return_value.returncode = 0
+
+        result = adapter.run("task", cwd="/tmp/r", mode="edit")
+
+        assert isinstance(result, CoderResult)
+        assert result.exit_code == 0
+        assert result.summary == "Claude changed the files."
+        assert result.raw_output == '{"result": "Claude changed the files."}'
+
+
+def test_claude_returns_normalized_coder_result_from_structured_result():
+    adapter = ClaudeAdapter(binary="claude")
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value.stdout = '{"result": {"summary": "Structured ok"}}'
+        mock_run.return_value.stderr = ""
+        mock_run.return_value.returncode = 0
+
+        result = adapter.run("task", cwd="/tmp/r", mode="edit")
+
+        assert result.exit_code == 0
+        assert '"summary": "Structured ok"' in result.summary
+
+
+def test_claude_timeout_raises_worker_timeout():
+    adapter = ClaudeAdapter(binary="claude")
+
+    with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("claude", 3)):
+        with pytest.raises(WorkerTimeout, match="Claude timed out after 3s"):
+            adapter.run("task", cwd="/tmp/r", mode="edit", timeout=3)
+
+
+def test_claude_invocation_error_raises_worker_invocation_error():
+    adapter = ClaudeAdapter(binary="claude")
+
+    with patch("subprocess.run", side_effect=OSError("missing binary")):
+        with pytest.raises(WorkerInvocationError, match="Failed to invoke Claude"):
+            adapter.run("task", cwd="/tmp/r", mode="edit")
 
 
 # =============================================================================

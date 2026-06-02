@@ -25,7 +25,7 @@ def run(
 ) -> CoderResult
 ```
 
-Two concrete adapters are shipped:
+Three concrete adapters are shipped:
 
 #### CodexAdapter (codex-cli 0.132.0)
 
@@ -39,7 +39,7 @@ Two concrete adapters are shipped:
 
 1. **Sandboxing / Safety**
    - `mode=edit`: passes `--always-approve`
-   - `mode=inspect`: **never** passes `--always-approve`. Instead, the adapter creates a disposable copy (or git worktree) of the target repository under `/tmp/grok-inspect-*`, runs against the copy, and deletes it afterward.
+   - `mode=inspect`: **never** passes `--always-approve`. Instead, the adapter creates a disposable filesystem copy of the target repository under `/tmp/grok-inspect-*`, runs against the copy, and deletes it afterward.
 
 2. **Structured Output**
    - Codex supports `--output-schema`.
@@ -49,6 +49,14 @@ Two concrete adapters are shipped:
      - Parses the result with Pydantic.
      - Performs **one** repair retry with a corrective prompt if validation fails.
 
+#### ClaudeAdapter (Claude Code CLI)
+
+- Uses `claude -p` with `--output-format json` for non-interactive execution
+- Uses a disposable filesystem copy plus `--permission-mode dontAsk` for `mode=inspect`
+- Uses the real target repository plus `--permission-mode bypassPermissions` for `mode=edit`
+- Uses native `--json-schema` when a JSON schema is provided
+- Passes model names through unchanged with `--model`
+
 ## Flag Reality vs Original Spec
 
 The original design document assumed certain CLI flags that had changed by the time of implementation (June 2026):
@@ -57,7 +65,8 @@ The original design document assumed certain CLI flags that had changed by the t
 |--------|----------------------------------|-------------------------------------------------------|------------------|
 | Codex  | `--ask-for-approval never`       | `--dangerously-bypass-approvals-and-sandbox`          | Used for edit mode |
 | Grok   | No `--sandbox` flag              | Has `--sandbox <profile>` and `--worktree`            | Still uses disposable copy for inspect (safer, portable) |
-| Both   | —                                | —                                                     | All edit calls are non-interactive; all inspect calls are read-only by construction |
+| Claude | Native SDK-style adapter         | Headless CLI via `claude -p` with permission modes    | Uses disposable copy + `dontAsk` for inspect; real repo + `bypassPermissions` for edit |
+| All    | —                                | —                                                     | All edit calls are non-interactive; all inspect calls are read-only by construction |
 
 These differences are explicitly normalized inside the adapters so the rest of the system (Flow, config, skills) does not need to care.
 
@@ -86,7 +95,7 @@ This project deliberately uses **subprocess + CLI automation**, not native SDKs.
 
 - We must maintain knowledge of each CLI's flags, approval models, and output formats.
 - Sandbox/approval behavior is the responsibility of the adapter author.
-- Structured output is best-effort when the tool does not provide a schema mechanism (hence the Grok repair retry).
+- Structured output is native for Codex and Claude when schemas are provided, and best-effort for tools without schema support (hence the Grok repair retry).
 - Auth is left entirely to the user's environment (`.env`, keychain, etc.).
 
 These trade-offs were accepted in exchange for zero dependency on any vendor's Python SDK and maximum flexibility to swap in future headless agents.
@@ -96,12 +105,12 @@ These trade-offs were accepted in exchange for zero dependency on any vendor's P
 See `AGENTS.md` → "Future Work & Opportunities" for a more detailed and prioritized view.
 
 High-level directions:
-- Add more adapters (e.g. Claude Code headless, Gemini CLI, etc.)
+- Add more adapters (e.g. Gemini CLI, etc.)
 - Richer task decomposition and parallel execution inside `do_work`
-- Better structured output extraction (JSON repair loops, schema enforcement tools)
+- Better structured output and review-loop semantics (JSON repair loops, schema enforcement tools, consistent validation behavior)
 - Expand CrewAI `Crew` usage beyond the optional Review Crew into planning or implementation stages
 - Extend HITL beyond v1 with instruction injection, resume-from-abort, CLI/runtime overrides, additional gates, or a persisted approval audit log
 
 The two highest-leverage near-term moves currently appear to be:
-1. Implementing a Claude Code adapter
-2. Strengthening structured output and review-loop semantics
+1. Strengthening structured output and review-loop semantics
+2. Exploring Gemini CLI or parallel task execution inside `do_work`

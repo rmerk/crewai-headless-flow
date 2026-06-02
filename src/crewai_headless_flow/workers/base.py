@@ -2,7 +2,7 @@
 HeadlessCoder interface + result types.
 
 This is the single abstraction that lets the Flow (and tests) treat
-Codex and Grok identically while the adapters handle all CLI differences.
+Codex, Grok, and Claude identically while the adapters handle all CLI differences.
 """
 
 from __future__ import annotations
@@ -73,7 +73,7 @@ class HeadlessCoder(Protocol):
             cwd: Target repository root (will be made absolute).
             mode: "edit" = may mutate files (full approvals/sandbox-write).
                   "inspect" = read-only guarantee (sandbox read-only or
-                  disposable worktree for workers without native sandbox).
+                  disposable copy for workers without native sandbox).
             schema: Optional JSON Schema dict. When provided, the adapter
                     should try to enforce this shape on the final output.
             model: Optional model override for the worker.

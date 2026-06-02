@@ -4,8 +4,8 @@ GrokAdapter — maps the HeadlessCoder protocol to the `grok` CLI (xAI).
 Key normalizations implemented here (as required by the design):
 - edit mode   → passes --always-approve (full non-interactive mutation)
 - inspect mode → NEVER passes --always-approve.
-                 Instead, we run against a **disposable git worktree** (or
-                 clean filesystem copy) so an auto-approving worker cannot
+                 Instead, we run against a disposable filesystem copy so an
+                 auto-approving worker cannot
                  mutate the caller's original tree.
 - Structured output: We cannot use --output-schema. We request exact JSON
   in the prompt and validate with Pydantic. One repair retry on failure.
@@ -53,7 +53,7 @@ class GrokAdapter:
 
         # === THE KEY NORMALIZATION FOR GROK (no native read-only sandbox in all contexts) ===
         if mode == "inspect":
-            # Run against a throwaway copy/worktree so we cannot mutate the real tree.
+            # Run against a throwaway copy so we cannot mutate the real tree.
             workdir = self._create_disposable_copy(original_workdir)
             auto_approve = False
         else:
@@ -168,8 +168,17 @@ class GrokAdapter:
         """
         tmp_root = Path(tempfile.mkdtemp(prefix="grok-inspect-"))
         dst = tmp_root / src.name
-        shutil.copytree(src, dst, symlinks=True, ignore_dangling_symlinks=True)
+        shutil.copytree(
+            src,
+            dst,
+            symlinks=False,
+            ignore=self._ignore_symlinks,
+            ignore_dangling_symlinks=True,
+        )
         return dst
+
+    def _ignore_symlinks(self, directory: str, names: list[str]) -> list[str]:
+        return [name for name in names if (Path(directory) / name).is_symlink()]
 
     def _cleanup_disposable(self, path: Path) -> None:
         if path.exists() and "grok-inspect-" in str(path.parent):
