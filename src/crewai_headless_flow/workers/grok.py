@@ -29,6 +29,7 @@ from .base import (
     WorkerTimeout,
     sanitize_cwd,
 )
+from .structured_output import build_repair_prompt, extract_validated_json
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -93,16 +94,11 @@ class GrokAdapter:
             exit_code = proc.returncode
 
             # Attempt structured parse + one repair retry for Grok
-            parsed_summary = self._try_parse_structured(stdout, schema)
+            parsed_summary = extract_validated_json(stdout, schema)
 
             if schema and not parsed_summary and exit_code == 0:
                 # One repair retry
-                repair_task = (
-                    f"The previous response did not match the required JSON schema.\n"
-                    f"Original task:\n{task}\n\n"
-                    f"Required schema:\n{json.dumps(schema, indent=2)}\n\n"
-                    f"Return ONLY valid JSON matching the schema."
-                )
+                repair_task = build_repair_prompt(task, schema, stdout)
                 repair_cmd = self._build_command(
                     repair_task, workdir, auto_approve, model
                 )
@@ -117,7 +113,7 @@ class GrokAdapter:
                     stdout = repair_proc.stdout or stdout
                     stderr = repair_proc.stderr or stderr
                     exit_code = repair_proc.returncode
-                    parsed_summary = self._try_parse_structured(stdout, schema)
+                    parsed_summary = extract_validated_json(stdout, schema)
                 except Exception:
                     pass
 
@@ -187,28 +183,6 @@ class GrokAdapter:
                 path.parent.rmdir()
             except OSError:
                 pass
-
-    def _try_parse_structured(
-        self, stdout: str, schema: Optional[dict]
-    ) -> Optional[str]:
-        """Best-effort: find the last JSON object in stdout and validate if schema given."""
-        if not schema:
-            return None
-        # Look for the last plausible JSON object
-        candidates = []
-        for line in reversed(stdout.splitlines()):
-            line = line.strip()
-            if line.startswith("{") and line.endswith("}"):
-                candidates.append(line)
-        for candidate in candidates:
-            try:
-                data = json.loads(candidate)
-                # Very light validation — caller usually supplies a Pydantic model later
-                if isinstance(data, dict):
-                    return json.dumps(data, indent=2)
-            except Exception:
-                continue
-        return None
 
     def _extract_text_summary(self, stdout: str, stderr: str) -> str:
         lines = [

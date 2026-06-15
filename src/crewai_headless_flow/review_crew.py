@@ -7,30 +7,18 @@ sub-workflow used when ``stages.review.crew.enabled`` is true.
 from __future__ import annotations
 
 import json
-from typing import Any, Literal
+from typing import Any
 
 from crewai import Agent, Crew, LLM, Process, Task
 from crewai.tools import BaseTool
-from pydantic import BaseModel, Field, ValidationError, model_validator
+from pydantic import BaseModel, Field
 
+from .review_contract import ReviewDecision, normalize_review_output
 from .tools.coder_tool import HeadlessCoderTool
 
 
 PARSE_FAILURE_ISSUE = "Review Crew output could not be parsed"
-
-
-class ReviewCrewDecision(BaseModel):
-    """Normalized decision consumed by the Flow router."""
-
-    status: Literal["pass", "revise"]
-    issues: list[str] = Field(default_factory=list)
-    summary: str
-
-    @model_validator(mode="after")
-    def fail_closed_when_issues_remain(self) -> "ReviewCrewDecision":
-        if self.status == "pass" and self.issues:
-            self.status = "revise"
-        return self
+ReviewCrewDecision = ReviewDecision
 
 
 class HeadlessInspectInput(BaseModel):
@@ -65,11 +53,7 @@ class HeadlessInspectTool(BaseTool):
 
 
 def _fail_closed(issue: str = PARSE_FAILURE_ISSUE) -> ReviewCrewDecision:
-    return ReviewCrewDecision(
-        status="revise",
-        issues=[issue],
-        summary=issue,
-    )
+    return ReviewCrewDecision(status="revise", issues=[issue], summary=issue)
 
 
 def _load_json_object(raw: str) -> dict[str, Any] | None:
@@ -86,41 +70,10 @@ def _load_json_object(raw: str) -> dict[str, Any] | None:
 
 def normalize_review_crew_output(output: Any) -> ReviewCrewDecision:
     """Convert CrewAI's output variants into the Flow's review decision."""
-
-    if isinstance(output, ReviewCrewDecision):
-        return output
-
-    candidates: list[Any] = []
-    for attr in ("pydantic", "json_dict"):
-        value = getattr(output, attr, None)
-        if value is not None:
-            candidates.append(value)
-
-    if isinstance(output, dict):
-        candidates.append(output)
-    elif isinstance(output, str):
-        candidates.append(output)
-
-    raw = getattr(output, "raw", None)
-    if isinstance(raw, str):
-        candidates.append(raw)
-
-    for candidate in candidates:
-        try:
-            if isinstance(candidate, ReviewCrewDecision):
-                return candidate
-            if isinstance(candidate, BaseModel):
-                candidate = candidate.model_dump()
-            if isinstance(candidate, dict):
-                return ReviewCrewDecision.model_validate(candidate)
-            if isinstance(candidate, str):
-                loaded = _load_json_object(candidate)
-                if loaded is not None:
-                    return ReviewCrewDecision.model_validate(loaded)
-        except (TypeError, ValidationError, ValueError):
-            continue
-
-    return _fail_closed()
+    return normalize_review_output(
+        output,
+        parse_failure_issue=PARSE_FAILURE_ISSUE,
+    )
 
 
 def _crew_llm(crew_config: dict[str, Any]) -> LLM:

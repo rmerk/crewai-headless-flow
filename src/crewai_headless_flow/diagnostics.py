@@ -10,22 +10,35 @@ from typing import Any, Literal
 
 import yaml
 
-from .config import load_config
+from .config import (
+    FlowConfig,
+    classify_stage_extra,
+    crew_llm_requires_ollama,
+    load_config,
+)
+from .runtime_overrides import load_runtime_config
 
 
 Status = Literal["pass", "warn", "fail"]
 REQUIRED_STAGES = ("plan", "do_work", "review", "finalize")
-SUPPORTED_WORKERS = {"codex", "grok", "claude"}
-WORKER_BINARIES = {"codex": "codex", "grok": "grok", "claude": "claude"}
+SUPPORTED_WORKERS = {"codex", "grok", "claude", "gemini"}
+WORKER_BINARIES = {
+    "codex": "codex",
+    "grok": "grok",
+    "claude": "claude",
+    "gemini": "gemini",
+}
 WORKER_HELP_COMMANDS = {
     "codex": ("codex", "exec", "--help"),
     "grok": ("grok", "--help"),
     "claude": ("claude", "--help"),
+    "gemini": ("gemini", "--help"),
 }
 WORKER_REQUIRED_FLAGS = {
     "codex": ("--sandbox", "--output-schema"),
     "grok": ("--always-approve", "--output-format"),
     "claude": ("--permission-mode", "--json-schema"),
+    "gemini": ("--prompt", "--approval-mode", "--output-format"),
 }
 TOOLING_FILES = (
     "pyproject.toml",
@@ -70,6 +83,7 @@ class DiagnosticReport:
     target_repo: str | None = None
     git: dict[str, Any] = field(default_factory=dict)
     tooling: dict[str, Any] = field(default_factory=dict)
+    resolved_runtime: dict[str, Any] = field(default_factory=dict)
 
     def add_check(
         self,
@@ -97,6 +111,8 @@ class DiagnosticReport:
             self.git = other.git
         if other.tooling:
             self.tooling = other.tooling
+        if other.resolved_runtime:
+            self.resolved_runtime = other.resolved_runtime
         self.status = _aggregate_status(self.status, other.status)
 
     def to_dict(self) -> dict[str, Any]:
@@ -114,6 +130,8 @@ class DiagnosticReport:
             data["git"] = _to_primitive(self.git)
         if self.tooling:
             data["tooling"] = _to_primitive(self.tooling)
+        if self.resolved_runtime:
+            data["resolved_runtime"] = _to_primitive(self.resolved_runtime)
         return data
 
 
@@ -126,6 +144,16 @@ def run_doctor(
     config_dir: str | Path | None = None,
     target_repo: str | Path | None = None,
     skills_root: str | Path | None = None,
+    skill_overrides: list[str] | None = None,
+    default_worker_overrides: list[str] | None = None,
+    default_model_overrides: list[str] | None = None,
+    default_timeout_overrides: list[str] | None = None,
+    worker_overrides: list[str] | None = None,
+    model_overrides: list[str] | None = None,
+    timeout_overrides: list[str] | None = None,
+    stage_extra_overrides: list[str] | None = None,
+    human_feedback_overrides: list[str] | None = None,
+    human_feedback_action_overrides: list[str] | None = None,
 ) -> DiagnosticReport:
     config_path = normalize_path(config_dir or _default_config_dir())
     report = DiagnosticReport(config_dir=str(config_path))
@@ -137,6 +165,20 @@ def run_doctor(
 
     required_workers: set[str] = set()
     if skills_raw is not None and worker_raw is not None:
+        runtime_config = _resolve_runtime_config_for_doctor(
+            report=report,
+            config_path=config_path,
+            skill_overrides=skill_overrides,
+            default_worker_overrides=default_worker_overrides,
+            default_model_overrides=default_model_overrides,
+            default_timeout_overrides=default_timeout_overrides,
+            worker_overrides=worker_overrides,
+            model_overrides=model_overrides,
+            timeout_overrides=timeout_overrides,
+            stage_extra_overrides=stage_extra_overrides,
+            human_feedback_overrides=human_feedback_overrides,
+            human_feedback_action_overrides=human_feedback_action_overrides,
+        )
         required_workers = _validate_config_files(
             report=report,
             config_path=config_path,
@@ -145,12 +187,11 @@ def run_doctor(
             skills_root=normalize_path(skills_root)
             if skills_root is not None
             else _default_skills_root(config_path),
+            runtime_config=runtime_config,
         )
 
     for worker in sorted(required_workers):
         _check_worker_cli(report, worker)
-
-    _check_ollama(report)
 
     if target_repo is not None:
         report.merge(run_preflight(target_repo))
@@ -202,6 +243,7 @@ def _validate_config_files(
     skills_raw: dict[str, Any],
     worker_raw: dict[str, Any],
     skills_root: Path,
+    runtime_config: FlowConfig | None = None,
 ) -> set[str]:
     stages = skills_raw.get("stages")
     if not isinstance(stages, dict):
@@ -226,7 +268,9 @@ def _validate_config_files(
             "skills.yaml contains all required stages",
         )
 
-    for stage, skill in stages.items():
+    resolved_skills = runtime_config.skills if runtime_config is not None else stages
+    for stage in stages:
+        skill = resolved_skills.get(stage, stages[stage])
         skill_path = skills_root / str(skill) / "SKILL.md"
         if not skill_path.exists():
             report.add_check(
@@ -249,29 +293,32 @@ def _validate_config_files(
         )
         defaults = {}
 
+    cfg = runtime_config
+    if cfg is None:
+        try:
+            cfg = load_config(config_path)
+        except Exception as exc:
+            report.add_check("config.load", "fail", f"load_config failed: {exc}")
+
     required_workers: set[str] = set()
-    default_worker = defaults.get("worker")
-    if default_worker is not None and default_worker not in SUPPORTED_WORKERS:
-        report.add_check(
-            "config.workers.default",
-            "fail",
-            f"Unsupported worker in defaults: {default_worker}",
-        )
     for stage in REQUIRED_STAGES:
-        stage_cfg = workers.get(stage, {}) or {}
-        if not isinstance(stage_cfg, dict):
+        stage_cfg = workers.get(stage)
+        if stage_cfg is not None and not isinstance(stage_cfg, dict):
             report.add_check(
                 f"config.workers.{stage}",
                 "fail",
                 f"worker.yaml stage {stage} must be a mapping",
             )
             continue
-        worker = stage_cfg.get("worker", default_worker)
-        if worker is None:
+        if cfg is None:
+            continue
+        try:
+            worker = cfg.get_stage(stage).worker
+        except Exception as exc:
             report.add_check(
                 f"config.workers.{stage}",
                 "fail",
-                f"No worker configured for stage {stage} and no default worker is set",
+                f"Could not resolve worker for stage {stage}: {exc}",
             )
             continue
         if worker not in SUPPORTED_WORKERS:
@@ -283,31 +330,167 @@ def _validate_config_files(
             continue
         required_workers.add(str(worker))
 
-    try:
-        cfg = load_config(config_path)
-    except Exception as exc:
-        report.add_check("config.load", "fail", f"load_config failed: {exc}")
-    else:
+    if cfg is not None:
+        report.resolved_runtime = _build_resolved_runtime(cfg)
         report.add_check(
             "config.load",
             "pass",
-            "Configuration loads through load_config",
-            {"stages": cfg.stages},
+            (
+                "Configuration loads through load_config and runtime overrides"
+                if runtime_config is not None
+                else "Configuration loads through load_config"
+            ),
+            {
+                "stages": cfg.stages,
+                "overrides_applied": runtime_config is not None,
+            },
         )
-        crew_cfg = (
-            cfg.get_stage("review").extra.get("crew", {})
-            if "review" in cfg.stages
-            else {}
-        )
-        if isinstance(crew_cfg, dict) and crew_cfg.get("enabled", False):
+        enabled_crew_stages = [
+            stage for stage in cfg.stages if _crew_enabled(cfg, stage)
+        ]
+        ollama_required = False
+        if "plan" in enabled_crew_stages:
+            plan_crew_cfg = cfg.get_stage("plan").extra.get("crew", {})
+            plan_requires_ollama = crew_llm_requires_ollama(plan_crew_cfg)
+            report.add_check(
+                "config.plan_crew",
+                "warn",
+                (
+                    "Planning Crew is enabled; local Ollama readiness is required by "
+                    "the configured LLM"
+                    if plan_requires_ollama
+                    else "Planning Crew is enabled; local Ollama check is skipped "
+                    "because the configured LLM appears external/custom"
+                ),
+                {
+                    "llm": plan_crew_cfg.get("llm", {}),
+                    "ollama_required": plan_requires_ollama,
+                },
+            )
+            ollama_required = ollama_required or plan_requires_ollama
+        if "do_work" in enabled_crew_stages:
+            do_work_crew_cfg = cfg.get_stage("do_work").extra.get("crew", {})
+            do_work_requires_ollama = crew_llm_requires_ollama(do_work_crew_cfg)
+            report.add_check(
+                "config.do_work_crew",
+                "warn",
+                (
+                    "Implementation Crew is enabled; local Ollama readiness is "
+                    "required by the configured LLM"
+                    if do_work_requires_ollama
+                    else "Implementation Crew is enabled; local Ollama check is "
+                    "skipped because the configured LLM appears external/custom"
+                ),
+                {
+                    "llm": do_work_crew_cfg.get("llm", {}),
+                    "ollama_required": do_work_requires_ollama,
+                },
+            )
+            ollama_required = ollama_required or do_work_requires_ollama
+        if "review" in enabled_crew_stages:
+            review_crew_cfg = cfg.get_stage("review").extra.get("crew", {})
+            review_requires_ollama = crew_llm_requires_ollama(review_crew_cfg)
             report.add_check(
                 "config.review_crew",
                 "warn",
-                "Review Crew is enabled; its LLM readiness depends on configured provider",
-                {"llm": crew_cfg.get("llm", {})},
+                (
+                    "Review Crew is enabled; local Ollama readiness is required by "
+                    "the configured LLM"
+                    if review_requires_ollama
+                    else "Review Crew is enabled; local Ollama check is skipped "
+                    "because the configured LLM appears external/custom"
+                ),
+                {
+                    "llm": review_crew_cfg.get("llm", {}),
+                    "ollama_required": review_requires_ollama,
+                },
             )
+            ollama_required = ollama_required or review_requires_ollama
+
+        if ollama_required:
+            _check_ollama(report)
 
     return required_workers
+
+
+def _build_resolved_runtime(cfg: FlowConfig) -> dict[str, Any]:
+    stages: list[dict[str, Any]] = []
+    for stage in cfg.stages:
+        stage_cfg = cfg.get_stage(stage)
+        runtime_knobs, enforced_declarations, notes = classify_stage_extra(
+            stage, stage_cfg.extra
+        )
+        stages.append(
+            {
+                "stage": stage,
+                "skill": stage_cfg.skill,
+                "worker": stage_cfg.worker,
+                "model": stage_cfg.model,
+                "timeout": stage_cfg.timeout,
+                "extra": dict(stage_cfg.extra),
+                "runtime_knobs": runtime_knobs,
+                "enforced_declarations": enforced_declarations,
+                "notes": notes,
+                "can_mutate": stage in {"do_work", "finalize"},
+            }
+        )
+    return {
+        "stages": stages,
+        "human_feedback": dict(cfg.human_feedback),
+    }
+
+
+def _resolve_runtime_config_for_doctor(
+    *,
+    report: DiagnosticReport,
+    config_path: Path,
+    skill_overrides: list[str] | None,
+    default_worker_overrides: list[str] | None,
+    default_model_overrides: list[str] | None,
+    default_timeout_overrides: list[str] | None,
+    worker_overrides: list[str] | None,
+    model_overrides: list[str] | None,
+    timeout_overrides: list[str] | None,
+    stage_extra_overrides: list[str] | None,
+    human_feedback_overrides: list[str] | None,
+    human_feedback_action_overrides: list[str] | None,
+) -> FlowConfig | None:
+    override_sets = (
+        skill_overrides,
+        default_worker_overrides,
+        default_model_overrides,
+        default_timeout_overrides,
+        worker_overrides,
+        model_overrides,
+        timeout_overrides,
+        stage_extra_overrides,
+        human_feedback_overrides,
+        human_feedback_action_overrides,
+    )
+    if not any(override_sets):
+        return None
+
+    try:
+        return load_runtime_config(
+            config_dir=config_path,
+            skill_overrides=skill_overrides,
+            default_worker_overrides=default_worker_overrides,
+            default_model_overrides=default_model_overrides,
+            default_timeout_overrides=default_timeout_overrides,
+            worker_overrides=worker_overrides,
+            model_overrides=model_overrides,
+            timeout_overrides=timeout_overrides,
+            stage_extra_overrides=stage_extra_overrides,
+            human_feedback_overrides=human_feedback_overrides,
+            human_feedback_action_overrides=human_feedback_action_overrides,
+        )
+    except Exception as exc:
+        report.add_check(
+            "config.runtime_overrides",
+            "fail",
+            f"Runtime override resolution failed: {exc}",
+        )
+        return None
 
 
 def _read_yaml_mapping(
@@ -390,6 +573,13 @@ def _check_ollama(report: DiagnosticReport) -> None:
     )
 
 
+def _crew_enabled(cfg, stage: str) -> bool:
+    if stage not in cfg.stages:
+        return False
+    crew_cfg = cfg.get_stage(stage).extra.get("crew", {})
+    return isinstance(crew_cfg, dict) and bool(crew_cfg.get("enabled", False))
+
+
 def _check_git(report: DiagnosticReport, target: Path) -> None:
     if shutil.which("git") is None:
         report.git = {"is_git_repo": False, "git_available": False}
@@ -427,6 +617,7 @@ def _check_git(report: DiagnosticReport, target: Path) -> None:
         "is_git_repo": True,
         "git_available": True,
         "status_known": True,
+        "branch": branch.stdout.strip() or None,
         "is_dirty": bool(lines),
         "has_conflicts": has_conflicts,
         "detached_head": detached,

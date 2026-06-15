@@ -27,6 +27,7 @@ from .base import (
     WorkerTimeout,
     sanitize_cwd,
 )
+from .structured_output import build_repair_prompt, extract_validated_json
 
 
 class CodexAdapter:
@@ -86,6 +87,25 @@ class CodexAdapter:
                 timeout=timeout,
                 cwd=workdir,
             )
+            exit_code = proc.returncode
+            stdout = proc.stdout or ""
+            stderr = proc.stderr or ""
+
+            parsed_summary = extract_validated_json(stdout, schema)
+            if schema and not parsed_summary and exit_code == 0:
+                repair_cmd = list(cmd)
+                repair_cmd[-1] = build_repair_prompt(task, schema, stdout)
+                repair_proc = subprocess.run(
+                    repair_cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=min(120, timeout),
+                    cwd=workdir,
+                )
+                exit_code = repair_proc.returncode
+                stdout = repair_proc.stdout or stdout
+                stderr = repair_proc.stderr or stderr
+                parsed_summary = extract_validated_json(stdout, schema)
         except subprocess.TimeoutExpired as e:
             raise WorkerTimeout(f"Codex timed out after {timeout}s") from e
         except Exception as e:
@@ -94,12 +114,7 @@ class CodexAdapter:
             if schema_path and schema_path.exists():
                 schema_path.unlink(missing_ok=True)
 
-        exit_code = proc.returncode
-        stdout = proc.stdout or ""
-        stderr = proc.stderr or ""
-
-        # Best-effort extraction of final message
-        summary = self._extract_summary(stdout, stderr)
+        summary = parsed_summary or self._extract_summary(stdout, stderr)
 
         changed_files: list[str] = []
         # Codex JSONL events can contain file writes — best effort parse

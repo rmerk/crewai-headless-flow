@@ -11,10 +11,15 @@ They prove:
 
 from __future__ import annotations
 
+from pathlib import Path
 
 import pytest
 
-from crewai_headless_flow.skills.loader import SkillLoader, VENDOR_ROOT
+from crewai_headless_flow.skills.loader import (
+    SkillLoader,
+    VENDOR_ROOT,
+    _discover_vendor_root,
+)
 
 
 pytestmark = pytest.mark.offline
@@ -24,6 +29,25 @@ def test_vendor_directory_exists():
     """Basic smoke that the vendored skills are present."""
     assert VENDOR_ROOT.exists(), f"Missing vendor skills dir: {VENDOR_ROOT}"
     assert (VENDOR_ROOT / "planning-and-task-breakdown" / "SKILL.md").exists()
+
+
+def test_vendor_root_can_fall_back_to_bundled_assets(tmp_path: Path):
+    bundled = tmp_path / "bundled-vendor"
+    skill_dir = bundled / "demo-skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: demo-skill\ndescription: bundled\n---\n\n## Process\nDemo"
+    )
+
+    vendor_root = _discover_vendor_root(
+        source_vendor_root=tmp_path / "missing-source-vendor",
+        cwd=tmp_path / "workspace",
+        bundled_vendor_root=bundled,
+    )
+    loader = SkillLoader(vendor_root=vendor_root)
+
+    assert vendor_root == bundled
+    assert loader.get_skill("demo-skill").description == "bundled"
 
 
 def test_discovers_skills_from_filesystem():

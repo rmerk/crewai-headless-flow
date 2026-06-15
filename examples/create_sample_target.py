@@ -2,7 +2,7 @@
 Helper to create a minimal sample target repo for live M5 demos.
 
 Usage:
-    python examples/create_sample_target.py /tmp/my-demo-repo
+    uv run python examples/create_sample_target.py /tmp/my-demo-repo
 """
 
 import shutil

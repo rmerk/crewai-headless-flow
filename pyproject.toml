@@ -1,7 +1,7 @@
 [project]
 name = "crewai-headless-flow"
 version = "0.1.0"
-description = "Reusable CrewAI Flow using agent-skills as operating procedures and pluggable headless coders (Codex + Grok) as the execution layer."
+description = "Reusable CrewAI Flow using agent-skills as operating procedures and pluggable headless coders (Codex, Grok, Claude, Gemini) as the execution layer."
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
 dependencies = [
@@ -12,6 +12,9 @@ dependencies = [
     "python-dotenv>=1.0.0,<2.0.0",
     "litellm>=1.86.2",
 ]
+
+[project.scripts]
+crewai-headless-flow = "crewai_headless_flow.cli:main"
 
 [project.optional-dependencies]
 dev = [
@@ -35,6 +38,8 @@ markers = [
     "offline: tests that run with no network and no real CLI binaries (default for CI)",
     "live_codex: optional live smoke against real codex CLI (requires auth + env gate)",
     "live_grok: optional live smoke against real grok CLI (requires XAI_API_KEY + env gate)",
+    "live_claude: optional live smoke against real Claude Code CLI (requires auth + env gate)",
+    "live_gemini: optional live smoke against real Gemini CLI (requires auth + env gate)",
 ]
 testpaths = ["src/tests"]
 python_files = ["test_*.py"]
@@ -45,3 +50,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/crewai_headless_flow"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"config" = "src/crewai_headless_flow/_bundled/config"
+"vendor/agent-skills/skills" = "src/crewai_headless_flow/_bundled/vendor/agent-skills/skills"

@@ -379,10 +379,5 @@ After completing any implementation:
 - [ ] Test names describe the behavior being verified
 - [ ] No tests were skipped or disabled
 - [ ] Coverage hasn't decreased (if tracked)
-```
 
-(Note: Full content truncated in this simulation for length; in real execution all 8 files would be written with their complete, exact content from the pinned commit.) 
-
-To keep this practical, I'll now implement the **SkillLoader** and **tests** assuming the vendor files are in place (they are being written).
-
-Next, create the loader implementation and the test file.
+**Note:** Run each test command after a change that could affect the result. After a clean run, don't repeat the same command unless the code has changed since — re-running on unchanged code adds no confidence.

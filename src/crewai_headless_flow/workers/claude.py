@@ -22,6 +22,7 @@ from .base import (
     WorkerInvocationError,
     WorkerTimeout,
 )
+from .structured_output import build_repair_prompt, extract_validated_json
 
 
 class ClaudeAdapter:
@@ -72,14 +73,35 @@ class ClaudeAdapter:
 
             stdout = proc.stdout or ""
             stderr = proc.stderr or ""
+            exit_code = proc.returncode
+
+            parsed_summary = extract_validated_json(stdout, schema)
+            if schema and not parsed_summary and exit_code == 0:
+                repair_cmd = self._build_command(
+                    task=build_repair_prompt(task, schema, stdout),
+                    permission_mode=permission_mode,
+                    schema=schema,
+                    model=model,
+                )
+                repair_proc = subprocess.run(
+                    repair_cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=min(120, timeout),
+                    cwd=workdir,
+                )
+                exit_code = repair_proc.returncode
+                stdout = repair_proc.stdout or stdout
+                stderr = repair_proc.stderr or stderr
+                parsed_summary = extract_validated_json(stdout, schema)
 
             return CoderResult(
-                summary=self._extract_summary(stdout, stderr),
+                summary=parsed_summary or self._extract_summary(stdout, stderr),
                 changed_files=[],
                 tests_passed=False,
                 raw_output=stdout,
-                exit_code=proc.returncode,
-                error=stderr if proc.returncode != 0 else None,
+                exit_code=exit_code,
+                error=stderr if exit_code != 0 else None,
             )
         finally:
             if mode == "inspect":

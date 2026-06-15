@@ -25,7 +25,7 @@ def run(
 ) -> CoderResult
 ```
 
-Three concrete adapters are shipped:
+Four concrete adapters are shipped:
 
 #### CodexAdapter (codex-cli 0.132.0)
 
@@ -46,8 +46,17 @@ Three concrete adapters are shipped:
    - Grok does not. The adapter therefore:
      - Injects the exact required JSON schema into the prompt ("Respond with **only** valid JSON matching this schema").
      - Requests `--output-format json`.
-     - Parses the result with Pydantic.
      - Performs **one** repair retry with a corrective prompt if validation fails.
+   - All workers now share one lightweight post-run validation path:
+     - extract candidate JSON objects from wrapped CLI output
+     - validate against the supplied schema
+     - canonicalize valid JSON for downstream normalization
+     - perform one repair retry when the first response does not validate
+
+The review stage now shares one contract across both execution paths:
+- direct Flow review passes the same `status/issues/summary` schema into the worker
+- Review Crew coordinator returns the same normalized decision shape
+- parsing fails closed to `revise` so the revise loop stays conservative
 
 #### ClaudeAdapter (Claude Code CLI)
 
@@ -55,6 +64,14 @@ Three concrete adapters are shipped:
 - Uses a disposable filesystem copy plus `--permission-mode dontAsk` for `mode=inspect`
 - Uses the real target repository plus `--permission-mode bypassPermissions` for `mode=edit`
 - Uses native `--json-schema` when a JSON schema is provided
+- Passes model names through unchanged with `--model`
+
+#### GeminiAdapter (Gemini CLI)
+
+- Uses `gemini --prompt ... --output-format json` for non-interactive execution
+- Uses a disposable filesystem copy plus `--approval-mode plan` for `mode=inspect`
+- Uses the real target repository plus `--approval-mode yolo` for `mode=edit`
+- Does not have native JSON schema flags, so it uses the shared prompt-guided repair loop
 - Passes model names through unchanged with `--model`
 
 ## Flag Reality vs Original Spec
@@ -66,16 +83,104 @@ The original design document assumed certain CLI flags that had changed by the t
 | Codex  | `--ask-for-approval never`       | `--dangerously-bypass-approvals-and-sandbox`          | Used for edit mode |
 | Grok   | No `--sandbox` flag              | Has `--sandbox <profile>` and `--worktree`            | Still uses disposable copy for inspect (safer, portable) |
 | Claude | Native SDK-style adapter         | Headless CLI via `claude -p` with permission modes    | Uses disposable copy + `dontAsk` for inspect; real repo + `bypassPermissions` for edit |
+| Gemini | Headless CLI with approval modes | `gemini --prompt` with JSON output and approval modes | Uses disposable copy + `plan` for inspect; real repo + `yolo` for edit |
 | All    | —                                | —                                                     | All edit calls are non-interactive; all inspect calls are read-only by construction |
 
 These differences are explicitly normalized inside the adapters so the rest of the system (Flow, config, skills) does not need to care.
+
+## Structured Planning Contract
+
+The planning stage now emits a typed `PlanOutput` contract:
+- `spec`: concise planning summary used later by finalize
+- `tasks`: ordered task objects with acceptance criteria, verification, dependencies, likely files, and estimated scope
+
+By default, the `plan` stage now runs through the configured stage worker in read-only `inspect` mode with the `PlanOutput` schema, so plan-stage worker/model settings in `worker.yaml` are first-class runtime behavior rather than metadata.
+
+The Flow stores the validated plan as `TaskItem`s in persisted state, then renders the structured plan back into markdown for `do_work`. This keeps current prompts readable while also making the task graph available for conservative parallel execution and task-aware revision targeting.
+
+The plan contract also fails closed when the returned "structured" plan is missing a spec, missing tasks, or contains invalid task ids.
+
+## Optional Planning Crew
+
+The `plan` stage can optionally run a sequential CrewAI `Crew` before the Flow proceeds to implementation. This uses the configured plan worker only through an inspect-mode tool, so the Planning Crew can research the target repository without mutating it.
+
+The Planning Crew is disabled by default in `config/worker.yaml`. When enabled, it emits the same `PlanOutput` contract as the direct worker-backed planning path, so downstream Flow behavior stays unchanged.
+
+## Optional Implementation Crew
+
+The `do_work` stage can optionally run a CrewAI `Crew` around each planned task. This slice uses:
+- an inspect-mode tool to gather task context
+- an edit-mode tool backed by the configured `do_work` worker
+- an inspect-mode verification pass
+- a final pass/revise decision using the same `status/issues/summary` contract as review
+- a bounded retry loop so a task-level `revise` can trigger another implementation round before the Flow gives up
+- an optional task-local decomposition step that can split one planned task into a few ordered execution slices before edit-mode work begins
+
+That keeps the real mutation inside the configured worker while still moving beyond simple one-shot task execution inside `do_work`.
+
+The Implementation Crew is disabled by default in `config/worker.yaml`. When enabled, it can now participate in the same isolated-workspace parallel batch model as direct task execution: disjoint tasks can run concurrently in separate workspace copies, mergeback still fails closed on overlapping actual changes, and `max_rounds` bounds task-local self-correction before the Flow marks a task failed.
+
+## Conservative Parallel `do_work`
+
+The first parallel execution slice is intentionally narrow:
+- disabled by default in `config/worker.yaml`
+- only uses structured `state.tasks`
+- only batches tasks whose dependencies are already satisfied
+- only runs tasks together when their `files` lists are both present and disjoint
+- runs each task in an isolated workspace copy of the target repo
+- detects actual changed files from the workspace diff before mergeback
+- merges successful tasks back only when their actual changed files do not overlap
+
+If those rules do not hold, execution falls back to a smaller sequential batch instead of forcing unsafe concurrency.
+
+To push past that ceiling conservatively, parallel execution can now optionally run a read-only next-batch planner when the static selector leaves unused batch capacity. That planner:
+- uses inspect mode only
+- reuses the configured coding worker with planning-oriented prompt guidance
+- can choose a larger next batch from the ready frontier and add missing file hints
+- still falls back to the static selector on malformed output or weak plans, such as overlapping or still-missing effective file hints
+- never bypasses the actual changed-file overlap gate during mergeback
+
+After review returns `revise`, the Flow can also optionally run a read-only revision replanner before the next `do_work` round. That replanner:
+- returns a full revised structured plan, not a partial patch
+- can split, merge, reorder, or add remaining tasks
+- prefers keeping unchanged completed tasks stable when possible
+- falls back to the existing targeted-revision path on malformed output or weak plans
+- keeps the actual mutation step in normal `do_work` execution, not in the replanner
+
+Inside `do_work` itself, the Flow can also optionally run a read-only execution replanner after a task-level failure. That replanner:
+- uses the failed task, runtime error, observed changed files, and current task graph as evidence
+- replaces the remaining structured plan when recovery needs a different graph
+- preserves successful completed tasks when their definitions still match
+- continues the same `do_work` round after replanning instead of forcing an immediate stage abort
+
+## Task-Aware Revise Loop
+
+Once `do_work` is task-driven, review-loop retries need task awareness too. The Flow now:
+- asks review to optionally map issues to task IDs and likely files
+- infers task mappings heuristically from issue text and file-path mentions when the model omits explicit hints
+- stores per-task review notes and failure state
+- reopens only targeted tasks by default
+- conservatively reopens downstream done tasks when an upstream dependency must change
+
+If review cannot map findings confidently, the Flow fails safe by reopening all completed tasks.
+
+Automated review also fails closed against the task graph itself: if any structured task is still not `done`, a model-level `pass` is downgraded to `revise` and targeted back at the incomplete task IDs/files. That keeps routes like `skip-to-review` from drifting into finalize on a structurally incomplete run, while still allowing an explicit human `force-pass` override when an operator intentionally accepts the state.
+
+The bounded revise loop also fails closed at its cap: once `max_revisions` is exhausted, the Flow marks the run `failed` instead of synthesizing a passing review outcome. That keeps the terminal state aligned with what actually happened and lets CLI callers surface a non-zero result.
+
+The Flow also persists compact history entries for:
+- task completion/failure outcomes
+- review decisions and mapped targets
+- revision targeting batches
+
+That gives later stages a lightweight audit trail without depending on raw CLI transcripts.
 
 ## Why This Architecture?
 
 - **Separation of concerns**: The Flow only knows about stages and state. Skills provide methodology. Workers provide execution capability.
 - **Reusability**: Changing the "brain" (which skill) or the "hands" (which CLI) requires only YAML edits.
 - **Safety & Cost Control**: Inspect stages can never accidentally mutate the user's repository. All heavy work is opt-in and can be mocked for free offline testing.
-- **Observability**: `print_stage_mapping()` makes the current wiring completely transparent at startup.
+- **Observability**: Startup prints the resolved stage mapping, and persisted Flow state plus the execution report carry the resolved per-stage runtime configuration and resolved human-feedback configuration for later debugging and automation.
 
 ## Optional Review Crew
 
@@ -83,11 +188,35 @@ The `review` stage can optionally run a sequential CrewAI `Crew` before the Flow
 
 The Review Crew is disabled by default in `config/worker.yaml`. When enabled, it exposes only a custom inspect-mode tool backed by the configured review worker, so the read-only review invariant remains unchanged.
 
-## Human-in-the-Loop v1
+## Human-in-the-Loop
 
-Human-in-the-Loop (HITL) is an opt-in approve/abort checkpoint system configured through `config/worker.yaml`. It is disabled by default and currently supports only `before_do_work` and `before_finalize`, the two checkpoints before mutating stages.
+Human-in-the-Loop (HITL) is an opt-in checkpoint system configured through `config/worker.yaml`. It is disabled by default and supports `before_plan`, `before_do_work`, `before_review`, `after_review`, and `before_finalize`. The read-only `plan`/`review` gates default to off for backward compatibility, while the mutating `do_work`/`finalize` gates default to on once HITL itself is enabled.
 
-When enabled, the Flow prints the stage name, mutation risk, configured worker, configured skill, target repository, and default-no behavior before asking `Proceed? [y/N]`. HITL v1 does not accept human instructions or alter the next-stage prompt. Any response other than `y` or `yes`, including empty input, EOF, or Ctrl-C, marks the Flow state as `aborted_by_human` and records the aborted stage.
+When enabled, the Flow prints the stage name, mutation risk, configured worker, configured skill, target repository, and default-no behavior before asking `Proceed? [y/N]`. Any response other than an allowed action alias defaults closed: empty input, EOF, Ctrl-C, `n`, `no`, or unrecognized text marks the Flow state as `aborted_by_human` and records the aborted stage.
+
+When `capture_instructions: true`, an approved checkpoint also prompts for optional operator instructions. Those instructions are injected into that gated stage's prompt and every prompted HITL decision is persisted in Flow state plus the execution report as an audit trail. On `after_review`, approved instructions for a `revise` result are appended as extra review notes before the next implementation loop.
+
+Aborts are resumable from the CLI for any supported gate. `run --resume-state-file ...` reloads persisted state, restores any saved stage input needed by that gate, and continues from the aborted point.
+
+When `advanced_actions: true`, the gate prompt also enables small operator shortcuts that intentionally bypass one stage boundary without broadening ambient authority:
+
+- `do_work`: skip directly to `review`
+- `do_work`: rerun `plan` before edit mode with operator-supplied replanning guidance; this is only offered before any task execution has started
+- `do_work`: narrow the current structured execution round to exact task IDs (plus any unmet dependencies) before edit mode begins
+- `review` (before or after automated review): force the next revise loop through structured replanning with operator-supplied guidance
+- `review` (after automated review only): rerun the read-only review stage with operator-supplied guidance before committing to `pass` or `revise`
+- `review` (after automated review only): select exact structured task IDs to reopen for the next revise loop without changing the current task graph
+- `review` (before or after automated review): force a `revise` result with operator-supplied issue text
+- `review` (before or after automated review): force a `pass` result
+- `finalize`: complete the flow without generating final docs
+
+`action_allowlist` can further narrow or selectively enable those shortcuts per stage or gate. For example, one run can allow only `after_review -> replan` without also enabling that same shortcut at `before_review`, `do_work -> review`, or `finalize -> skip`.
+
+These stay opt-in so the default behavior remains explicit approve-or-abort only.
+
+Human-feedback behavior is also overridable per run from the CLI, so operators can enable/disable gates or instruction capture without editing `worker.yaml`.
+
+Stage worker/model/timeout defaults are also overridable per run from the CLI, and nested stage extras remain overridable as well. That makes plan-crew, do_work-crew, parallel-execution, review-crew, and similar experimental knobs adjustable without editing `worker.yaml`.
 
 ## CLI Automation Caveats
 
@@ -95,8 +224,9 @@ This project deliberately uses **subprocess + CLI automation**, not native SDKs.
 
 - We must maintain knowledge of each CLI's flags, approval models, and output formats.
 - Sandbox/approval behavior is the responsibility of the adapter author.
-- Structured output is native for Codex and Claude when schemas are provided, and best-effort for tools without schema support (hence the Grok repair retry).
+- Structured output is native for Codex and Claude when schemas are provided, but all workers still pass through the same validation/repair loop so downstream semantics stay consistent.
 - Auth is left entirely to the user's environment (`.env`, keychain, etc.).
+- Ollama is only required when an optional Planning, Implementation, or Review Crew stage is enabled.
 
 These trade-offs were accepted in exchange for zero dependency on any vendor's Python SDK and maximum flexibility to swap in future headless agents.
 
@@ -105,12 +235,12 @@ These trade-offs were accepted in exchange for zero dependency on any vendor's P
 See `AGENTS.md` → "Future Work & Opportunities" for a more detailed and prioritized view.
 
 High-level directions:
-- Add more adapters (e.g. Gemini CLI, etc.)
+- Add more adapters beyond the current four workers
 - Richer task decomposition and parallel execution inside `do_work`
 - Better structured output and review-loop semantics (JSON repair loops, schema enforcement tools, consistent validation behavior)
-- Expand CrewAI `Crew` usage beyond the optional Review Crew into planning or implementation stages
-- Extend HITL beyond v1 with instruction injection, resume-from-abort, CLI/runtime overrides, additional gates, or a persisted approval audit log
+- Expand CrewAI `Crew` usage beyond the current bounded Planning/Implementation/Review Crews into richer implementation orchestration
+- Extend HITL/runtime controls further with richer operator decisions and additional override types
 
 The two highest-leverage near-term moves currently appear to be:
-1. Strengthening structured output and review-loop semantics
-2. Exploring Gemini CLI or parallel task execution inside `do_work`
+1. Extend HITL/runtime controls further with broader runtime override coverage and richer operator decisions
+2. Expand real-world examples and operator-facing documentation now that the adapter surface is broader

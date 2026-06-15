@@ -2,7 +2,7 @@
 HeadlessCoder interface + result types.
 
 This is the single abstraction that lets the Flow (and tests) treat
-Codex, Grok, and Claude identically while the adapters handle all CLI differences.
+Codex, Grok, Claude, and Gemini identically while the adapters handle all CLI differences.
 """
 
 from __future__ import annotations

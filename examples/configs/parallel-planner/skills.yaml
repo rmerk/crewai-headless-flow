@@ -1,0 +1,5 @@
+stages:
+  plan: planning-and-task-breakdown
+  do_work: incremental-implementation
+  review: code-review-and-quality
+  finalize: documentation-and-adrs

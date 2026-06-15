@@ -19,9 +19,42 @@ from typing import Dict, List, Optional
 import yaml
 
 
-# Resolve relative to this file: src/crewai_headless_flow/skills/loader.py
-# parents[0]=skills, [1]=crewai_headless_flow, [2]=src, [3]=project root
-VENDOR_ROOT = Path(__file__).resolve().parents[3] / "vendor" / "agent-skills" / "skills"
+SOURCE_VENDOR_ROOT = (
+    Path(__file__).resolve().parents[3] / "vendor" / "agent-skills" / "skills"
+)
+BUNDLED_VENDOR_ROOT = (
+    Path(__file__).resolve().parents[1]
+    / "_bundled"
+    / "vendor"
+    / "agent-skills"
+    / "skills"
+)
+
+
+def _discover_vendor_root(
+    *,
+    source_vendor_root: Optional[Path] = None,
+    cwd: Optional[Path] = None,
+    bundled_vendor_root: Optional[Path] = None,
+) -> Path:
+    source_vendor_root = source_vendor_root or SOURCE_VENDOR_ROOT
+    cwd = cwd or Path.cwd()
+    bundled_vendor_root = bundled_vendor_root or BUNDLED_VENDOR_ROOT
+
+    candidates = [
+        source_vendor_root,
+        cwd / "vendor" / "agent-skills" / "skills",
+        cwd.parent / "vendor" / "agent-skills" / "skills",
+        bundled_vendor_root,
+    ]
+    for cand in candidates:
+        if cand.exists():
+            return cand
+
+    return bundled_vendor_root if bundled_vendor_root.exists() else source_vendor_root
+
+
+VENDOR_ROOT = _discover_vendor_root()
 
 
 @dataclass(frozen=True)

@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 jobs:
-  test:
+  quality:
     runs-on: ubuntu-latest
 
     steps:
@@ -24,7 +24,63 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync --all-extras
+        run: uv sync --all-extras --locked
+
+      - name: CLI help smoke
+        run: uv run python -m crewai_headless_flow --help
+
+      - name: CLI console-script smoke
+        run: uv run crewai-headless-flow --help
+
+      - name: CLI preflight smoke
+        run: uv run crewai-headless-flow preflight --target-repo . --format json
+
+      - name: Build distribution artifacts
+        run: uv build
+
+      - name: Wheel content smoke
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          import zipfile
+
+          wheel = max(pathlib.Path("dist").glob("*.whl"))
+          with zipfile.ZipFile(wheel) as zf:
+              names = zf.namelist()
+
+          required = [
+              "crewai_headless_flow/__main__.py",
+              "crewai_headless_flow/_bundled/config/worker.yaml",
+              "crewai_headless_flow/_bundled/vendor/agent-skills/skills/planning-and-task-breakdown/SKILL.md",
+          ]
+
+          missing = [
+              path for path in required if not any(name.endswith(path) for name in names)
+          ]
+          if missing:
+              raise SystemExit(f"Missing wheel contents: {missing}")
+          PY
+
+      - name: Installed wheel smoke
+        run: |
+          tmpdir="$(mktemp -d)"
+          trap 'rm -rf "$tmpdir"' EXIT
+          uv venv "$tmpdir/venv"
+          uv pip install --python "$tmpdir/venv/bin/python" dist/*.whl
+          "$tmpdir/venv/bin/crewai-headless-flow" --help
+          "$tmpdir/venv/bin/python" -m crewai_headless_flow --help
+
+      - name: Run Ruff
+        run: uv run ruff check .
+
+      - name: Check formatting
+        run: uv run ruff format --check .
+
+      - name: Run mypy
+        run: uv run mypy src
 
       - name: Run offline tests
         run: uv run pytest -m offline --tb=short
+
+      - name: Check diff hygiene
+        run: git diff --check

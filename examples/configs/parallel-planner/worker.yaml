@@ -1,0 +1,32 @@
+defaults:
+  worker: "codex"
+  model: null
+  timeout: 300
+
+stages:
+  plan:
+    worker: "codex"
+    model: null
+
+  do_work:
+    worker: "grok"
+    model: "grok-3-latest"
+    always_approve: true
+    parallel:
+      enabled: true
+      max_workers: 4
+      planner:
+        enabled: true
+    replan:
+      enabled: false
+
+  review:
+    worker: "codex"
+    sandbox: "read-only"
+
+  finalize:
+    worker: "codex"
+    model: null
+
+human_feedback:
+  enabled: false

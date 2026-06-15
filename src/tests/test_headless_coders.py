@@ -26,6 +26,7 @@ from crewai_headless_flow.workers.base import (
 )
 from crewai_headless_flow.workers.claude import ClaudeAdapter
 from crewai_headless_flow.workers.codex import CodexAdapter
+from crewai_headless_flow.workers.gemini import GeminiAdapter
 from crewai_headless_flow.workers.grok import GrokAdapter
 
 
@@ -82,6 +83,36 @@ def test_codex_passes_output_schema_when_given():
 
         args = mock_run.call_args[0][0]
         assert "--output-schema" in args
+
+
+def test_codex_does_one_repair_retry_on_structured_failure():
+    adapter = CodexAdapter(binary="codex")
+    schema = {
+        "type": "object",
+        "properties": {"ok": {"type": "boolean"}},
+        "required": ["ok"],
+        "additionalProperties": False,
+    }
+
+    call_count = {"n": 0}
+
+    def fake_run(cmd, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return type(
+                "P", (), {"stdout": "not valid json", "stderr": "", "returncode": 0}
+            )()
+        return type(
+            "P",
+            (),
+            {"stdout": '{"result": {"ok": true}}', "stderr": "", "returncode": 0},
+        )()
+
+    with patch("subprocess.run", side_effect=fake_run):
+        result = adapter.run("task", cwd="/tmp/r", mode="edit", schema=schema)
+
+    assert call_count["n"] == 2
+    assert '"ok": true' in result.summary
 
 
 # =============================================================================
@@ -293,6 +324,38 @@ def test_claude_passes_json_schema_when_given():
         assert '"summary"' in args[schema_idx + 1]
 
 
+def test_claude_does_one_repair_retry_on_structured_failure():
+    adapter = ClaudeAdapter(binary="claude")
+    schema = {
+        "type": "object",
+        "properties": {"ok": {"type": "boolean"}},
+        "required": ["ok"],
+        "additionalProperties": False,
+    }
+
+    call_count = {"n": 0}
+
+    def fake_run(cmd, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return type(
+                "P",
+                (),
+                {"stdout": '{"result": "not json"}', "stderr": "", "returncode": 0},
+            )()
+        return type(
+            "P",
+            (),
+            {"stdout": '{"result": {"ok": true}}', "stderr": "", "returncode": 0},
+        )()
+
+    with patch("subprocess.run", side_effect=fake_run):
+        result = adapter.run("task", cwd="/tmp/r", mode="edit", schema=schema)
+
+    assert call_count["n"] == 2
+    assert '"ok": true' in result.summary
+
+
 def test_claude_passes_model_when_given():
     adapter = ClaudeAdapter(binary="claude")
 
@@ -406,6 +469,163 @@ def test_claude_invocation_error_raises_worker_invocation_error():
 
     with patch("subprocess.run", side_effect=OSError("missing binary")):
         with pytest.raises(WorkerInvocationError, match="Failed to invoke Claude"):
+            adapter.run("task", cwd="/tmp/r", mode="edit")
+
+
+# =============================================================================
+# GeminiAdapter argv + safety tests
+# =============================================================================
+
+
+def test_gemini_inspect_mode_uses_disposable_copy_and_plan_approval():
+    adapter = GeminiAdapter(binary="gemini")
+    original = Path("/tmp/original-repo").resolve(strict=False)
+
+    with (
+        patch("subprocess.run") as mock_run,
+        patch.object(adapter, "_create_disposable_copy") as mock_copy,
+        patch.object(adapter, "_cleanup_disposable") as mock_cleanup,
+    ):
+        disposable = Path("/tmp/gemini-inspect-xyz/original-repo")
+        mock_copy.return_value = disposable
+        mock_run.return_value.stdout = '{"response": "reviewed"}'
+        mock_run.return_value.stderr = ""
+        mock_run.return_value.returncode = 0
+
+        adapter.run("review this", cwd=original, mode="inspect")
+
+        mock_copy.assert_called_once_with(original)
+        mock_cleanup.assert_called_once_with(disposable)
+        args = mock_run.call_args[0][0]
+        assert args[0] == "gemini"
+        assert "--prompt" in args
+        assert "--output-format" in args
+        assert "json" in args
+        assert "--approval-mode" in args
+        approval_idx = args.index("--approval-mode")
+        assert args[approval_idx + 1] == "plan"
+        assert "--skip-trust" in args
+        assert mock_run.call_args.kwargs["cwd"] == disposable
+
+
+def test_gemini_edit_mode_uses_real_cwd_and_yolo_approval():
+    adapter = GeminiAdapter(binary="gemini")
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value.stdout = '{"response": "done"}'
+        mock_run.return_value.stderr = ""
+        mock_run.return_value.returncode = 0
+
+        adapter.run("edit the code", cwd="/tmp/testrepo", mode="edit")
+
+        args = mock_run.call_args[0][0]
+        assert "--approval-mode" in args
+        approval_idx = args.index("--approval-mode")
+        assert args[approval_idx + 1] == "yolo"
+        assert "--skip-trust" in args
+        assert mock_run.call_args.kwargs["cwd"] == Path("/tmp/testrepo").resolve(
+            strict=False
+        )
+
+
+def test_gemini_passes_model_when_given():
+    adapter = GeminiAdapter(binary="gemini")
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value.stdout = '{"response": "ok"}'
+        mock_run.return_value.stderr = ""
+        mock_run.return_value.returncode = 0
+
+        adapter.run("task", cwd="/tmp/r", mode="edit", model="gemini-2.5-pro")
+
+        args = mock_run.call_args[0][0]
+        assert "--model" in args
+        model_idx = args.index("--model")
+        assert args[model_idx + 1] == "gemini-2.5-pro"
+
+
+def test_gemini_disposable_copy_does_not_preserve_absolute_symlink(tmp_path):
+    adapter = GeminiAdapter(binary="gemini")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("original")
+    outside_dir = tmp_path / "outside-dir"
+    outside_dir.mkdir()
+    (outside_dir / "secret.txt").write_text("secret")
+
+    src = tmp_path / "source-repo"
+    src.mkdir()
+    (src / "absolute-link.txt").symlink_to(outside)
+    (src / "absolute-dir-link").symlink_to(outside_dir)
+
+    disposable = adapter._create_disposable_copy(src)
+
+    assert not (disposable / "absolute-link.txt").exists()
+    assert not (disposable / "absolute-dir-link").exists()
+    assert outside.read_text() == "original"
+
+    adapter._cleanup_disposable(disposable)
+
+
+def test_gemini_structured_output_injects_schema_and_repairs_once():
+    adapter = GeminiAdapter(binary="gemini")
+    schema = {
+        "type": "object",
+        "properties": {"ok": {"type": "boolean"}},
+        "required": ["ok"],
+        "additionalProperties": False,
+    }
+
+    call_count = {"n": 0}
+
+    def fake_run(cmd, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return type(
+                "P",
+                (),
+                {"stdout": '{"response": "not json"}', "stderr": "", "returncode": 0},
+            )()
+        return type(
+            "P",
+            (),
+            {"stdout": '{"response": {"ok": true}}', "stderr": "", "returncode": 0},
+        )()
+
+    with patch("subprocess.run", side_effect=fake_run):
+        result = adapter.run("task", cwd="/tmp/r", mode="edit", schema=schema)
+
+    assert call_count["n"] == 2
+    assert '"ok": true' in result.summary
+
+
+def test_gemini_returns_normalized_coder_result_from_json_response():
+    adapter = GeminiAdapter(binary="gemini")
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value.stdout = '{"response": "Gemini changed the files."}'
+        mock_run.return_value.stderr = ""
+        mock_run.return_value.returncode = 0
+
+        result = adapter.run("task", cwd="/tmp/r", mode="edit")
+
+        assert isinstance(result, CoderResult)
+        assert result.exit_code == 0
+        assert result.summary == "Gemini changed the files."
+
+
+def test_gemini_timeout_raises_worker_timeout():
+    adapter = GeminiAdapter(binary="gemini")
+
+    with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("gemini", 3)):
+        with pytest.raises(WorkerTimeout, match="Gemini timed out after 3s"):
+            adapter.run("task", cwd="/tmp/r", mode="edit", timeout=3)
+
+
+def test_gemini_invocation_error_raises_worker_invocation_error():
+    adapter = GeminiAdapter(binary="gemini")
+
+    with patch("subprocess.run", side_effect=OSError("missing binary")):
+        with pytest.raises(WorkerInvocationError, match="Failed to invoke Gemini"):
             adapter.run("task", cwd="/tmp/r", mode="edit")
 
 

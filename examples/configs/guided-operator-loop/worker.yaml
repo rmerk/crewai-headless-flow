@@ -1,0 +1,49 @@
+defaults:
+  worker: "codex"
+  model: null
+  timeout: 300
+
+stages:
+  plan:
+    worker: "codex"
+    model: null
+
+  do_work:
+    worker: "grok"
+    model: "grok-3-latest"
+    always_approve: true
+
+  review:
+    worker: "codex"
+    sandbox: "read-only"
+
+  finalize:
+    worker: "codex"
+    model: null
+
+human_feedback:
+  enabled: true
+  before_plan: false
+  before_do_work: true
+  before_review: false
+  after_review: true
+  before_finalize: true
+  capture_instructions: true
+  advanced_actions: false
+  action_allowlist:
+    do_work:
+      - replan
+      - skip-to-review
+      - target-tasks
+    after_review:
+      - replan
+      - rerun-review
+      - target-tasks
+      - force-revise
+      - force-pass
+    finalize:
+      - skip-finalize
+      - rerun-review
+      - force-revise
+      - replan
+      - target-tasks

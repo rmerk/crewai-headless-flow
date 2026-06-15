@@ -1,0 +1,32 @@
+defaults:
+  worker: "codex"
+  model: null
+  timeout: 300
+
+stages:
+  plan:
+    worker: "codex"
+    model: null
+
+  do_work:
+    worker: "grok"
+    model: "grok-3-latest"
+    always_approve: true
+
+  review:
+    worker: "codex"
+    sandbox: "read-only"
+    crew:
+      enabled: true
+      process: "sequential"
+      llm:
+        model: "ollama/llama3.2"
+        base_url: "http://localhost:11434"
+        temperature: 0.2
+
+  finalize:
+    worker: "codex"
+    model: null
+
+human_feedback:
+  enabled: false

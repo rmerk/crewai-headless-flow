@@ -159,6 +159,13 @@ def test_doctor_fails_missing_required_cli_flag(config_dir: Path, monkeypatch):
 def test_doctor_fails_ollama_unavailable(config_dir: Path, monkeypatch):
     from crewai_headless_flow.diagnostics import ProbeResult, run_doctor
 
+    worker_data = yaml.safe_load((config_dir / "worker.yaml").read_text())
+    worker_data["stages"]["plan"] = {
+        "worker": "codex",
+        "crew": {"enabled": True, "process": "sequential"},
+    }
+    (config_dir / "worker.yaml").write_text(yaml.safe_dump(worker_data))
+
     monkeypatch.setattr(
         "crewai_headless_flow.diagnostics.shutil.which", lambda name: f"/bin/{name}"
     )
@@ -178,6 +185,198 @@ def test_doctor_fails_ollama_unavailable(config_dir: Path, monkeypatch):
 
     assert report.status == "fail"
     assert any("ollama list failed" in failure for failure in report.failures)
+
+
+def test_doctor_does_not_require_ollama_when_no_crews_enabled(
+    config_dir: Path, monkeypatch
+):
+    from crewai_headless_flow.diagnostics import ProbeResult, run_doctor
+
+    monkeypatch.setattr(
+        "crewai_headless_flow.diagnostics.shutil.which",
+        lambda name: None if name == "ollama" else f"/bin/{name}",
+    )
+    monkeypatch.setattr(
+        "crewai_headless_flow.diagnostics._run_probe",
+        lambda cmd, timeout=3: ProbeResult(
+            returncode=0,
+            stdout="--sandbox --output-schema --always-approve --json-schema",
+            stderr="",
+        ),
+    )
+
+    report = run_doctor(config_dir=config_dir)
+
+    assert not any("ollama" in failure for failure in report.failures)
+
+
+def test_doctor_warns_when_do_work_crew_is_enabled(config_dir: Path, monkeypatch):
+    from crewai_headless_flow.diagnostics import ProbeResult, run_doctor
+
+    worker_data = yaml.safe_load((config_dir / "worker.yaml").read_text())
+    worker_data["stages"]["do_work"] = {
+        "worker": "codex",
+        "crew": {"enabled": True, "process": "sequential"},
+    }
+    (config_dir / "worker.yaml").write_text(yaml.safe_dump(worker_data))
+
+    monkeypatch.setattr(
+        "crewai_headless_flow.diagnostics.shutil.which", lambda name: f"/bin/{name}"
+    )
+
+    def fake_probe(cmd, timeout=3):
+        if cmd[0] == "ollama":
+            return ProbeResult(returncode=0, stdout="llama3.2", stderr="")
+        return ProbeResult(
+            returncode=0,
+            stdout="--sandbox --output-schema --always-approve --json-schema",
+            stderr="",
+        )
+
+    monkeypatch.setattr("crewai_headless_flow.diagnostics._run_probe", fake_probe)
+
+    report = run_doctor(config_dir=config_dir)
+
+    assert any(check.name == "config.do_work_crew" for check in report.checks)
+    assert any(check.name == "cli.ollama" for check in report.checks)
+
+
+def test_doctor_skips_ollama_for_custom_crew_provider(config_dir: Path, monkeypatch):
+    from crewai_headless_flow.diagnostics import ProbeResult, run_doctor
+
+    worker_data = yaml.safe_load((config_dir / "worker.yaml").read_text())
+    worker_data["stages"]["review"] = {
+        "worker": "codex",
+        "crew": {
+            "enabled": True,
+            "process": "sequential",
+            "llm": {
+                "model": "gpt-4o-mini",
+                "base_url": "https://api.openai.com/v1",
+            },
+        },
+    }
+    (config_dir / "worker.yaml").write_text(yaml.safe_dump(worker_data))
+
+    monkeypatch.setattr(
+        "crewai_headless_flow.diagnostics.shutil.which",
+        lambda name: None if name == "ollama" else f"/bin/{name}",
+    )
+    monkeypatch.setattr(
+        "crewai_headless_flow.diagnostics._run_probe",
+        lambda cmd, timeout=3: ProbeResult(
+            returncode=0,
+            stdout="--sandbox --output-schema --always-approve --json-schema",
+            stderr="",
+        ),
+    )
+
+    report = run_doctor(config_dir=config_dir)
+
+    assert report.status == "warn"
+    review_check = next(
+        check for check in report.checks if check.name == "config.review_crew"
+    )
+    assert review_check.details["ollama_required"] is False
+    assert "external/custom" in review_check.message
+    assert not any(check.name == "cli.ollama" for check in report.checks)
+
+
+def test_doctor_accepts_gemini_worker(config_dir: Path, monkeypatch):
+    from crewai_headless_flow.diagnostics import ProbeResult, run_doctor
+
+    worker_data = yaml.safe_load((config_dir / "worker.yaml").read_text())
+    worker_data["stages"]["finalize"] = {"worker": "gemini"}
+    (config_dir / "worker.yaml").write_text(yaml.safe_dump(worker_data))
+
+    monkeypatch.setattr(
+        "crewai_headless_flow.diagnostics.shutil.which", lambda name: f"/bin/{name}"
+    )
+    monkeypatch.setattr(
+        "crewai_headless_flow.diagnostics._run_probe",
+        lambda cmd, timeout=3: ProbeResult(
+            returncode=0,
+            stdout="--sandbox --output-schema --prompt --approval-mode --output-format",
+            stderr="",
+        ),
+    )
+
+    report = run_doctor(config_dir=config_dir)
+
+    assert report.status == "pass"
+    assert any(check.name == "cli.gemini" for check in report.checks)
+
+
+def test_doctor_includes_resolved_runtime_metadata(config_dir: Path, monkeypatch):
+    from crewai_headless_flow.diagnostics import ProbeResult, run_doctor
+
+    worker_data = yaml.safe_load((config_dir / "worker.yaml").read_text())
+    worker_data["stages"] = {
+        "do_work": {
+            "worker": "grok",
+            "always_approve": True,
+            "parallel": {"enabled": True, "max_workers": 4},
+        },
+        "review": {
+            "worker": "codex",
+            "sandbox": "read-only",
+            "crew": {
+                "enabled": True,
+                "process": "sequential",
+                "llm": {
+                    "model": "gpt-4o-mini",
+                    "base_url": "https://api.openai.com/v1",
+                },
+            },
+        },
+    }
+    (config_dir / "worker.yaml").write_text(yaml.safe_dump(worker_data))
+
+    monkeypatch.setattr(
+        "crewai_headless_flow.diagnostics.shutil.which",
+        lambda name: None if name == "ollama" else f"/bin/{name}",
+    )
+    monkeypatch.setattr(
+        "crewai_headless_flow.diagnostics._run_probe",
+        lambda cmd, timeout=3: ProbeResult(
+            returncode=0,
+            stdout="--sandbox --output-schema --always-approve --output-format --json-schema",
+            stderr="",
+        ),
+    )
+
+    report = run_doctor(config_dir=config_dir)
+    data = report.to_dict()
+    resolved_stages = {
+        stage["stage"]: stage for stage in data["resolved_runtime"]["stages"]
+    }
+
+    assert report.status == "warn"
+    assert data["resolved_runtime"]["human_feedback"]["enabled"] is False
+    assert data["resolved_runtime"]["human_feedback"]["before_do_work"] is True
+    assert data["resolved_runtime"]["human_feedback"]["before_finalize"] is True
+    assert resolved_stages["do_work"]["runtime_knobs"] == {
+        "parallel": {"enabled": True, "max_workers": 4}
+    }
+    assert resolved_stages["do_work"]["enforced_declarations"] == {
+        "always_approve": True
+    }
+    assert resolved_stages["do_work"]["can_mutate"] is True
+    assert resolved_stages["review"]["runtime_knobs"] == {
+        "crew": {
+            "enabled": True,
+            "llm": {
+                "model": "gpt-4o-mini",
+                "base_url": "https://api.openai.com/v1",
+            },
+        }
+    }
+    assert resolved_stages["review"]["enforced_declarations"] == {
+        "sandbox": "read-only",
+        "crew": {"process": "sequential"},
+    }
+    assert resolved_stages["review"]["notes"] == ["crew_llm_provider=external/custom"]
+    assert resolved_stages["review"]["can_mutate"] is False
 
 
 def test_preflight_fails_missing_target_path(tmp_path: Path):
@@ -273,6 +472,7 @@ def test_preflight_reports_clean_git_repo_and_tooling(tmp_path: Path, monkeypatc
 
     assert report.status == "pass"
     assert report.git["is_git_repo"] is True
+    assert report.git["branch"] == "main"
     assert report.tooling["pyproject.toml"] is True
     assert report.tooling["README.md"] is True
     assert json.loads(json.dumps(report.to_dict())) == report.to_dict()

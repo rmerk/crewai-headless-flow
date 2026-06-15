@@ -3,10 +3,10 @@
 # =============================================================================
 # This is the PRIMARY reusability lever.
 #
-# You can switch any stage between "codex", "grok", and "claude" by editing only
+# You can switch any stage between "codex", "grok", "claude", and "gemini" by editing only
 # this file. No Python code changes required.
 #
-# Supported workers: "codex" | "grok" | "claude"
+# Supported workers: "codex" | "grok" | "claude" | "gemini"
 
 defaults:
   worker: "codex"
@@ -15,24 +15,84 @@ defaults:
 
 stages:
   plan:
-    # Planning is light reasoning — Codex is often excellent and cheap here
+    # Planning is read-only and now goes through the configured worker by default
     worker: "codex"
     model: null
+    crew:
+      # Optional richer multi-agent planning. Disabled by default to preserve the
+      # direct worker-backed plan path. Only process="sequential" is currently
+      # supported; other values fail config validation.
+      enabled: false
+      process: "sequential"
+      llm:
+        model: "ollama/llama3.2"
+        base_url: "http://localhost:11434"
+        temperature: 0.2
 
   do_work:
     # The heavy lifting stage — choose your preferred coding agent
     worker: "grok"
     model: "grok-3-latest"   # or whatever model you want for this stage
-    # Grok-specific behavior for edit stages
+    # Fixed safety declaration for Grok edit mode. The adapter already runs
+    # edit mode non-interactively; unsupported values fail config validation.
     always_approve: true
+    crew:
+      # Optional richer multi-agent implementation. Disabled by default; when
+      # combined with do_work.parallel.enabled, crew-backed tasks can still use
+      # isolated per-task workspaces and conflict-safe mergeback. max_rounds
+      # bounds self-correction before the Flow marks the task failed.
+      # decomposition can optionally split one planned task into a few smaller
+      # ordered execution slices before edit-mode work begins. Only
+      # process="sequential" is currently supported; other values fail config
+      # validation.
+      enabled: false
+      process: "sequential"
+      max_rounds: 2
+      decomposition:
+        enabled: false
+        max_subtasks: 4
+      llm:
+        model: "ollama/llama3.2"
+        base_url: "http://localhost:11434"
+        temperature: 0.2
+    parallel:
+      enabled: false
+      max_workers: 2
+      planner:
+        # Optional inspect-mode next-batch planner. When static file hints would
+        # only allow a one-task batch, this planner can pick a larger ready
+        # batch and add missing file hints before execution. Actual overlap
+        # detection during mergeback still remains final safety gate.
+        enabled: false
+    replan:
+      # Optional inspect-mode revision replanner. After review returns `revise`,
+      # it can replace the full structured task graph before next do_work round.
+      # Unchanged completed tasks are preserved conservatively when possible.
+      enabled: false
+      # Optional execution-time replanner. When a task fails inside do_work, it
+      # can replace remaining task graph and continue same do_work round.
+      on_execution_failure: false
+      # Optional success-time replanner. When a task succeeds but changes files
+      # assigned to other remaining tasks, it can replace the remaining graph
+      # inside same do_work round.
+      on_cross_task_change: false
+      # Optional ambiguous-success replanner. When a task exits successfully
+      # but produces weak evidence (for example no changed files or no overlap
+      # with planned task files), it can replace the remaining graph inside the
+      # same do_work round.
+      on_ambiguous_success: false
+      max_execution_replans: 1
 
   review:
     # Reviews should be read-only / inspect mode
     worker: "codex"
-    # Explicitly request read-only sandbox (enforced by adapter)
+    # Fixed safety declaration for inspect/review mode. The adapter enforces
+    # read-only behavior; unsupported values fail config validation.
     sandbox: "read-only"
     crew:
       # Optional richer multi-agent review. Disabled by default to preserve v0.1 behavior.
+      # Only process="sequential" is currently supported; other values fail
+      # config validation.
       enabled: false
       process: "sequential"
       llm:
@@ -49,5 +109,16 @@ stages:
 # =============================================================================
 human_feedback:
   enabled: false          # Master switch
+  before_plan: false      # Optional pause before read-only planning
   before_do_work: true    # Pause before expensive edit stage
+  before_review: false    # Optional pause before read-only review
+  after_review: false     # Optional pause after automated review decision, with actual findings in hand
   before_finalize: true   # Pause before writing final docs/ADR
+  capture_instructions: false  # After approval, optionally capture one-line operator guidance for gated stage prompt
+  advanced_actions: false  # Optional stage shortcuts: do_work->review/replan/target-tasks, review->replan/rerun/force revise/pass/target-tasks, finalize->skip/rerun/reopen/target-tasks
+  action_allowlist: {}     # Optional stage- or gate-scoped subset of advanced actions, e.g. {before_do_work: [target-tasks]}
+  # Any of these can be overridden per run via --override-human-feedback KEY=VALUE
+
+# Stage extras like `plan.crew.*`, `do_work.crew.*`, `do_work.parallel.*`, or
+# `review.crew.*` can be overridden per run via
+# --override-stage-extra STAGE.PATH=VALUE

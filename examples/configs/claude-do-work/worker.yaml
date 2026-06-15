@@ -1,0 +1,24 @@
+defaults:
+  worker: "codex"
+  model: null
+  timeout: 300
+
+stages:
+  plan:
+    worker: "codex"
+    model: null
+
+  do_work:
+    worker: "claude"
+    model: "sonnet"
+
+  review:
+    worker: "codex"
+    sandbox: "read-only"
+
+  finalize:
+    worker: "codex"
+    model: null
+
+human_feedback:
+  enabled: false

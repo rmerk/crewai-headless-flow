@@ -86,6 +86,24 @@ def test_normalize_fails_closed_on_malformed_output():
     assert decision.issues == ["Review Crew output could not be parsed"]
 
 
+def test_normalize_review_crew_output_invalid_task_hints_fail_closed():
+    crew_output = SimpleNamespace(
+        pydantic=None,
+        json_dict={
+            "status": "pass",
+            "issues": [],
+            "summary": "Looks good.",
+            "task_hints": [{"task_ids": "oops", "summary": "Bad mapping"}],
+        },
+    )
+
+    decision = normalize_review_crew_output(crew_output)
+
+    assert decision.status == "revise"
+    assert decision.task_hints == []
+    assert any("invalid task_hints" in issue for issue in decision.issues)
+
+
 def test_headless_inspect_tool_always_calls_inspect_mode():
     worker_tool = RecordingWorkerTool()
     tool = HeadlessInspectTool(
