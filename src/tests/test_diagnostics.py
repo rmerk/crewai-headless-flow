@@ -307,6 +307,72 @@ def test_doctor_accepts_gemini_worker(config_dir: Path, monkeypatch):
     assert any(check.name == "cli.gemini" for check in report.checks)
 
 
+def test_doctor_accepts_cursor_worker(config_dir: Path, monkeypatch):
+    from crewai_headless_flow.diagnostics import ProbeResult, run_doctor
+
+    worker_data = yaml.safe_load((config_dir / "worker.yaml").read_text())
+    worker_data["stages"]["finalize"] = {"worker": "cursor"}
+    (config_dir / "worker.yaml").write_text(yaml.safe_dump(worker_data))
+
+    monkeypatch.setattr(
+        "crewai_headless_flow.diagnostics.shutil.which", lambda name: f"/bin/{name}"
+    )
+    monkeypatch.setattr(
+        "crewai_headless_flow.diagnostics._run_probe",
+        lambda cmd, timeout=3: ProbeResult(
+            returncode=0,
+            stdout=(
+                "--sandbox --output-schema --always-approve --output-format "
+                "--permission-mode --json-schema --prompt --approval-mode "
+                "--print --output-format --plan --force --trust --workspace --model"
+            ),
+            stderr="",
+        ),
+    )
+    monkeypatch.delenv("CURSOR_API_KEY", raising=False)
+
+    report = run_doctor(config_dir=config_dir)
+
+    assert report.status == "warn"
+    assert any(check.name == "cli.cursor" for check in report.checks)
+    auth_check = next(
+        check for check in report.checks if check.name == "auth.cursor_api_key"
+    )
+    assert auth_check.status == "warn"
+
+
+def test_doctor_cursor_auth_passes_when_api_key_set(config_dir: Path, monkeypatch):
+    from crewai_headless_flow.diagnostics import ProbeResult, run_doctor
+
+    worker_data = yaml.safe_load((config_dir / "worker.yaml").read_text())
+    worker_data["stages"]["finalize"] = {"worker": "cursor"}
+    (config_dir / "worker.yaml").write_text(yaml.safe_dump(worker_data))
+
+    monkeypatch.setattr(
+        "crewai_headless_flow.diagnostics.shutil.which", lambda name: f"/bin/{name}"
+    )
+    monkeypatch.setattr(
+        "crewai_headless_flow.diagnostics._run_probe",
+        lambda cmd, timeout=3: ProbeResult(
+            returncode=0,
+            stdout=(
+                "--sandbox --output-schema --always-approve --output-format "
+                "--permission-mode --json-schema --prompt --approval-mode "
+                "--print --output-format --plan --force --trust --workspace --model"
+            ),
+            stderr="",
+        ),
+    )
+    monkeypatch.setenv("CURSOR_API_KEY", "test-key")
+
+    report = run_doctor(config_dir=config_dir)
+
+    auth_check = next(
+        check for check in report.checks if check.name == "auth.cursor_api_key"
+    )
+    assert auth_check.status == "pass"
+
+
 def test_doctor_includes_resolved_runtime_metadata(config_dir: Path, monkeypatch):
     from crewai_headless_flow.diagnostics import ProbeResult, run_doctor
 

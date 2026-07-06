@@ -362,6 +362,24 @@ def test_worker_yaml_can_select_gemini_without_code_change(sample_config_dir: Pa
     assert do_work.timeout == 420
 
 
+def test_worker_yaml_can_select_cursor_without_code_change(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["stages"]["do_work"] = {
+        "worker": "cursor",
+        "model": "composer-2.5",
+        "timeout": 420,
+    }
+    worker_file.write_text(yaml.safe_dump(data))
+
+    cfg = load_config(sample_config_dir)
+    do_work = cfg.get_stage("do_work")
+
+    assert do_work.worker == "cursor"
+    assert do_work.model == "composer-2.5"
+    assert do_work.timeout == 420
+
+
 def test_print_mapping_runs_without_crashing(sample_config_dir: Path, capsys):
     cfg = load_config(sample_config_dir)
     cfg.print_mapping()
@@ -383,7 +401,7 @@ def test_default_config_loads_from_real_files():
     # At minimum the structure must be valid
     for stage in cfg.stages:
         resolved = cfg.get_stage(stage)
-        assert resolved.worker in {"codex", "grok", "claude", "gemini"}
+        assert resolved.worker in {"codex", "grok", "claude", "gemini", "cursor"}
 
 
 def test_discover_config_dir_falls_back_to_bundled_assets(tmp_path: Path):

@@ -24,7 +24,7 @@ from crewai_headless_flow.state import (
     HumanFeedbackEntry,
     TaskItem,
 )
-from crewai_headless_flow.workers import ClaudeAdapter, GeminiAdapter
+from crewai_headless_flow.workers import ClaudeAdapter, CursorAdapter, GeminiAdapter
 from crewai_headless_flow.workers.base import CoderResult
 
 
@@ -252,6 +252,18 @@ def test_flow_builds_gemini_worker_from_worker_config():
     flow = CrewAIHeadlessFlow(config=cfg)
 
     assert isinstance(flow._get_worker("do_work").worker, GeminiAdapter)
+
+
+def test_flow_builds_cursor_worker_from_worker_config():
+    cfg = FlowConfig(
+        skills={"do_work": "incremental-implementation"},
+        workers={"do_work": {"worker": "cursor"}},
+        defaults={"worker": "codex", "timeout": 300},
+    )
+
+    flow = CrewAIHeadlessFlow(config=cfg)
+
+    assert isinstance(flow._get_worker("do_work").worker, CursorAdapter)
 
 
 def test_flow_rejects_unknown_worker_name():

@@ -2381,7 +2381,7 @@ def test_doctor_checks_each_configured_worker_cli(
         "plan": {"worker": "codex"},
         "do_work": {"worker": "grok"},
         "review": {"worker": "claude"},
-        "finalize": {"worker": "gemini"},
+        "finalize": {"worker": "cursor"},
     }
     worker_file.write_text(yaml.safe_dump(data))
 
@@ -2392,17 +2392,18 @@ def test_doctor_checks_each_configured_worker_cli(
         lambda cmd, timeout=3: cli.diagnostics.ProbeResult(
             returncode=0,
             stdout=" ".join(cmd)
-            + " --sandbox --output-schema --always-approve --output-format --permission-mode --json-schema --prompt --approval-mode",
+            + " --sandbox --output-schema --always-approve --output-format --permission-mode --json-schema --prompt --approval-mode --print --output-format --plan --force --trust --workspace --model",
             stderr="",
         ),
     )
+    monkeypatch.delenv("CURSOR_API_KEY", raising=False)
 
     rc = cli.main(["doctor", "--config-dir", str(config_dir), "--format", "json"])
 
     data = json.loads(capsys.readouterr().out)
     check_names = {check["name"] for check in data["checks"]}
     assert rc == 0
-    assert {"cli.codex", "cli.grok", "cli.claude", "cli.gemini"}.issubset(check_names)
+    assert {"cli.codex", "cli.grok", "cli.claude", "cli.cursor"}.issubset(check_names)
 
 
 def test_doctor_applies_runtime_worker_override_for_cli_validation(

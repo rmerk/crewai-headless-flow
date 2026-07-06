@@ -69,7 +69,13 @@ from .task_batches import (
     select_execution_batch,
 )
 from .tools.coder_tool import HeadlessCoderTool
-from .workers import ClaudeAdapter, CodexAdapter, GeminiAdapter, GrokAdapter
+from .workers import (
+    ClaudeAdapter,
+    CodexAdapter,
+    CursorAdapter,
+    GeminiAdapter,
+    GrokAdapter,
+)
 from .workers.base import CoderResult, HeadlessCoder
 from .workspace_changes import (
     apply_changed_files,
@@ -85,6 +91,7 @@ WORKER_ADAPTERS: dict[str, type[HeadlessCoder]] = {
     "grok": GrokAdapter,
     "claude": ClaudeAdapter,
     "gemini": GeminiAdapter,
+    "cursor": CursorAdapter,
 }
 
 

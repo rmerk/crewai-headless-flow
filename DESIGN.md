@@ -25,7 +25,7 @@ def run(
 ) -> CoderResult
 ```
 
-Four concrete adapters are shipped:
+Five concrete adapters are shipped:
 
 #### CodexAdapter (codex-cli 0.132.0)
 
@@ -74,6 +74,15 @@ The review stage now shares one contract across both execution paths:
 - Does not have native JSON schema flags, so it uses the shared prompt-guided repair loop
 - Passes model names through unchanged with `--model`
 
+#### CursorAdapter (Cursor Agent CLI)
+
+- Uses `cursor agent --print --output-format json` for non-interactive execution
+- Uses a disposable filesystem copy plus `--plan --trust` for `mode=inspect`
+- Uses the real target repository plus `--force --trust --workspace` for `mode=edit`
+- Does not have native JSON schema flags, so it uses the shared prompt-guided repair loop
+- Passes model names through unchanged with `--model`
+- Inherits `CURSOR_API_KEY` from the process environment; the adapter never reads shell dotfiles or passes API keys on the command line
+
 ## Flag Reality vs Original Spec
 
 The original design document assumed certain CLI flags that had changed by the time of implementation (June 2026):
@@ -84,6 +93,7 @@ The original design document assumed certain CLI flags that had changed by the t
 | Grok   | No `--sandbox` flag              | Has `--sandbox <profile>` and `--worktree`            | Still uses disposable copy for inspect (safer, portable) |
 | Claude | Native SDK-style adapter         | Headless CLI via `claude -p` with permission modes    | Uses disposable copy + `dontAsk` for inspect; real repo + `bypassPermissions` for edit |
 | Gemini | Headless CLI with approval modes | `gemini --prompt` with JSON output and approval modes | Uses disposable copy + `plan` for inspect; real repo + `yolo` for edit |
+| Cursor | Headless Agent CLI | `cursor agent --print` with plan/force modes and JSON output | Uses disposable copy + `plan` for inspect; real repo + `force` for edit |
 | All    | —                                | —                                                     | All edit calls are non-interactive; all inspect calls are read-only by construction |
 
 These differences are explicitly normalized inside the adapters so the rest of the system (Flow, config, skills) does not need to care.
@@ -235,7 +245,7 @@ These trade-offs were accepted in exchange for zero dependency on any vendor's P
 See `AGENTS.md` → "Future Work & Opportunities" for a more detailed and prioritized view.
 
 High-level directions:
-- Add more adapters beyond the current four workers
+- Add more adapters beyond the current five workers
 - Richer task decomposition and parallel execution inside `do_work`
 - Better structured output and review-loop semantics (JSON repair loops, schema enforcement tools, consistent validation behavior)
 - Expand CrewAI `Crew` usage beyond the current bounded Planning/Implementation/Review Crews into richer implementation orchestration

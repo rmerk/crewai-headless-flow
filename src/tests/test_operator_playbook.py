@@ -26,6 +26,7 @@ def _patch_clean_doctor_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "grok": "--always-approve --output-format",
         "claude": "--permission-mode --json-schema",
         "gemini": "--prompt --approval-mode --output-format",
+        "cursor": "--print --output-format --plan --force --trust --workspace --model",
     }
 
     monkeypatch.setattr(
@@ -39,6 +40,7 @@ def _patch_clean_doctor_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         return ProbeResult(returncode=0, stdout=help_flags[binary], stderr="")
 
     monkeypatch.setattr("crewai_headless_flow.diagnostics._run_probe", fake_probe)
+    monkeypatch.delenv("CURSOR_API_KEY", raising=False)
 
 
 def _patch_clean_preflight_git(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -86,6 +88,15 @@ def _patch_clean_preflight_git(monkeypatch: pytest.MonkeyPatch) -> None:
                 "status": "pass",
                 "do_work_worker": "gemini",
                 "do_work_model": "gemini-2.5-pro",
+            },
+        ),
+        (
+            _example_config_dir("cursor-do-work"),
+            {
+                "status": "warn",
+                "do_work_worker": "cursor",
+                "do_work_model": "composer-2.5",
+                "requires_check": "auth.cursor_api_key",
             },
         ),
         (
@@ -522,6 +533,15 @@ def test_operator_playbook_doctor_examples_route_through_cli(
             {
                 "do_work_worker": "gemini",
                 "do_work_model": "gemini-2.5-pro",
+                "human_feedback_enabled": False,
+            },
+        ),
+        (
+            _example_config_dir("cursor-do-work"),
+            [],
+            {
+                "do_work_worker": "cursor",
+                "do_work_model": "composer-2.5",
                 "human_feedback_enabled": False,
             },
         ),

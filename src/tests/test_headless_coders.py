@@ -26,6 +26,7 @@ from crewai_headless_flow.workers.base import (
 )
 from crewai_headless_flow.workers.claude import ClaudeAdapter
 from crewai_headless_flow.workers.codex import CodexAdapter
+from crewai_headless_flow.workers.cursor import CursorAdapter
 from crewai_headless_flow.workers.gemini import GeminiAdapter
 from crewai_headless_flow.workers.grok import GrokAdapter
 
@@ -626,6 +627,173 @@ def test_gemini_invocation_error_raises_worker_invocation_error():
 
     with patch("subprocess.run", side_effect=OSError("missing binary")):
         with pytest.raises(WorkerInvocationError, match="Failed to invoke Gemini"):
+            adapter.run("task", cwd="/tmp/r", mode="edit")
+
+
+# =============================================================================
+# CursorAdapter argv + safety tests
+# =============================================================================
+
+
+def test_cursor_inspect_mode_uses_disposable_copy_and_plan_mode():
+    adapter = CursorAdapter(binary="cursor")
+    original = Path("/tmp/original-repo").resolve(strict=False)
+
+    with (
+        patch("subprocess.run") as mock_run,
+        patch.object(adapter, "_create_disposable_copy") as mock_copy,
+        patch.object(adapter, "_cleanup_disposable") as mock_cleanup,
+    ):
+        disposable = Path("/tmp/cursor-inspect-xyz/original-repo")
+        mock_copy.return_value = disposable
+        mock_run.return_value.stdout = (
+            '{"type":"result","result":"reviewed","subtype":"success"}'
+        )
+        mock_run.return_value.stderr = ""
+        mock_run.return_value.returncode = 0
+
+        adapter.run("review this", cwd=original, mode="inspect")
+
+        mock_copy.assert_called_once_with(original)
+        mock_cleanup.assert_called_once_with(disposable)
+        args = mock_run.call_args[0][0]
+        assert args[0:3] == ["cursor", "agent", "--print"]
+        assert "--output-format" in args
+        assert "json" in args
+        assert "--plan" in args
+        assert "--force" not in args
+        assert "--trust" in args
+        assert "--workspace" in args
+        workspace_idx = args.index("--workspace")
+        assert args[workspace_idx + 1] == str(disposable)
+        assert args[-1] == "review this"
+        assert mock_run.call_args.kwargs["cwd"] == disposable
+
+
+def test_cursor_edit_mode_uses_real_cwd_and_force_mode():
+    adapter = CursorAdapter(binary="cursor")
+    repo = Path("/tmp/testrepo").resolve(strict=False)
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value.stdout = (
+            '{"type":"result","result":"done","subtype":"success"}'
+        )
+        mock_run.return_value.stderr = ""
+        mock_run.return_value.returncode = 0
+
+        adapter.run("edit the code", cwd=repo, mode="edit")
+
+        args = mock_run.call_args[0][0]
+        assert "--force" in args
+        assert "--plan" not in args
+        workspace_idx = args.index("--workspace")
+        assert args[workspace_idx + 1] == str(repo)
+        assert mock_run.call_args.kwargs["cwd"] == repo
+
+
+def test_cursor_passes_model_when_given():
+    adapter = CursorAdapter(binary="cursor")
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value.stdout = '{"result": "ok"}'
+        mock_run.return_value.stderr = ""
+        mock_run.return_value.returncode = 0
+
+        adapter.run("task", cwd="/tmp/r", mode="edit", model="composer-2.5")
+
+        args = mock_run.call_args[0][0]
+        model_idx = args.index("--model")
+        assert args[model_idx + 1] == "composer-2.5"
+
+
+def test_cursor_disposable_copy_does_not_preserve_absolute_symlink(tmp_path):
+    adapter = CursorAdapter(binary="cursor")
+    src = tmp_path / "repo"
+    src.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("original")
+    (src / "absolute-link.txt").symlink_to(outside)
+    (src / "sample.txt").write_text("inside")
+
+    disposable = adapter._create_disposable_copy(src)
+
+    assert not (disposable / "absolute-link.txt").exists()
+    assert (disposable / "sample.txt").read_text() == "inside"
+    assert outside.read_text() == "original"
+
+    adapter._cleanup_disposable(disposable)
+
+
+def test_cursor_structured_output_injects_schema_and_repairs_once():
+    adapter = CursorAdapter(binary="cursor")
+    schema = {
+        "type": "object",
+        "properties": {"ok": {"type": "boolean"}},
+        "required": ["ok"],
+        "additionalProperties": False,
+    }
+
+    call_count = {"n": 0}
+
+    def fake_run(cmd, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return type(
+                "P",
+                (),
+                {
+                    "stdout": '{"type":"result","result":"not json"}',
+                    "stderr": "",
+                    "returncode": 0,
+                },
+            )()
+        return type(
+            "P",
+            (),
+            {
+                "stdout": '{"type":"result","result":"{\\"ok\\": true}"}',
+                "stderr": "",
+                "returncode": 0,
+            },
+        )()
+
+    with patch("subprocess.run", side_effect=fake_run):
+        result = adapter.run("task", cwd="/tmp/r", mode="edit", schema=schema)
+
+    assert call_count["n"] == 2
+    assert '"ok": true' in result.summary
+
+
+def test_cursor_returns_normalized_coder_result_from_json_response():
+    adapter = CursorAdapter(binary="cursor")
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value.stdout = (
+            '{"type":"result","result":"Cursor changed the files."}'
+        )
+        mock_run.return_value.stderr = ""
+        mock_run.return_value.returncode = 0
+
+        result = adapter.run("task", cwd="/tmp/r", mode="edit")
+
+        assert isinstance(result, CoderResult)
+        assert result.exit_code == 0
+        assert result.summary == "Cursor changed the files."
+
+
+def test_cursor_timeout_raises_worker_timeout():
+    adapter = CursorAdapter(binary="cursor")
+
+    with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("cursor", 3)):
+        with pytest.raises(WorkerTimeout, match="Cursor timed out after 3s"):
+            adapter.run("task", cwd="/tmp/r", mode="edit", timeout=3)
+
+
+def test_cursor_invocation_error_raises_worker_invocation_error():
+    adapter = CursorAdapter(binary="cursor")
+
+    with patch("subprocess.run", side_effect=OSError("missing binary")):
+        with pytest.raises(WorkerInvocationError, match="Failed to invoke Cursor"):
             adapter.run("task", cwd="/tmp/r", mode="edit")
 
 

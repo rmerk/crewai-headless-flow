@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import shutil
 from dataclasses import dataclass, field
@@ -21,24 +22,35 @@ from .runtime_overrides import load_runtime_config
 
 Status = Literal["pass", "warn", "fail"]
 REQUIRED_STAGES = ("plan", "do_work", "review", "finalize")
-SUPPORTED_WORKERS = {"codex", "grok", "claude", "gemini"}
+SUPPORTED_WORKERS = {"codex", "grok", "claude", "gemini", "cursor"}
 WORKER_BINARIES = {
     "codex": "codex",
     "grok": "grok",
     "claude": "claude",
     "gemini": "gemini",
+    "cursor": "cursor",
 }
 WORKER_HELP_COMMANDS = {
     "codex": ("codex", "exec", "--help"),
     "grok": ("grok", "--help"),
     "claude": ("claude", "--help"),
     "gemini": ("gemini", "--help"),
+    "cursor": ("cursor", "agent", "--help"),
 }
 WORKER_REQUIRED_FLAGS = {
     "codex": ("--sandbox", "--output-schema"),
     "grok": ("--always-approve", "--output-format"),
     "claude": ("--permission-mode", "--json-schema"),
     "gemini": ("--prompt", "--approval-mode", "--output-format"),
+    "cursor": (
+        "--print",
+        "--output-format",
+        "--plan",
+        "--force",
+        "--trust",
+        "--workspace",
+        "--model",
+    ),
 }
 TOOLING_FILES = (
     "pyproject.toml",
@@ -192,6 +204,8 @@ def run_doctor(
 
     for worker in sorted(required_workers):
         _check_worker_cli(report, worker)
+
+    _check_cursor_auth(report, required_workers)
 
     if target_repo is not None:
         report.merge(run_preflight(target_repo))
@@ -548,6 +562,19 @@ def _check_worker_cli(report: DiagnosticReport, worker: str) -> None:
         "pass",
         f"{binary} CLI detected",
         {"version_returncode": version.returncode},
+    )
+
+
+def _check_cursor_auth(report: DiagnosticReport, required_workers: set[str]) -> None:
+    if "cursor" not in required_workers:
+        return
+    if os.getenv("CURSOR_API_KEY"):
+        report.add_check("auth.cursor_api_key", "pass", "CURSOR_API_KEY is set")
+        return
+    report.add_check(
+        "auth.cursor_api_key",
+        "warn",
+        "CURSOR_API_KEY is not set; export it in your shell or use `cursor agent login`",
     )
 
 

@@ -6,7 +6,7 @@ Guidelines for AI agents (and humans using agents) working in this repository.
 
 **crewai-headless-flow** is a reusable, multi-agent CrewAI Flow that treats **Addy Osmani's agent-skills** as operating procedures ("the how") and delegates actual code editing, running, and testing to **pluggable headless coding CLIs** ("the hands").
 
-- **Core idea**: The Flow provides the orchestration and state machine. Skills provide consistent methodology. Workers (CodexAdapter, GrokAdapter, ClaudeAdapter, GeminiAdapter) provide the execution capability.
+- **Core idea**: The Flow provides the orchestration and state machine. Skills provide consistent methodology. Workers (CodexAdapter, GrokAdapter, ClaudeAdapter, GeminiAdapter, CursorAdapter) provide the execution capability.
 - **Primary reusability levers**: Two small YAML files (`config/skills.yaml` and `config/worker.yaml`). Changing procedures or which brain actually edits the code requires **zero Python changes**.
 - **Safety model**: Inspect/review stages are always read-only. Edit stages are non-interactive. Grok inspect mode uses disposable copies; Claude inspect mode uses a disposable copy plus `dontAsk`.
 - **Testing guarantee**: 100% of core behavior is offline-testable (`pytest -m offline`). Live CLI smoke tests are opt-in and gated.
@@ -33,6 +33,7 @@ Guidelines for AI agents (and humans using agents) working in this repository.
   - `GrokAdapter`: Uses disposable copies for safe inspect mode + prompt-based structured output + one repair retry.
   - `ClaudeAdapter`: Uses disposable copies plus `--permission-mode dontAsk` for inspect mode, real target repositories plus `--permission-mode bypassPermissions` for edit mode, and native `--json-schema`.
   - `GeminiAdapter`: Uses disposable copies plus `--approval-mode plan` for inspect mode, real target repositories plus `--approval-mode yolo` for edit mode, and prompt-based structured output repair.
+  - `CursorAdapter`: Uses disposable copies plus `--plan` for inspect mode, real target repositories plus `--force --trust` for edit mode, and prompt-based structured output repair. Auth is inherited from `CURSOR_API_KEY` in the process environment.
 - All heavy lifting happens through `tools/coder_tool.py` (the thin wrapper that combines worker + skill).
 
 The Flow (`flow.py`) only knows about stages, state, and the abstract tool. It never imports concrete adapters directly in normal operation.
@@ -42,7 +43,7 @@ The Flow (`flow.py`) only knows about stages, state, and the abstract tool. It n
 **Never** change Python code to alter behavior if it can be achieved by editing the YAML.
 
 - `config/skills.yaml` — Maps each stage to the agent-skill that supplies the operating procedure.
-- `config/worker.yaml` — Controls per-stage worker (`codex` | `grok` | `claude` | `gemini`), model, sandbox mode, timeouts, optional crew stages, and human-in-the-loop flags.
+- `config/worker.yaml` — Controls per-stage worker (`codex` | `grok` | `claude` | `gemini` | `cursor`), model, sandbox mode, timeouts, optional crew stages, and human-in-the-loop flags.
 
 At startup the system prints a clear table of the resolved mapping. Always verify this table when debugging "why is X using Y?".
 
@@ -92,7 +93,7 @@ The old `main.py` is a legacy M0 spike and is not the primary entrypoint.
 ## Testing Discipline (Non-Negotiable)
 
 - The marker `offline` means **zero network and zero real CLI binaries**. All such tests must continue to pass without any external services.
-- `live_codex`, `live_grok`, `live_claude`, and `live_gemini` markers exist for optional real-CLI smoke tests. They are guarded by environment variables and are **not** run in CI.
+- `live_codex`, `live_grok`, `live_claude`, `live_gemini`, and `live_cursor` markers exist for optional real-CLI smoke tests. They are guarded by environment variables and are **not** run in CI.
 - When adding new functionality, prefer adding strong offline tests (mocks for workers, fixtures for state, etc.) over live tests.
 - If a change cannot be made while keeping the offline suite green, the design is wrong.
 
@@ -103,7 +104,8 @@ The old `main.py` is a legacy M0 spike and is not the primary entrypoint.
   - Grok: the adapter creates a disposable copy under `/tmp/grok-inspect-*` and deletes it afterward.
   - Claude: the adapter creates a disposable copy and runs with `--permission-mode dontAsk`.
   - Gemini: the adapter creates a disposable copy and runs with `--approval-mode plan`.
-- Edit stages (`do_work`, and potentially others) run non-interactively in the real target repository using each adapter's edit-mode approval flags: Codex `--dangerously-bypass-approvals-and-sandbox`, Grok `--always-approve`, Claude `--permission-mode bypassPermissions`, and Gemini `--approval-mode yolo`.
+  - Cursor: the adapter creates a disposable copy and runs with `--plan`.
+- Edit stages (`do_work`, and potentially others) run non-interactively in the real target repository using each adapter's edit-mode approval flags: Codex `--dangerously-bypass-approvals-and-sandbox`, Grok `--always-approve`, Claude `--permission-mode bypassPermissions`, Gemini `--approval-mode yolo`, and Cursor `--force --trust`.
 - Never bypass the adapter layer to call the raw CLIs in new code.
 - Auth (API keys, `gh` auth, etc.) is the user's responsibility via `.env` / keychain. Do not hardcode secrets.
 
@@ -163,6 +165,7 @@ These are the main directions worth considering next (as of June 2026). The offi
 | **Done** | **Improve CI & DX** | CI now uses locked installs, CLI smoke checks, lint, format, types, and offline tests. | Implemented |
 | **Done** | **Expand runtime observability** | State files and debug reports now capture per-task attempts, isolated workspace/batch metadata, and crew round details. | Implemented |
 | **Done** | **Gemini CLI adapter** | Validates the pluggable-worker architecture with a fourth production adapter and a second prompt-repair structured-output path. | Implemented |
+| **Done** | **Cursor Agent CLI adapter** | Adds a fifth opt-in worker via `cursor agent --print` with plan/force inspect/edit normalization. | Implemented |
 | **Highest** | **Extend HITL/runtime controls** | Extra gates, resumable stage inputs, review reruns, targeted task selection, first operator shortcuts, one-run skill overrides, and stage-scoped HITL action allowlists are in place; next value is deeper operator decisions plus any remaining runtime override gaps. | Medium |
 | **Medium** | **Expand real-world examples/docs** | The architecture is broader now; runnable example coverage and operator docs will make it easier to adopt. | Low |
 

@@ -3,10 +3,10 @@
 # =============================================================================
 # This is the PRIMARY reusability lever.
 #
-# You can switch any stage between "codex", "grok", "claude", and "gemini" by editing only
+# You can switch any stage between "codex", "grok", "claude", "gemini", and "cursor" by editing only
 # this file. No Python code changes required.
 #
-# Supported workers: "codex" | "grok" | "claude" | "gemini"
+# Supported workers: "codex" | "grok" | "claude" | "gemini" | "cursor"
 
 defaults:
   worker: "codex"

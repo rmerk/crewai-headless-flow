@@ -1,10 +1,10 @@
 # crewai-headless-flow
 
-A reusable, multi-agent CrewAI Flow that uses **Addy Osmani's agent-skills** as operating procedures and delegates actual coding work to **pluggable headless coding CLIs** (Codex, Grok, Claude Code, and Gemini CLI).
+A reusable, multi-agent CrewAI Flow that uses **Addy Osmani's agent-skills** as operating procedures and delegates actual coding work to **pluggable headless coding CLIs** (Codex, Grok, Claude Code, Gemini CLI, and Cursor Agent CLI).
 
 **CrewAI** = orchestrator / control plane  
 **agent-skills** = the "how" (operating procedures)  
-**Headless coders** (Codex `exec` / Grok `-p` / Claude Code `-p` / Gemini `--prompt`) = the "hands" that edit, run, and test code in a target repository
+**Headless coders** (Codex `exec` / Grok `-p` / Claude Code `-p` / Gemini `--prompt` / Cursor `agent --print`) = the "hands" that edit, run, and test code in a target repository
 
 The workflow is fully re-targetable (any repo + any request) and re-shapeable (swap skills or swap the coding worker per stage) **using only YAML**.
 
@@ -15,23 +15,25 @@ The workflow is fully re-targetable (any repo + any request) and re-shapeable (s
   - Grok (XAI_API_KEY)
   - Claude Code (user-managed Claude CLI install/auth)
   - Gemini CLI (user-managed Gemini CLI install/auth)
+  - Cursor Agent CLI (user-managed Cursor CLI install/auth via `CURSOR_API_KEY` or `cursor agent login`)
 - Optional Planning Crew / Implementation Crew / Review Crew reasoning → **Local Ollama** by default
 - All tests are fully mocked — development and CI cost **$0** and require **no network**.
 
 ## Features
 
 - **Skills as procedures**: Real agent-skills (planning-and-task-breakdown, incremental-implementation, code-review-and-quality, doubt-driven-development, etc.) are injected into every prompt.
-- **Pluggable workers**: One `HeadlessCoder` interface with four production adapters:
+- **Pluggable workers**: One `HeadlessCoder` interface with five production adapters:
   - `CodexAdapter` — uses native `--sandbox` + `--output-schema`
   - `GrokAdapter` — uses disposable copies for safe inspect mode + prompt-based structured output + repair retry
   - `ClaudeAdapter` — uses disposable copies for safe inspect mode + native `--json-schema`
   - `GeminiAdapter` — uses disposable copies plus `--approval-mode plan` for inspect mode, `--approval-mode yolo` for edit mode, and prompt-guided structured output repair
-- **Per-stage configuration**: Choose `codex`, `grok`, `claude`, or `gemini` (and model) independently for `plan`, `do_work`, `review`, and `finalize`.
+  - `CursorAdapter` — uses disposable copies plus `--plan` for inspect mode, real target repository plus `--force --trust` for edit mode, and prompt-guided structured output repair
+- **Per-stage configuration**: Choose `codex`, `grok`, `claude`, `gemini`, or `cursor` (and model) independently for `plan`, `do_work`, `review`, and `finalize`.
 - **Worker-backed planning**: The default `plan` stage now uses the configured stage worker in read-only inspect mode, so plan-stage worker/model settings are real rather than cosmetic.
 - **Optional Planning Crew**: The `plan` stage can run a config-gated sequential CrewAI Crew that researches the repo through the configured plan worker and emits the same `PlanOutput` contract.
 - **Optional Implementation Crew**: The `do_work` stage can run a config-gated CrewAI subflow per task, using inspect plus bounded edit-tool execution, optional task-local decomposition, and bounded self-correction before marking the task complete.
 - **Optional Review Crew**: The `review` stage can run a config-gated sequential CrewAI Crew for richer multi-agent review while still using read-only worker inspection.
-- **Shared review contract**: Direct review and Review Crew both normalize to one `status/issues/summary` schema, with native schema enforcement for Codex/Claude and repair-guided best effort for Grok/Gemini.
+- **Shared review contract**: Direct review and Review Crew both normalize to one `status/issues/summary` schema, with native schema enforcement for Codex/Claude and repair-guided best effort for Grok/Gemini/Cursor.
 - **Shared structured-output repair loop**: All adapters now run one consistent post-execution JSON extraction/validation path when a schema is supplied, with a single repair retry if the first response does not validate.
 - **Structured planning output**: The `plan` stage now emits typed task data that populates Flow state, while still rendering markdown for downstream implementation prompts.
 - **Opt-in parallel `do_work`**: When enabled in `worker.yaml`, the Flow can execute independent planned tasks in parallel batches using isolated workspace copies, then merge back only non-overlapping actual file changes.
@@ -48,7 +50,7 @@ The workflow is fully re-targetable (any repo + any request) and re-shapeable (s
 - **Runtime snapshot reporting**: Persisted state and debug reports include the resolved per-stage skill/worker/model/flags used by that run, separating real runtime knobs from enforced declarations where applicable.
 - **Safe by design**:
   - Edit stages are fully non-interactive
-  - Inspect/review stages are read-only (Codex native sandbox or Grok/Claude/Gemini disposable copy)
+  - Inspect/review stages are read-only (Codex native sandbox or Grok/Claude/Gemini/Cursor disposable copy)
 - **Bounded revise loop** with `max_revisions`, which now fails the run closed if review still cannot pass by the configured cap
 - **Optional human-in-the-loop** (config-gated)
 - **100% offline testable** (`pytest -m offline`)
@@ -99,6 +101,13 @@ claude --version
 gemini --version
 ```
 
+**Cursor Agent CLI**
+```bash
+# Install Cursor CLI and authenticate via CURSOR_API_KEY or `cursor agent login`
+cursor --version
+cursor agent --help
+```
+
 **Ollama (only needed for optional Planning Crew / Implementation Crew / Review Crew)**
 ```bash
 ollama serve
@@ -119,6 +128,7 @@ XAI_API_KEY=xai-...
 
 Claude Code authentication is managed by the Claude CLI, keychain, or environment. This project does not require a Claude-specific `.env` value.
 Gemini CLI authentication is managed by the Gemini CLI install/auth flow or its configured environment.
+Cursor Agent CLI authentication is inherited from the process environment (`CURSOR_API_KEY`) or from `cursor agent login`. This project does not read shell dotfiles or pass API keys on the command line.
 
 ## Running the Demo
 
@@ -140,6 +150,7 @@ want a narrower, precomposed lane without editing YAML:
 | `config/` | You want the default direct-worker path: Codex for plan/review/finalize and Grok for `do_work`. |
 | `examples/configs/claude-do-work` | You want Claude Code on the edit stage with the rest of the flow unchanged. |
 | `examples/configs/gemini-do-work` | You want Gemini CLI on the edit stage with the rest of the flow unchanged. |
+| `examples/configs/cursor-do-work` | You want Cursor Agent CLI on all stages with a single model lane. |
 | `examples/configs/plan-gate` | You want an operator checkpoint before repository-wide planning starts. |
 | `examples/configs/planning-crew` | You want the optional planning Crew without changing implementation/review topology. |
 | `examples/configs/implementation-crew` | You want task-local CrewAI implementation rounds and optional decomposition inside `do_work`. |
@@ -531,6 +542,17 @@ uv run python -m crewai_headless_flow run \
   --target-repo /tmp/demo-target \
   --override-worker do_work=gemini \
   --override-model do_work=gemini-2.5-pro
+```
+
+Cursor all-stages lane:
+
+```bash
+uv run python -m crewai_headless_flow doctor --config-dir examples/configs/cursor-do-work
+
+uv run python -m crewai_headless_flow run \
+  --request "..." \
+  --target-repo /tmp/demo-target \
+  --config-dir examples/configs/cursor-do-work
 ```
 
 Planning Crew lane:

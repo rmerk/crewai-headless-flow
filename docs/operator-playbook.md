@@ -63,7 +63,28 @@ uv run python -m crewai_headless_flow run \
   --config-dir examples/configs/gemini-do-work
 ```
 
-## 4. Implementation Crew
+## 4. Cursor On All Stages
+
+Use when:
+- You want Cursor Agent CLI across plan, do_work, review, and finalize
+- You already authenticate with `CURSOR_API_KEY` in your shell or via `cursor agent login`
+- You want a single-model lane without editing the default `config/` pack
+
+Config dir:
+- `examples/configs/cursor-do-work`
+
+Command:
+
+```bash
+uv run python -m crewai_headless_flow doctor --config-dir examples/configs/cursor-do-work
+
+uv run python -m crewai_headless_flow run \
+  --request "Add a subtract function and a corresponding test using TDD" \
+  --target-repo /tmp/demo-target \
+  --config-dir examples/configs/cursor-do-work
+```
+
+## 5. Implementation Crew
 
 Use when:
 - You want CrewAI to wrap each planned task in an inspect/edit/verify subflow
@@ -117,7 +138,7 @@ uv run python -m crewai_headless_flow run \
   --debug-report-file /tmp/implementation-crew-parallel-replan-report.md
 ```
 
-## 5. Planning Crew
+## 6. Planning Crew
 
 Use when:
 - You want multi-agent repository research before edit work starts
@@ -137,7 +158,7 @@ uv run python -m crewai_headless_flow run \
   --debug-report-file /tmp/planning-crew-report.md
 ```
 
-## 6. Plan Gate
+## 7. Plan Gate
 
 Use when:
 - You want a human checkpoint before repository-wide planning begins
@@ -164,7 +185,7 @@ uv run python -m crewai_headless_flow run \
   --resume-state-file /tmp/plan-gate-state.json
 ```
 
-## 7. Review Crew
+## 8. Review Crew
 
 Use when:
 - You want multi-agent review depth without turning on broader operator gates
@@ -184,7 +205,7 @@ uv run python -m crewai_headless_flow run \
   --debug-report-file /tmp/review-crew-report.md
 ```
 
-## 8. Operator Review Gate
+## 9. Operator Review Gate
 
 Use when:
 - You want a human decision after automated review findings are available
@@ -296,7 +317,7 @@ exact gate, saved checkpoint message, and any saved `before_review` guidance
 needed for `rerun-review`, so resume does not have to guess which human
 checkpoint to reopen.
 
-## 9. Focused do_work Targeting Gate
+## 10. Focused do_work Targeting Gate
 
 Use when:
 - You trust the current structured task graph
@@ -321,7 +342,7 @@ uv run python -m crewai_headless_flow run \
   --state-file /tmp/do-work-targeting-state.json
 ```
 
-## 10. Focused do_work Replan Gate
+## 11. Focused do_work Replan Gate
 
 Use when:
 - You trust the repo context but not the current structured task graph
@@ -345,7 +366,7 @@ uv run python -m crewai_headless_flow run \
   --state-file /tmp/do-work-replan-state.json
 ```
 
-## 11. Focused do_work Skip-to-Review Gate
+## 12. Focused do_work Skip-to-Review Gate
 
 Use when:
 - You want the operator to defer edit work entirely and inspect the current state first
@@ -369,7 +390,7 @@ uv run python -m crewai_headless_flow run \
   --state-file /tmp/do-work-skip-review-state.json
 ```
 
-## 12. Review Targeting Gate
+## 13. Review Targeting Gate
 
 Use when:
 - You trust the current task graph
@@ -416,7 +437,7 @@ uv run python -m crewai_headless_flow run \
   --state-file /tmp/review-targeting-before-state.json
 ```
 
-## 13. Review Replan Gates
+## 14. Review Replan Gates
 
 Use when:
 - You want a narrow config-gated review shortcut instead of broad `advanced_actions`
@@ -458,7 +479,7 @@ uv run python -m crewai_headless_flow run \
   --state-file /tmp/review-replan-state.json
 ```
 
-## 14. Review Force Gates
+## 15. Review Force Gates
 
 Use when:
 - You already know the current state well enough to make a forced review decision before automated review runs
@@ -489,7 +510,7 @@ uv run python -m crewai_headless_flow run \
   --state-file /tmp/review-force-pass-before-state.json
 ```
 
-## 15. Finalize Review Gates
+## 16. Finalize Review Gates
 
 Use when:
 - You want a final human checkpoint before docs/ADR
@@ -594,7 +615,7 @@ If the saved stop point was the `before_finalize` checkpoint, resume reopens tha
 same final checkpoint. When the saved state still has the latest work summary,
 `rerun-review` stays available there without rerunning `do_work`.
 
-## 16. Guided Operator Loop
+## 17. Guided Operator Loop
 
 Use when:
 - You want operator guidance captured before edit work
@@ -615,7 +636,7 @@ uv run python -m crewai_headless_flow run \
   --state-file /tmp/guided-operator-state.json
 ```
 
-## 17. Parallel Structured Work
+## 18. Parallel Structured Work
 
 Use when:
 - The request likely produces multiple independent tasks

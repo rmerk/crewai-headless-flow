@@ -1,0 +1,24 @@
+defaults:
+  worker: "codex"
+  model: null
+  timeout: 300
+
+stages:
+  plan:
+    worker: "cursor"
+    model: "composer-2.5"
+
+  do_work:
+    worker: "cursor"
+    model: "composer-2.5"
+
+  review:
+    worker: "cursor"
+    model: "composer-2.5"
+
+  finalize:
+    worker: "cursor"
+    model: "composer-2.5"
+
+human_feedback:
+  enabled: false

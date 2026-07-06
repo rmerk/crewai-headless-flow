@@ -453,7 +453,7 @@ def get_stage_extra_schema(stage: str, path_parts: list[str]) -> Any:
 class StageConfig:
     stage: str
     skill: str
-    worker: str  # "codex" | "grok" | "claude" | "gemini"
+    worker: str  # "codex" | "grok" | "claude" | "gemini" | "cursor"
     model: Optional[str] = None
     timeout: int = 300
     extra: dict[str, Any] = field(default_factory=dict)

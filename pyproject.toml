@@ -1,7 +1,7 @@
 [project]
 name = "crewai-headless-flow"
 version = "0.1.0"
-description = "Reusable CrewAI Flow using agent-skills as operating procedures and pluggable headless coders (Codex, Grok, Claude, Gemini) as the execution layer."
+description = "Reusable CrewAI Flow using agent-skills as operating procedures and pluggable headless coders (Codex, Grok, Claude, Gemini, Cursor) as the execution layer."
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
 dependencies = [
@@ -40,6 +40,7 @@ markers = [
     "live_grok: optional live smoke against real grok CLI (requires XAI_API_KEY + env gate)",
     "live_claude: optional live smoke against real Claude Code CLI (requires auth + env gate)",
     "live_gemini: optional live smoke against real Gemini CLI (requires auth + env gate)",
+    "live_cursor: optional live smoke against real Cursor Agent CLI (requires auth + env gate)",
 ]
 testpaths = ["src/tests"]
 python_files = ["test_*.py"]
