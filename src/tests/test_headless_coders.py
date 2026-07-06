@@ -640,7 +640,7 @@ def test_cursor_inspect_mode_uses_disposable_copy_and_plan_mode():
     original = Path("/tmp/original-repo").resolve(strict=False)
 
     with (
-        patch("subprocess.run") as mock_run,
+        patch.object(adapter, "_run_subprocess") as mock_run,
         patch.object(adapter, "_create_disposable_copy") as mock_copy,
         patch.object(adapter, "_cleanup_disposable") as mock_cleanup,
     ):
@@ -674,7 +674,7 @@ def test_cursor_edit_mode_uses_real_cwd_and_force_mode():
     adapter = CursorAdapter(binary="cursor")
     repo = Path("/tmp/testrepo").resolve(strict=False)
 
-    with patch("subprocess.run") as mock_run:
+    with patch.object(adapter, "_run_subprocess") as mock_run:
         mock_run.return_value.stdout = (
             '{"type":"result","result":"done","subtype":"success"}'
         )
@@ -694,7 +694,7 @@ def test_cursor_edit_mode_uses_real_cwd_and_force_mode():
 def test_cursor_passes_model_when_given():
     adapter = CursorAdapter(binary="cursor")
 
-    with patch("subprocess.run") as mock_run:
+    with patch.object(adapter, "_run_subprocess") as mock_run:
         mock_run.return_value.stdout = '{"result": "ok"}'
         mock_run.return_value.stderr = ""
         mock_run.return_value.returncode = 0
@@ -704,6 +704,30 @@ def test_cursor_passes_model_when_given():
         args = mock_run.call_args[0][0]
         model_idx = args.index("--model")
         assert args[model_idx + 1] == "composer-2.5"
+
+
+def test_cursor_uses_file_backed_capture_not_pipes():
+    """
+    Regression test: the Cursor Agent CLI hangs when given pipe-backed
+    stdio while the parent process's own stderr fd is a redirected regular
+    file (e.g. pytest's default fd-level capture). `_run_subprocess` must
+    back stdout/stderr with real temp files, never `subprocess.PIPE`.
+    """
+    adapter = CursorAdapter(binary="cursor")
+
+    with patch("subprocess.run") as mock_subprocess_run:
+        mock_subprocess_run.return_value = subprocess.CompletedProcess(
+            args=["cursor"], returncode=0, stdout=b"", stderr=b""
+        )
+
+        adapter._run_subprocess(["cursor", "agent"], cwd=Path("/tmp/r"), timeout=30)
+
+        kwargs = mock_subprocess_run.call_args.kwargs
+        assert kwargs["stdout"] != subprocess.PIPE
+        assert kwargs["stderr"] != subprocess.PIPE
+        assert "capture_output" not in kwargs
+        assert hasattr(kwargs["stdout"], "fileno")
+        assert hasattr(kwargs["stderr"], "fileno")
 
 
 def test_cursor_disposable_copy_does_not_preserve_absolute_symlink(tmp_path):
@@ -757,7 +781,7 @@ def test_cursor_structured_output_injects_schema_and_repairs_once():
             },
         )()
 
-    with patch("subprocess.run", side_effect=fake_run):
+    with patch.object(adapter, "_run_subprocess", side_effect=fake_run):
         result = adapter.run("task", cwd="/tmp/r", mode="edit", schema=schema)
 
     assert call_count["n"] == 2
@@ -767,7 +791,7 @@ def test_cursor_structured_output_injects_schema_and_repairs_once():
 def test_cursor_returns_normalized_coder_result_from_json_response():
     adapter = CursorAdapter(binary="cursor")
 
-    with patch("subprocess.run") as mock_run:
+    with patch.object(adapter, "_run_subprocess") as mock_run:
         mock_run.return_value.stdout = (
             '{"type":"result","result":"Cursor changed the files."}'
         )
@@ -784,7 +808,9 @@ def test_cursor_returns_normalized_coder_result_from_json_response():
 def test_cursor_timeout_raises_worker_timeout():
     adapter = CursorAdapter(binary="cursor")
 
-    with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("cursor", 3)):
+    with patch.object(
+        adapter, "_run_subprocess", side_effect=subprocess.TimeoutExpired("cursor", 3)
+    ):
         with pytest.raises(WorkerTimeout, match="Cursor timed out after 3s"):
             adapter.run("task", cwd="/tmp/r", mode="edit", timeout=3)
 
@@ -792,7 +818,9 @@ def test_cursor_timeout_raises_worker_timeout():
 def test_cursor_invocation_error_raises_worker_invocation_error():
     adapter = CursorAdapter(binary="cursor")
 
-    with patch("subprocess.run", side_effect=OSError("missing binary")):
+    with patch.object(
+        adapter, "_run_subprocess", side_effect=OSError("missing binary")
+    ):
         with pytest.raises(WorkerInvocationError, match="Failed to invoke Cursor"):
             adapter.run("task", cwd="/tmp/r", mode="edit")
 

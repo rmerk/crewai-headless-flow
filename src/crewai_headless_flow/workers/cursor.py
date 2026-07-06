@@ -72,13 +72,7 @@ class CursorAdapter:
             )
 
             try:
-                proc = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout,
-                    cwd=workdir,
-                )
+                proc = self._run_subprocess(cmd, cwd=workdir, timeout=timeout)
             except subprocess.TimeoutExpired as exc:
                 raise WorkerTimeout(f"Cursor timed out after {timeout}s") from exc
             except Exception as exc:
@@ -96,12 +90,8 @@ class CursorAdapter:
                     headless_mode=headless_mode,
                     model=model,
                 )
-                repair_proc = subprocess.run(
-                    repair_cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=min(120, timeout),
-                    cwd=workdir,
+                repair_proc = self._run_subprocess(
+                    repair_cmd, cwd=workdir, timeout=min(120, timeout)
                 )
                 exit_code = repair_proc.returncode
                 stdout = repair_proc.stdout or stdout
@@ -119,6 +109,36 @@ class CursorAdapter:
         finally:
             if mode == "inspect":
                 self._cleanup_disposable(workdir)
+
+    def _run_subprocess(
+        self, cmd: list[str], *, cwd: Path, timeout: int
+    ) -> subprocess.CompletedProcess[str]:
+        """
+        Invoke `cmd` with real temp files backing stdout/stderr instead of pipes.
+
+        The Cursor Agent CLI hangs indefinitely when given pipe-backed stdio
+        while the parent process's own stderr fd has already been redirected
+        to a plain file rather than a TTY -- exactly what pytest's default
+        fd-level output capture (and many CI log wrappers) do. File-backed
+        capture avoids that trigger entirely while still giving us the
+        subprocess's output afterward.
+        """
+        with (
+            tempfile.TemporaryFile() as out_f,
+            tempfile.TemporaryFile() as err_f,
+        ):
+            proc = subprocess.run(
+                cmd,
+                stdout=out_f,
+                stderr=err_f,
+                timeout=timeout,
+                cwd=cwd,
+            )
+            out_f.seek(0)
+            err_f.seek(0)
+            stdout = out_f.read().decode("utf-8", errors="replace")
+            stderr = err_f.read().decode("utf-8", errors="replace")
+        return subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
 
     def _build_command(
         self,
