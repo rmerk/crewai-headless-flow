@@ -38,12 +38,18 @@ Guidelines for AI agents (and humans using agents) working in this repository.
 
 The Flow (`flow.py`) only knows about stages, state, and the abstract tool. It never imports concrete adapters directly in normal operation.
 
+### 3. Optional Crew Coordination Modes
+- Each optional Crew (`plan_crew.py`, `do_work_crew.py`, `review_crew.py`) supports two `process` values via `worker.yaml`'s `crew.process` key: `"sequential"` (default) and `"hierarchical"`.
+- **Sequential + delegation**: tasks keep their fixed `agent=` assignment and read prior task output via `Task.context=[...]`. Setting `crew.delegation.enabled: true` additionally gives that crew's coordinator/decision agent `allow_delegation=True` (CrewAI's `DelegateWorkTool` / `AskQuestionTool`) so it can pull in a specialist mid-task instead of only reading a frozen context summary.
+- **Hierarchical + manager**: `crew.process: "hierarchical"` builds the Crew with `Process.hierarchical` and an auto-created manager (`manager_llm`, sourced from `crew.manager.llm`, falling back to the crew's own `llm` block). Tasks are built **without** a fixed `agent=` so the manager actually decides who runs each task at runtime. Delegation reliability depends heavily on using a capable tool-calling model for `manager.llm` — small/local models are known to mis-format delegation tool calls or have the manager skip delegation entirely.
+- Each crew module exposes a `build_*_crew(...)` function (e.g. `build_review_crew`) that constructs the `Crew`/`Agent`/`Task` graph without invoking `.kickoff()`, so offline tests can assert on `crew.process`, `crew.manager_llm`, and per-agent `allow_delegation` without a live LLM. The corresponding `run_*_crew(...)` function calls the builder and then kicks off the crew.
+
 ## Configuration (Edit These First)
 
 **Never** change Python code to alter behavior if it can be achieved by editing the YAML.
 
 - `config/skills.yaml` — Maps each stage to the agent-skill that supplies the operating procedure.
-- `config/worker.yaml` — Controls per-stage worker (`codex` | `grok` | `claude` | `gemini` | `cursor`), model, sandbox mode, timeouts, optional crew stages, and human-in-the-loop flags.
+- `config/worker.yaml` — Controls per-stage worker (`codex` | `grok` | `claude` | `gemini` | `cursor`), model, sandbox mode, timeouts, optional crew stages (including `process: sequential|hierarchical`, `delegation.enabled`, and `manager.llm`), and human-in-the-loop flags.
 
 At startup the system prints a clear table of the resolved mapping. Always verify this table when debugging "why is X using Y?".
 

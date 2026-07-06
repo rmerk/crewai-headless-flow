@@ -85,33 +85,58 @@ def _crew_llm(crew_config: dict[str, Any]) -> LLM:
     )
 
 
-def _crew_process(crew_config: dict[str, Any]) -> Process:
-    process = crew_config.get("process", "sequential")
-    if process != "sequential":
-        raise ValueError("Review Crew only supports process='sequential'")
-    return Process.sequential
+def _is_hierarchical(crew_config: dict[str, Any]) -> bool:
+    return crew_config.get("process", "sequential") == "hierarchical"
 
 
-def run_review_crew(
-    *,
-    review_context: str,
-    worker_tool: HeadlessCoderTool,
-    cwd: str,
-    timeout: int,
-    model: str | None = None,
-    crew_config: dict[str, Any] | None = None,
-) -> ReviewCrewDecision:
-    """Run the optional sequential Review Crew and normalize its decision."""
+def _first_not_none(*values: Any) -> Any:
+    for value in values:
+        if value is not None:
+            return value
+    return None
 
-    crew_config = crew_config or {}
-    llm = _crew_llm(crew_config)
-    inspect_tool = HeadlessInspectTool(
-        worker_tool=worker_tool,
-        cwd=cwd,
-        timeout=timeout,
-        model=model,
+
+def _manager_llm(crew_config: dict[str, Any]) -> LLM:
+    """LLM for the auto-created manager agent (hierarchical mode only).
+
+    Falls back to the crew's own ``llm`` block for any field left unset, so a
+    minimal ``manager.llm.model`` override is enough to point the manager at
+    a stronger tool-calling model while reusing the crew's base_url/temperature.
+    ``None`` (not just "missing key") is treated as unset so an explicit
+    ``temperature: 0.0`` override is never mistaken for "fall back".
+    """
+    fallback_cfg = crew_config.get("llm", {}) or {}
+    manager_cfg = (crew_config.get("manager", {}) or {}).get("llm", {}) or {}
+    return LLM(
+        model=_first_not_none(
+            manager_cfg.get("model"), fallback_cfg.get("model"), "ollama/llama3.2"
+        ),
+        base_url=_first_not_none(
+            manager_cfg.get("base_url"),
+            fallback_cfg.get("base_url"),
+            "http://localhost:11434",
+        ),
+        temperature=_first_not_none(
+            manager_cfg.get("temperature"), fallback_cfg.get("temperature"), 0.2
+        ),
     )
 
+
+def _delegation_enabled(crew_config: dict[str, Any]) -> bool:
+    """Sequential-only: whether the coordinator agent gets allow_delegation=True.
+
+    Hierarchical mode always routes execution through CrewAI's auto-created
+    manager, so this flag is only meaningful under Process.sequential.
+    """
+    if _is_hierarchical(crew_config):
+        return False
+    delegation_cfg = crew_config.get("delegation", {}) or {}
+    return bool(delegation_cfg.get("enabled", False))
+
+
+def _build_review_agents(
+    *, llm: LLM, inspect_tool: HeadlessInspectTool, delegation_enabled: bool
+) -> dict[str, Agent]:
     evidence_agent = Agent(
         role="Review Evidence Collector",
         goal="Collect read-only evidence about the recent implementation.",
@@ -153,7 +178,29 @@ def run_review_crew(
         backstory="You make conservative release decisions from concrete review evidence.",
         llm=llm,
         verbose=False,
+        allow_delegation=delegation_enabled,
     )
+    return {
+        "evidence": evidence_agent,
+        "correctness": correctness_agent,
+        "test": test_agent,
+        "scope": scope_agent,
+        "coordinator": coordinator,
+    }
+
+
+def _build_review_tasks(
+    agents: dict[str, Agent], review_context: str, *, assign_agents: bool
+) -> list[Task]:
+    """Build the review task pipeline.
+
+    When ``assign_agents`` is False (hierarchical mode), tasks are built
+    without a fixed ``agent=`` so CrewAI's manager actually decides who runs
+    each task at runtime instead of following a pre-assigned pipeline.
+    """
+
+    def agent_or_none(name: str) -> Agent | None:
+        return agents[name] if assign_agents else None
 
     evidence_task = Task(
         description=(
@@ -161,25 +208,25 @@ def run_review_crew(
             f"{review_context}"
         ),
         expected_output="A concise evidence summary with files, tests, and risks.",
-        agent=evidence_agent,
+        agent=agent_or_none("evidence"),
     )
     correctness_task = Task(
         description="Review the evidence for correctness defects.",
         expected_output="Concrete correctness issues, or an explicit no-issues statement.",
-        agent=correctness_agent,
         context=[evidence_task],
+        agent=agent_or_none("correctness"),
     )
     test_task = Task(
         description="Review the evidence for missing or weak tests.",
         expected_output="Concrete test coverage issues, or an explicit no-issues statement.",
-        agent=test_agent,
         context=[evidence_task],
+        agent=agent_or_none("test"),
     )
     scope_task = Task(
         description="Review the evidence for scope or safety problems.",
         expected_output="Concrete scope/safety issues, or an explicit no-issues statement.",
-        agent=scope_agent,
         context=[evidence_task],
+        agent=agent_or_none("scope"),
     )
     decision_task = Task(
         description=(
@@ -190,28 +237,80 @@ def run_review_crew(
         expected_output=(
             "A JSON object with status ('pass' or 'revise'), issues, and summary."
         ),
-        agent=coordinator,
         context=[correctness_task, test_task, scope_task],
         output_pydantic=ReviewCrewDecision,
+        agent=agent_or_none("coordinator"),
+    )
+    return [evidence_task, correctness_task, test_task, scope_task, decision_task]
+
+
+def build_review_crew(
+    *,
+    review_context: str,
+    worker_tool: HeadlessCoderTool,
+    cwd: str,
+    timeout: int,
+    model: str | None = None,
+    crew_config: dict[str, Any] | None = None,
+) -> Crew:
+    """Construct the Review Crew without invoking it.
+
+    Kept separate from ``run_review_crew`` so offline tests can assert on
+    ``crew.process``, ``crew.manager_llm``, and per-agent ``allow_delegation``
+    without requiring a live LLM (only ``crew.kickoff()`` makes network calls).
+    """
+
+    crew_config = crew_config or {}
+    hierarchical = _is_hierarchical(crew_config)
+    llm = _crew_llm(crew_config)
+    inspect_tool = HeadlessInspectTool(
+        worker_tool=worker_tool,
+        cwd=cwd,
+        timeout=timeout,
+        model=model,
     )
 
-    crew = Crew(
-        agents=[
-            evidence_agent,
-            correctness_agent,
-            test_agent,
-            scope_agent,
-            coordinator,
-        ],
-        tasks=[
-            evidence_task,
-            correctness_task,
-            test_task,
-            scope_task,
-            decision_task,
-        ],
-        process=_crew_process(crew_config),
+    agents = _build_review_agents(
+        llm=llm,
+        inspect_tool=inspect_tool,
+        delegation_enabled=_delegation_enabled(crew_config),
+    )
+    tasks = _build_review_tasks(agents, review_context, assign_agents=not hierarchical)
+
+    if hierarchical:
+        return Crew(
+            agents=list(agents.values()),
+            tasks=tasks,
+            process=Process.hierarchical,
+            manager_llm=_manager_llm(crew_config),
+            verbose=False,
+        )
+
+    return Crew(
+        agents=list(agents.values()),
+        tasks=tasks,
+        process=Process.sequential,
         verbose=False,
     )
 
+
+def run_review_crew(
+    *,
+    review_context: str,
+    worker_tool: HeadlessCoderTool,
+    cwd: str,
+    timeout: int,
+    model: str | None = None,
+    crew_config: dict[str, Any] | None = None,
+) -> ReviewCrewDecision:
+    """Run the optional Review Crew (sequential or hierarchical) and normalize its decision."""
+
+    crew = build_review_crew(
+        review_context=review_context,
+        worker_tool=worker_tool,
+        cwd=cwd,
+        timeout=timeout,
+        model=model,
+        crew_config=crew_config,
+    )
     return normalize_review_crew_output(crew.kickoff())

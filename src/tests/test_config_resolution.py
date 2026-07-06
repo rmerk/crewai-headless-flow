@@ -286,7 +286,7 @@ def test_review_sandbox_other_than_read_only_fails_closed(sample_config_dir: Pat
         load_config(sample_config_dir)
 
 
-def test_crew_process_other_than_sequential_fails_closed(sample_config_dir: Path):
+def test_crew_process_invalid_value_fails_closed(sample_config_dir: Path):
     worker_file = sample_config_dir / "worker.yaml"
     data = yaml.safe_load(worker_file.read_text())
     data["stages"]["plan"]["crew"] = {
@@ -297,7 +297,87 @@ def test_crew_process_other_than_sequential_fails_closed(sample_config_dir: Path
 
     with pytest.raises(
         ValueError,
-        match="worker.yaml stages.plan.crew.process must be set to 'sequential'",
+        match=r"worker\.yaml stages\.plan\.crew\.process must be set to "
+        r"'sequential' or 'hierarchical'",
+    ):
+        load_config(sample_config_dir)
+
+
+def test_crew_process_hierarchical_is_accepted(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["stages"]["plan"]["crew"] = {
+        "enabled": True,
+        "process": "hierarchical",
+    }
+    worker_file.write_text(yaml.safe_dump(data))
+
+    config = load_config(sample_config_dir)
+    crew_cfg = config.get_stage("plan").extra["crew"]
+
+    assert crew_cfg["process"] == "hierarchical"
+
+
+def test_crew_delegation_enabled_flag_is_accepted(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["stages"]["review"]["crew"] = {
+        "enabled": True,
+        "process": "sequential",
+        "delegation": {"enabled": True},
+    }
+    worker_file.write_text(yaml.safe_dump(data))
+
+    config = load_config(sample_config_dir)
+    crew_cfg = config.get_stage("review").extra["crew"]
+
+    assert crew_cfg["delegation"] == {"enabled": True}
+
+
+def test_crew_delegation_rejects_non_boolean_enabled(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["stages"]["review"]["crew"] = {
+        "enabled": True,
+        "delegation": {"enabled": "yes"},
+    }
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(
+        ValueError,
+        match="worker.yaml stages.review.crew.delegation.enabled must be boolean",
+    ):
+        load_config(sample_config_dir)
+
+
+def test_crew_manager_llm_accepts_partial_override(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["stages"]["review"]["crew"] = {
+        "enabled": True,
+        "process": "hierarchical",
+        "manager": {"llm": {"model": "gpt-4o"}},
+    }
+    worker_file.write_text(yaml.safe_dump(data))
+
+    config = load_config(sample_config_dir)
+    crew_cfg = config.get_stage("review").extra["crew"]
+
+    assert crew_cfg["manager"]["llm"]["model"] == "gpt-4o"
+
+
+def test_crew_manager_rejects_unknown_keys(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["stages"]["review"]["crew"] = {
+        "enabled": True,
+        "manager": {"agent": "custom"},
+    }
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(
+        ValueError,
+        match="worker.yaml stages.review.crew.manager contains unsupported keys",
     ):
         load_config(sample_config_dir)
 

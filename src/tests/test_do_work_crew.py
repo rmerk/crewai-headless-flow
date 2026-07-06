@@ -3,12 +3,15 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from crewai import Process
 
 from crewai_headless_flow.do_work_contract import DoWorkExecutionPlan, DoWorkSubtask
 from crewai_headless_flow.do_work_crew import (
     DEFAULT_MAX_ROUNDS,
     DEFAULT_MAX_SUBTASKS,
     HeadlessEditTool,
+    build_do_work_decomposition_crew,
+    build_do_work_round_crew,
     _max_subtasks,
     _max_rounds,
     normalize_do_work_crew_output,
@@ -287,3 +290,102 @@ def test_max_subtasks_defaults_and_rejects_non_positive_values():
         match="Implementation Crew decomposition max_subtasks must be at least 1",
     ):
         _max_subtasks({"decomposition": {"max_subtasks": 0}})
+
+
+def _build_round_crew(**crew_config_overrides):
+    crew, edit_tool = build_do_work_round_crew(
+        task_prompt="Implement the assigned slice.",
+        worker_tool=RecordingWorkerTool(),
+        cwd="/tmp/repo",
+        timeout=17,
+        crew_config=crew_config_overrides,
+    )
+    return crew, edit_tool
+
+
+def test_build_do_work_round_crew_defaults_to_sequential_without_delegation():
+    crew, _ = _build_round_crew()
+
+    assert crew.process == Process.sequential
+    coordinator = next(a for a in crew.agents if a.role == "Implementation Coordinator")
+    assert coordinator.allow_delegation is False
+    assert all(task.agent is not None for task in crew.tasks)
+
+
+def test_build_do_work_round_crew_sequential_delegation_enabled_only_on_coordinator():
+    crew, _ = _build_round_crew(process="sequential", delegation={"enabled": True})
+
+    assert crew.process == Process.sequential
+    for agent in crew.agents:
+        if agent.role == "Implementation Coordinator":
+            assert agent.allow_delegation is True
+        else:
+            assert agent.allow_delegation is False
+
+
+def test_build_do_work_round_crew_hierarchical_uses_manager_llm_and_unassigned_tasks():
+    crew, _ = _build_round_crew(
+        process="hierarchical",
+        manager={"llm": {"model": "gpt-4o"}},
+    )
+
+    assert crew.process == Process.hierarchical
+    assert crew.manager_llm is not None
+    assert crew.manager_llm.model == "gpt-4o"
+    assert all(task.agent is None for task in crew.tasks)
+
+
+def test_build_do_work_round_crew_hierarchical_manager_llm_falls_back_to_crew_llm():
+    crew, _ = _build_round_crew(
+        process="hierarchical",
+        llm={"model": "custom-fallback-model"},
+    )
+
+    assert crew.manager_llm.model == "custom-fallback-model"
+
+
+def test_build_do_work_round_crew_hierarchical_ignores_delegation_flag():
+    crew, _ = _build_round_crew(process="hierarchical", delegation={"enabled": True})
+
+    coordinator = next(a for a in crew.agents if a.role == "Implementation Coordinator")
+    assert coordinator.allow_delegation is False
+
+
+def _build_decomposition_crew(**crew_config_overrides):
+    return build_do_work_decomposition_crew(
+        task_prompt="Implement the assigned task.",
+        worker_tool=RecordingWorkerTool(),
+        cwd="/tmp/repo",
+        timeout=17,
+        model=None,
+        crew_config=crew_config_overrides,
+    )
+
+
+def test_build_do_work_decomposition_crew_defaults_to_sequential_without_delegation():
+    crew = _build_decomposition_crew()
+
+    assert crew.process == Process.sequential
+    validator = next(a for a in crew.agents if a.role == "Decomposition Validator")
+    assert validator.allow_delegation is False
+    assert all(task.agent is not None for task in crew.tasks)
+
+
+def test_build_do_work_decomposition_crew_hierarchical_uses_manager_llm():
+    crew = _build_decomposition_crew(
+        process="hierarchical",
+        manager={"llm": {"model": "gpt-4o"}},
+    )
+
+    assert crew.process == Process.hierarchical
+    assert crew.manager_llm.model == "gpt-4o"
+    assert all(task.agent is None for task in crew.tasks)
+
+
+def test_build_do_work_decomposition_crew_hierarchical_ignores_delegation_flag():
+    crew = _build_decomposition_crew(
+        process="hierarchical", delegation={"enabled": True}
+    )
+
+    validator = next(a for a in crew.agents if a.role == "Decomposition Validator")
+    assert validator.allow_delegation is False

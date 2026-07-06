@@ -3,10 +3,12 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from crewai import Process
 
 from crewai_headless_flow.review_crew import (
     HeadlessInspectTool,
     ReviewCrewDecision,
+    build_review_crew,
     normalize_review_crew_output,
 )
 from crewai_headless_flow.workers.base import CoderResult
@@ -135,3 +137,70 @@ def test_headless_inspect_tool_public_run_path_uses_inspect_mode():
 
     assert result == "inspected"
     assert worker_tool.calls[0]["mode"] == "inspect"
+
+
+def _build_review_crew(**crew_config_overrides):
+    return build_review_crew(
+        review_context="Review the recent changes.",
+        worker_tool=RecordingWorkerTool(),
+        cwd="/tmp/repo",
+        timeout=17,
+        crew_config=crew_config_overrides,
+    )
+
+
+def test_build_review_crew_defaults_to_sequential_without_delegation():
+    crew = _build_review_crew()
+
+    assert crew.process == Process.sequential
+    coordinator = next(a for a in crew.agents if a.role == "Review Coordinator")
+    assert coordinator.allow_delegation is False
+    assert all(task.agent is not None for task in crew.tasks)
+
+
+def test_build_review_crew_sequential_delegation_enabled_only_on_coordinator():
+    crew = _build_review_crew(process="sequential", delegation={"enabled": True})
+
+    assert crew.process == Process.sequential
+    for agent in crew.agents:
+        if agent.role == "Review Coordinator":
+            assert agent.allow_delegation is True
+        else:
+            assert agent.allow_delegation is False
+
+
+def test_build_review_crew_hierarchical_uses_manager_llm_and_unassigned_tasks():
+    crew = _build_review_crew(
+        process="hierarchical",
+        manager={"llm": {"model": "gpt-4o"}},
+    )
+
+    assert crew.process == Process.hierarchical
+    assert crew.manager_llm is not None
+    assert crew.manager_llm.model == "gpt-4o"
+    assert all(task.agent is None for task in crew.tasks)
+
+
+def test_build_review_crew_hierarchical_manager_llm_falls_back_to_crew_llm():
+    crew = _build_review_crew(
+        process="hierarchical",
+        llm={"model": "custom-fallback-model"},
+    )
+
+    assert crew.manager_llm.model == "custom-fallback-model"
+
+
+def test_build_review_crew_hierarchical_ignores_delegation_flag():
+    crew = _build_review_crew(process="hierarchical", delegation={"enabled": True})
+
+    coordinator = next(a for a in crew.agents if a.role == "Review Coordinator")
+    assert coordinator.allow_delegation is False
+
+
+def test_build_review_crew_hierarchical_preserves_explicit_zero_temperature():
+    crew = _build_review_crew(
+        process="hierarchical",
+        manager={"llm": {"model": "gpt-4o", "temperature": 0.0}},
+    )
+
+    assert crew.manager_llm.temperature == 0.0

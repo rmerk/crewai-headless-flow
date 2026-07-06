@@ -20,10 +20,26 @@ stages:
     model: null
     crew:
       # Optional richer multi-agent planning. Disabled by default to preserve the
-      # direct worker-backed plan path. Only process="sequential" is currently
-      # supported; other values fail config validation.
+      # direct worker-backed plan path. process="sequential" (default) or
+      # "hierarchical" are supported; other values fail config validation.
       enabled: false
       process: "sequential"
+      # Sequential-only: when enabled, the Planning Coordinator agent gets
+      # allow_delegation=True (DelegateWorkTool / AskQuestionTool) so it can
+      # pull in another crew agent mid-task instead of only reading the
+      # frozen research/draft/validation task context.
+      delegation:
+        enabled: false
+      # Hierarchical-only: LLM for the auto-created manager agent, used only
+      # when process="hierarchical". Falls back to the crew `llm` below if
+      # left unset. Use a strong tool-calling model (e.g. gpt-4o class) here
+      # -- small/local models are known to mis-format delegation tool calls
+      # or have the manager skip delegation and do the work itself.
+      manager:
+        llm:
+          model: null
+          base_url: "http://localhost:11434"
+          temperature: 0.2
       llm:
         model: "ollama/llama3.2"
         base_url: "http://localhost:11434"
@@ -42,11 +58,26 @@ stages:
       # isolated per-task workspaces and conflict-safe mergeback. max_rounds
       # bounds self-correction before the Flow marks the task failed.
       # decomposition can optionally split one planned task into a few smaller
-      # ordered execution slices before edit-mode work begins. Only
-      # process="sequential" is currently supported; other values fail config
-      # validation.
+      # ordered execution slices before edit-mode work begins.
+      # process="sequential" (default) or "hierarchical" are supported; other
+      # values fail config validation.
       enabled: false
       process: "sequential"
+      # Sequential-only: when enabled, the Implementation Coordinator agent
+      # gets allow_delegation=True so it can pull in the evidence/verifier
+      # agent mid-task instead of only reading the frozen task context.
+      delegation:
+        enabled: false
+      # Hierarchical-only: LLM for the auto-created manager agent, used only
+      # when process="hierarchical". Falls back to the crew `llm` below if
+      # left unset. Use a strong tool-calling model here -- small/local
+      # models are known to mis-format delegation tool calls or have the
+      # manager skip delegation and do the work itself.
+      manager:
+        llm:
+          model: null
+          base_url: "http://localhost:11434"
+          temperature: 0.2
       max_rounds: 2
       decomposition:
         enabled: false
@@ -91,10 +122,26 @@ stages:
     sandbox: "read-only"
     crew:
       # Optional richer multi-agent review. Disabled by default to preserve v0.1 behavior.
-      # Only process="sequential" is currently supported; other values fail
-      # config validation.
+      # process="sequential" (default) or "hierarchical" are supported; other
+      # values fail config validation.
       enabled: false
       process: "sequential"
+      # Sequential-only: when enabled, the Review Coordinator agent gets
+      # allow_delegation=True so it can ask a specialist reviewer (evidence,
+      # correctness, test, or scope) mid-task instead of only reading the
+      # frozen review task context.
+      delegation:
+        enabled: false
+      # Hierarchical-only: LLM for the auto-created manager agent, used only
+      # when process="hierarchical". Falls back to the crew `llm` below if
+      # left unset. Use a strong tool-calling model here -- small/local
+      # models are known to mis-format delegation tool calls or have the
+      # manager skip delegation and do the work itself.
+      manager:
+        llm:
+          model: null
+          base_url: "http://localhost:11434"
+          temperature: 0.2
       llm:
         model: "ollama/llama3.2"
         base_url: "http://localhost:11434"

@@ -709,7 +709,7 @@ def test_run_rejects_review_sandbox_override_other_than_read_only(
     assert "stage override review.sandbox must be set to 'read-only'" in err
 
 
-def test_run_rejects_non_sequential_crew_process_override(
+def test_run_rejects_invalid_crew_process_override(
     tmp_path: Path, config_dir: Path, capsys: pytest.CaptureFixture[str]
 ):
     from crewai_headless_flow import cli
@@ -730,7 +730,10 @@ def test_run_rejects_non_sequential_crew_process_override(
 
     err = capsys.readouterr().err
     assert rc == 1
-    assert "stage override review.crew.process must be set to 'sequential'" in err
+    assert (
+        "stage override review.crew.process must be set to "
+        "'sequential' or 'hierarchical'" in err
+    )
 
 
 def test_run_rejects_unknown_skill_override(

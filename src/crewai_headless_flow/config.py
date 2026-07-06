@@ -113,8 +113,11 @@ def _is_read_only_sandbox(value: Any) -> bool:
     return value == "read-only"
 
 
-def _is_sequential_process(value: Any) -> bool:
-    return value == "sequential"
+CREW_PROCESSES = ("sequential", "hierarchical")
+
+
+def _is_valid_crew_process(value: Any) -> bool:
+    return value in CREW_PROCESSES
 
 
 def _llm_schema() -> dict[str, Any]:
@@ -128,7 +131,21 @@ def _llm_schema() -> dict[str, Any]:
 def _crew_schema() -> dict[str, Any]:
     return {
         "enabled": _is_bool,
-        "process": _is_sequential_process,
+        "process": _is_valid_crew_process,
+        # Sequential-only: opts the crew's coordinator/decision agent into
+        # allow_delegation=True (DelegateWorkTool / AskQuestionTool) instead
+        # of only reading a frozen Task.context summary.
+        "delegation": {
+            "enabled": _is_bool,
+        },
+        # Hierarchical-only: LLM for the auto-created manager agent. Falls
+        # back to the crew's own `llm` block when omitted. Delegation
+        # reliability depends heavily on using a capable tool-calling model
+        # here (small/local models are known to mis-format delegation tool
+        # calls or have the manager skip delegation entirely).
+        "manager": {
+            "llm": _llm_schema(),
+        },
         "llm": _llm_schema(),
     }
 
@@ -255,8 +272,9 @@ def _validator_description(validator: Any) -> str:
         return "set to true"
     if validator is _is_read_only_sandbox:
         return "set to 'read-only'"
-    if validator is _is_sequential_process:
-        return "set to 'sequential'"
+    if validator is _is_valid_crew_process:
+        supported = " or ".join(f"'{process}'" for process in CREW_PROCESSES)
+        return f"set to {supported}"
     return "valid value"
 
 
@@ -279,7 +297,7 @@ def _validate_value_against_schema(path: str, value: Any, schema: Any) -> None:
 
     if callable(schema) and not schema(value):
         expected = _validator_description(schema)
-        if schema in {_is_true, _is_read_only_sandbox, _is_sequential_process}:
+        if schema in {_is_true, _is_read_only_sandbox, _is_valid_crew_process}:
             raise ValueError(f"{path} must be {expected}, got {value!r}")
         value_type = type(value).__name__
         raise ValueError(f"{path} must be {expected}, got {value_type}")

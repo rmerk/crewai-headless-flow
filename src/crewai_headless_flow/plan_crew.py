@@ -25,33 +25,58 @@ def _crew_llm(crew_config: dict[str, Any]) -> LLM:
     )
 
 
-def _crew_process(crew_config: dict[str, Any]) -> Process:
-    process = crew_config.get("process", "sequential")
-    if process != "sequential":
-        raise ValueError("Planning Crew only supports process='sequential'")
-    return Process.sequential
+def _is_hierarchical(crew_config: dict[str, Any]) -> bool:
+    return crew_config.get("process", "sequential") == "hierarchical"
 
 
-def run_plan_crew(
-    *,
-    planning_context: str,
-    worker_tool: HeadlessCoderTool,
-    cwd: str,
-    timeout: int,
-    model: str | None = None,
-    crew_config: dict[str, Any] | None = None,
-) -> PlanOutput:
-    """Run the optional sequential Planning Crew and normalize its plan."""
+def _first_not_none(*values: Any) -> Any:
+    for value in values:
+        if value is not None:
+            return value
+    return None
 
-    crew_config = crew_config or {}
-    llm = _crew_llm(crew_config)
-    inspect_tool = HeadlessInspectTool(
-        worker_tool=worker_tool,
-        cwd=cwd,
-        timeout=timeout,
-        model=model,
+
+def _manager_llm(crew_config: dict[str, Any]) -> LLM:
+    """LLM for the auto-created manager agent (hierarchical mode only).
+
+    Falls back to the crew's own ``llm`` block for any field left unset, so a
+    minimal ``manager.llm.model`` override is enough to point the manager at
+    a stronger tool-calling model while reusing the crew's base_url/temperature.
+    ``None`` (not just "missing key") is treated as unset so an explicit
+    ``temperature: 0.0`` override is never mistaken for "fall back".
+    """
+    fallback_cfg = crew_config.get("llm", {}) or {}
+    manager_cfg = (crew_config.get("manager", {}) or {}).get("llm", {}) or {}
+    return LLM(
+        model=_first_not_none(
+            manager_cfg.get("model"), fallback_cfg.get("model"), "ollama/llama3.2"
+        ),
+        base_url=_first_not_none(
+            manager_cfg.get("base_url"),
+            fallback_cfg.get("base_url"),
+            "http://localhost:11434",
+        ),
+        temperature=_first_not_none(
+            manager_cfg.get("temperature"), fallback_cfg.get("temperature"), 0.2
+        ),
     )
 
+
+def _delegation_enabled(crew_config: dict[str, Any]) -> bool:
+    """Sequential-only: whether the coordinator agent gets allow_delegation=True.
+
+    Hierarchical mode always routes execution through CrewAI's auto-created
+    manager, so this flag is only meaningful under Process.sequential.
+    """
+    if _is_hierarchical(crew_config):
+        return False
+    delegation_cfg = crew_config.get("delegation", {}) or {}
+    return bool(delegation_cfg.get("enabled", False))
+
+
+def _build_plan_agents(
+    *, llm: LLM, inspect_tool: HeadlessInspectTool, delegation_enabled: bool
+) -> dict[str, Agent]:
     researcher = Agent(
         role="Repository Researcher",
         goal="Gather grounded repository context for planning.",
@@ -84,7 +109,28 @@ def run_plan_crew(
         backstory="You reconcile research, planning, and validation into one plan.",
         llm=llm,
         verbose=False,
+        allow_delegation=delegation_enabled,
     )
+    return {
+        "researcher": researcher,
+        "planner": planner,
+        "validator": validator,
+        "coordinator": coordinator,
+    }
+
+
+def _build_plan_tasks(
+    agents: dict[str, Agent], planning_context: str, *, assign_agents: bool
+) -> list[Task]:
+    """Build the planning task pipeline.
+
+    When ``assign_agents`` is False (hierarchical mode), tasks are built
+    without a fixed ``agent=`` so CrewAI's manager actually decides who runs
+    each task at runtime instead of following a pre-assigned pipeline.
+    """
+
+    def agent_or_none(name: str) -> Agent | None:
+        return agents[name] if assign_agents else None
 
     research_task = Task(
         description=(
@@ -95,7 +141,7 @@ def run_plan_crew(
             "A concise research summary covering likely files, dependencies, "
             "constraints, and verification hooks."
         ),
-        agent=researcher,
+        agent=agent_or_none("researcher"),
     )
     draft_task = Task(
         description=(
@@ -103,8 +149,8 @@ def run_plan_crew(
             "spec and small vertical-slice tasks."
         ),
         expected_output="A draft plan with spec text and ordered tasks.",
-        agent=planner,
         context=[research_task],
+        agent=agent_or_none("planner"),
     )
     validation_task = Task(
         description=(
@@ -112,8 +158,8 @@ def run_plan_crew(
             "dependencies, or scope drift. Call out concrete fixes."
         ),
         expected_output=("Concrete plan issues or an explicit no-issues statement."),
-        agent=validator,
         context=[research_task, draft_task],
+        agent=agent_or_none("validator"),
     )
     final_task = Task(
         description=(
@@ -123,16 +169,80 @@ def run_plan_crew(
             "dependencies, likely files, and estimated scope."
         ),
         expected_output="A JSON object with spec and tasks.",
-        agent=coordinator,
         context=[research_task, draft_task, validation_task],
         output_pydantic=PlanOutput,
+        agent=agent_or_none("coordinator"),
+    )
+    return [research_task, draft_task, validation_task, final_task]
+
+
+def build_plan_crew(
+    *,
+    planning_context: str,
+    worker_tool: HeadlessCoderTool,
+    cwd: str,
+    timeout: int,
+    model: str | None = None,
+    crew_config: dict[str, Any] | None = None,
+) -> Crew:
+    """Construct the Planning Crew without invoking it.
+
+    Kept separate from ``run_plan_crew`` so offline tests can assert on
+    ``crew.process``, ``crew.manager_llm``, and per-agent ``allow_delegation``
+    without requiring a live LLM (only ``crew.kickoff()`` makes network calls).
+    """
+
+    crew_config = crew_config or {}
+    hierarchical = _is_hierarchical(crew_config)
+    llm = _crew_llm(crew_config)
+    inspect_tool = HeadlessInspectTool(
+        worker_tool=worker_tool,
+        cwd=cwd,
+        timeout=timeout,
+        model=model,
     )
 
-    crew = Crew(
-        agents=[researcher, planner, validator, coordinator],
-        tasks=[research_task, draft_task, validation_task, final_task],
-        process=_crew_process(crew_config),
+    agents = _build_plan_agents(
+        llm=llm,
+        inspect_tool=inspect_tool,
+        delegation_enabled=_delegation_enabled(crew_config),
+    )
+    tasks = _build_plan_tasks(agents, planning_context, assign_agents=not hierarchical)
+
+    if hierarchical:
+        return Crew(
+            agents=list(agents.values()),
+            tasks=tasks,
+            process=Process.hierarchical,
+            manager_llm=_manager_llm(crew_config),
+            verbose=False,
+        )
+
+    return Crew(
+        agents=list(agents.values()),
+        tasks=tasks,
+        process=Process.sequential,
         verbose=False,
     )
 
+
+def run_plan_crew(
+    *,
+    planning_context: str,
+    worker_tool: HeadlessCoderTool,
+    cwd: str,
+    timeout: int,
+    model: str | None = None,
+    crew_config: dict[str, Any] | None = None,
+) -> PlanOutput:
+    """Run the optional Planning Crew (sequential or hierarchical) and normalize its plan."""
+
+    crew = build_plan_crew(
+        planning_context=planning_context,
+        worker_tool=worker_tool,
+        cwd=cwd,
+        timeout=timeout,
+        model=model,
+        crew_config=crew_config,
+    )
     return normalize_plan_crew_output(crew.kickoff())

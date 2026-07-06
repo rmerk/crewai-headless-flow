@@ -30,9 +30,10 @@ The workflow is fully re-targetable (any repo + any request) and re-shapeable (s
   - `CursorAdapter` — uses disposable copies plus `--plan` for inspect mode, real target repository plus `--force --trust` for edit mode, and prompt-guided structured output repair
 - **Per-stage configuration**: Choose `codex`, `grok`, `claude`, `gemini`, or `cursor` (and model) independently for `plan`, `do_work`, `review`, and `finalize`.
 - **Worker-backed planning**: The default `plan` stage now uses the configured stage worker in read-only inspect mode, so plan-stage worker/model settings are real rather than cosmetic.
-- **Optional Planning Crew**: The `plan` stage can run a config-gated sequential CrewAI Crew that researches the repo through the configured plan worker and emits the same `PlanOutput` contract.
+- **Optional Planning Crew**: The `plan` stage can run a config-gated CrewAI Crew that researches the repo through the configured plan worker and emits the same `PlanOutput` contract.
 - **Optional Implementation Crew**: The `do_work` stage can run a config-gated CrewAI subflow per task, using inspect plus bounded edit-tool execution, optional task-local decomposition, and bounded self-correction before marking the task complete.
-- **Optional Review Crew**: The `review` stage can run a config-gated sequential CrewAI Crew for richer multi-agent review while still using read-only worker inspection.
+- **Optional Review Crew**: The `review` stage can run a config-gated CrewAI Crew for richer multi-agent review while still using read-only worker inspection.
+- **Two selectable crew coordination modes** (per crew, opt-in, default unchanged): **sequential + delegation** keeps `Process.sequential` and its fixed task-to-agent pipeline, optionally giving the coordinator agent `allow_delegation=True` to ask a specialist mid-task; **hierarchical + manager** switches to `Process.hierarchical` with an auto-created manager (`manager_llm`) that dynamically routes unassigned tasks at runtime. See [Crew coordination modes](#crew-coordination-modes) below — hierarchical mode needs a capable tool-calling `manager.llm`.
 - **Shared review contract**: Direct review and Review Crew both normalize to one `status/issues/summary` schema, with native schema enforcement for Codex/Claude and repair-guided best effort for Grok/Gemini/Cursor.
 - **Shared structured-output repair loop**: All adapters now run one consistent post-execution JSON extraction/validation path when a schema is supplied, with a single repair retry if the first response does not validate.
 - **Structured planning output**: The `plan` stage now emits typed task data that populates Flow state, while still rendering markdown for downstream implementation prompts.
@@ -904,6 +905,63 @@ stages:
 ```
 
 The Review Crew still receives only an inspect-mode tool, so review remains read-only.
+
+### Crew coordination modes
+Each optional Crew (Planning, Implementation, Review) supports two `process`
+values, opt-in per crew via `worker.yaml`. Both stay off by default — existing
+configs are unaffected.
+
+**Sequential + delegation** (`process: "sequential"`, the default) keeps
+today's fixed task-to-agent pipeline (`Task.context=[...]` chaining). Setting
+`delegation.enabled: true` additionally gives that crew's coordinator/decision
+agent `allow_delegation=True` (CrewAI's `DelegateWorkTool` / `AskQuestionTool`),
+so it can ask a specialist agent a follow-up question mid-task instead of only
+reading a frozen context summary:
+
+```yaml
+stages:
+  review:
+    crew:
+      enabled: true
+      process: "sequential"
+      delegation:
+        enabled: true
+      llm:
+        model: "ollama/llama3.2"
+        base_url: "http://localhost:11434"
+        temperature: 0.2
+```
+
+**Hierarchical + manager** (`process: "hierarchical"`) switches the crew to
+`Process.hierarchical`. CrewAI auto-creates a manager agent from `manager.llm`
+(falling back to the crew's own `llm` block when unset), and tasks are built
+without a fixed `agent=` assignment so the manager actually decides who runs
+each task at runtime instead of following a pre-assigned pipeline:
+
+```yaml
+stages:
+  review:
+    crew:
+      enabled: true
+      process: "hierarchical"
+      manager:
+        llm:
+          model: "gpt-4o"   # use a strong tool-calling model here
+          base_url: "https://api.openai.com/v1"
+          temperature: 0.2
+      llm:
+        model: "ollama/llama3.2"
+        base_url: "http://localhost:11434"
+        temperature: 0.2
+```
+
+Prefer sequential + delegation for narrow "ask a specialist" cases where you
+still want a predictable, reviewable pipeline. Prefer hierarchical when you
+want the manager to dynamically route work across agents. Hierarchical mode's
+reliability depends heavily on `manager.llm`: small/local models are known to
+mis-format delegation tool calls or have the manager skip delegation and do
+all the work itself, so use a capable tool-calling model (e.g. a GPT-4o class
+model) for `manager.llm` in that mode.
 
 ### Enable Human-in-the-Loop
 Human-in-the-Loop (HITL) checkpoints are available but disabled by default so normal runs remain non-interactive. Enable them in `config/worker.yaml`:
