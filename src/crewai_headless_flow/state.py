@@ -6,12 +6,57 @@ This state is persisted with @persist (SQLite by default in CrewAI Flows).
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_serializer, model_validator
 
 from .human_feedback_actions import StageName
 from .review_contract import ReviewTaskHint
+
+
+# --- Conditional-HITL trigger reasons (persisted on HumanFeedbackEntry) ------
+# These describe *why* a conditional gate fired. They live in the state layer
+# (not in ``hitl_policy``) because they are persisted audit data carried on
+# ``HumanFeedbackEntry``; ``hitl_policy`` imports them. Keeping them here also
+# avoids a circular import, since ``hitl_policy`` already imports ``FlowState``/
+# ``TaskItem``/``TaskExecutionEntry`` from this module.
+
+
+@dataclass(frozen=True)
+class RepeatedTaskFailureDetail:
+    """Why ``repeated_task_failure`` fired: which task, and its failure streak."""
+
+    task_id: int
+    #: consecutive failures since the task's last success (the streak that
+    #: tripped the threshold), i.e. the count compared against ``min_attempts``.
+    attempts: int
+
+
+@dataclass(frozen=True)
+class ApproachingMaxRevisionsDetail:
+    """Why ``approaching_max_revisions`` fired: the revise-loop position."""
+
+    revisions: int
+    max_revisions: int
+
+
+#: Discriminated union of per-trigger detail payloads; ``TriggerReason.kind``
+#: names which member ``detail`` holds.
+TriggerDetail = RepeatedTaskFailureDetail | ApproachingMaxRevisionsDetail
+
+
+@dataclass(frozen=True)
+class TriggerReason:
+    """Structured reason a conditional gate fired.
+
+    ``kind`` mirrors the trigger's config key 1:1; ``detail`` is the typed
+    payload for that kind. Modeled on LaunchDarkly's ``reason.kind`` + detail
+    evaluation-reason pattern so the audit trail stays machine-readable.
+    """
+
+    kind: str
+    detail: TriggerDetail
 
 
 class StageRuntimeSnapshot(BaseModel):
