@@ -224,7 +224,11 @@ When `advanced_actions: true`, the gate prompt also enables small operator short
 
 These stay opt-in so the default behavior remains explicit approve-or-abort only.
 
-Human-feedback behavior is also overridable per run from the CLI, so operators can enable/disable gates or instruction capture without editing `worker.yaml`.
+### Conditional gating (`mode: conditional`)
+
+By default HITL is `mode: "static"`: each gate always or never prompts for the whole run. Under `mode: "conditional"` the Flow instead stays autonomous and prompts only when a deterministic, state-derived **trigger** fires. The decision "should this gate prompt right now?" is factored out of `flow.py` into a single seam — `hitl_policy.should_prompt(gate, hf_config, state, context) -> GateDecision` — which the five checkpoint call sites consult in place of the old inline gate-boolean lookup. Everything downstream (prompt rendering, action menu, allowlist, recording) is unchanged and still gate-keyed. This is a pure, offline-testable policy module; the trigger→gate mapping is hardcoded (each Phase 0 trigger has exactly one sensible gate), and a trigger's config carries only `enabled` plus its own thresholds. When a trigger fires, a typed `TriggerReason` (owned by `state.py`, carried on `HumanFeedbackEntry`) is appended to the prompt and persisted, distinguishing a static-gate prompt from which trigger fired. Under conditional mode the legacy gate booleans are ignored, so gates with no trigger go silent; `doctor` warns about that dead config. Phase 0 ships `repeated_task_failure` (`before_do_work`) and `approaching_max_revisions` (`after_review`). See `docs/adr/0003-hitl-policy-seam.md` and `docs/plans/2026-07-06-conditional-hitl-phase-0.md`.
+
+Human-feedback behavior is also overridable per run from the CLI, so operators can enable/disable gates or instruction capture without editing `worker.yaml`. Nested conditional keys are reachable via dotted override paths, e.g. `--override-human-feedback conditional.triggers.repeated_task_failure.min_attempts=3`.
 
 Stage worker/model/timeout defaults are also overridable per run from the CLI, and nested stage extras remain overridable as well. That makes plan-crew, do_work-crew, parallel-execution, review-crew, and similar experimental knobs adjustable without editing `worker.yaml`.
 
