@@ -55,6 +55,8 @@ At startup the system prints a clear table of the resolved mapping. Always verif
 
 Human-in-the-loop is an opt-in checkpoint system. It is disabled by default in `worker.yaml`, supports `before_plan`, `before_do_work`, `before_review`, `after_review`, and `before_finalize`, can optionally capture one-line operator instructions plus persist an approval audit trail, supports opt-in advanced actions (`do_work -> review/replan/target-tasks`, `review -> replan/rerun-review/target-tasks/force revise/force pass`, `finalize -> skip/rerun-review/revise/replan/target-tasks`) plus stage- and gate-scoped action allowlists, aborted runs can be resumed from saved state at any supported gate, and single runs can override default worker/model/timeout, stage skill/worker/model/timeout, HITL settings, HITL action allowlists, and runtime stage extras from the CLI.
 
+The `human_feedback.mode` key selects `"static"` (default; each gate's boolean decides) or `"conditional"` (the run stays autonomous and prompts only when a deterministic, state-derived trigger fires). Conditional gating lives behind one seam, `hitl_policy.should_prompt()`; the trigger→gate mapping is hardcoded, legacy gate booleans are ignored under conditional mode (gates without a trigger go silent, which `doctor` warns about), and a fired trigger persists a typed `TriggerReason` on the audit entry. Phase 0 triggers: `repeated_task_failure` (`before_do_work`) and `approaching_max_revisions` (`after_review`). See `docs/adr/0003-hitl-policy-seam.md`.
+
 ## Development Commands
 
 Use `uv` (this project is not a poetry or pip-tools project).
@@ -187,6 +189,9 @@ When picking the next piece of work, deeper HITL/runtime controls and stronger e
 
 - `README.md` — User-facing installation, demo, and configuration guide.
 - `DESIGN.md` — Deep architectural rationale, adapter normalizations, and future directions.
+- `CONTEXT.md` — Project glossary / ubiquitous language (domain terms like Gate, Trigger, Domain Model Integration).
+- `docs/adr/` — Architecture Decision Records (numbered, append-only).
+- `docs/plans/` — Design/implementation plans for in-flight and shipped features.
 - `NOTICE` — Attribution for vendored agent-skills.
 
 When in doubt, read the two YAML files and the adapter implementations before touching the Flow itself.

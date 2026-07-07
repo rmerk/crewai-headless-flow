@@ -657,6 +657,94 @@ def test_human_feedback_unknown_keys_are_preserved(sample_config_dir: Path):
     assert cfg.human_feedback["future_gate"] == "allowed for later"
 
 
+def test_human_feedback_mode_defaults_to_static(sample_config_dir: Path):
+    cfg = load_config(sample_config_dir)
+
+    assert cfg.human_feedback["mode"] == "static"
+    # The conditional block is always materialized with both triggers disabled.
+    triggers = cfg.human_feedback["conditional"]["triggers"]
+    assert triggers["repeated_task_failure"] == {"enabled": False, "min_attempts": 2}
+    assert triggers["approaching_max_revisions"] == {"enabled": False, "within": 1}
+
+
+def test_human_feedback_conditional_partial_override_merges_defaults(
+    sample_config_dir: Path,
+):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["human_feedback"] = {
+        "mode": "conditional",
+        "conditional": {
+            "triggers": {"repeated_task_failure": {"enabled": True}},
+        },
+    }
+    worker_file.write_text(yaml.safe_dump(data))
+
+    cfg = load_config(sample_config_dir)
+
+    triggers = cfg.human_feedback["conditional"]["triggers"]
+    # Overridden key applied, sibling default preserved, other trigger untouched.
+    assert triggers["repeated_task_failure"] == {"enabled": True, "min_attempts": 2}
+    assert triggers["approaching_max_revisions"] == {"enabled": False, "within": 1}
+
+
+def test_human_feedback_invalid_mode_rejected(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["human_feedback"] = {"mode": "adaptive"}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ValueError, match="human_feedback.mode must be one of"):
+        load_config(sample_config_dir)
+
+
+def test_human_feedback_conditional_stray_gate_key_rejected(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["human_feedback"] = {
+        "mode": "conditional",
+        "conditional": {
+            "triggers": {
+                "repeated_task_failure": {"enabled": True, "gate": "before_review"},
+            },
+        },
+    }
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ValueError, match="contains unsupported keys: gate"):
+        load_config(sample_config_dir)
+
+
+def test_human_feedback_conditional_invalid_threshold_rejected(
+    sample_config_dir: Path,
+):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["human_feedback"] = {
+        "mode": "conditional",
+        "conditional": {
+            "triggers": {"repeated_task_failure": {"min_attempts": 0}},
+        },
+    }
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ValueError, match="min_attempts must be a positive integer"):
+        load_config(sample_config_dir)
+
+
+def test_human_feedback_conditional_unknown_trigger_rejected(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["human_feedback"] = {
+        "mode": "conditional",
+        "conditional": {"triggers": {"made_up_trigger": {"enabled": True}}},
+    }
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ValueError, match="unsupported triggers: made_up_trigger"):
+        load_config(sample_config_dir)
+
+
 def test_valid_action_allowlist_human_feedback_loads(sample_config_dir: Path):
     worker_file = sample_config_dir / "worker.yaml"
     data = yaml.safe_load(worker_file.read_text())
@@ -1167,6 +1255,23 @@ def test_example_config_claude_do_work_loads():
     assert cfg.get_stage("do_work").worker == "claude"
     assert cfg.get_stage("do_work").model == "sonnet"
     assert cfg.human_feedback["enabled"] is False
+
+
+def test_example_config_conditional_hitl_loads():
+    config_dir = (
+        Path(__file__).resolve().parents[2]
+        / "examples"
+        / "configs"
+        / "conditional-hitl"
+    )
+
+    cfg = load_config(config_dir)
+
+    assert cfg.human_feedback["enabled"] is True
+    assert cfg.human_feedback["mode"] == "conditional"
+    triggers = cfg.human_feedback["conditional"]["triggers"]
+    assert triggers["repeated_task_failure"] == {"enabled": True, "min_attempts": 2}
+    assert triggers["approaching_max_revisions"] == {"enabled": True, "within": 1}
 
 
 def test_example_config_operator_review_gate_loads():

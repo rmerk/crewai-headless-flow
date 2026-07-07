@@ -10,6 +10,7 @@ import yaml
 from .config import (
     HUMAN_FEEDBACK_BOOLEAN_KEYS,
     FlowConfig,
+    _validate_human_feedback,
     _validate_value_against_schema,
     get_stage_extra_schema,
     load_config,
@@ -133,11 +134,41 @@ def apply_default_overrides(
         config._stage_cache.clear()
 
 
+# Top-level human_feedback keys whose value is a nested tree, reachable via a
+# dotted override path (e.g. conditional.triggers.repeated_task_failure.min_attempts).
+_HUMAN_FEEDBACK_NESTED_ROOTS = {"conditional"}
+
+
+def _set_nested_human_feedback_override(
+    config: FlowConfig, key: str, value: str, raw: str
+) -> None:
+    parts = key.split(".")
+    if parts[0] not in _HUMAN_FEEDBACK_NESTED_ROOTS:
+        supported = ", ".join(sorted(_HUMAN_FEEDBACK_NESTED_ROOTS))
+        raise ValueError(
+            f"Unknown human feedback override '{key}'. Dotted overrides are only "
+            f"supported under: {supported}."
+        )
+    if "" in parts:
+        raise ValueError(
+            f"Invalid override '{raw}'. Empty segment in dotted key '{key}'."
+        )
+    cursor: dict[str, object] = config.human_feedback
+    for part in parts[:-1]:
+        nested = cursor.get(part)
+        if not isinstance(nested, dict):
+            nested = {}
+            cursor[part] = nested
+        cursor = nested
+    cursor[parts[-1]] = parse_override_value(value)
+
+
 def apply_human_feedback_overrides(
     config: FlowConfig,
     overrides: list[str] | None,
 ) -> None:
     supported_keys = set(config.human_feedback.keys()) | {"action_allowlist"}
+    applied = False
     for raw in overrides or []:
         if "=" not in raw:
             raise ValueError(
@@ -150,20 +181,28 @@ def apply_human_feedback_overrides(
             raise ValueError(
                 f"Invalid override '{raw}'. Expected KEY=VALUE for human feedback."
             )
-        if key == "action_allowlist":
+        if key == "action_allowlist" or key.startswith("action_allowlist."):
             raise ValueError(
                 "human_feedback.action_allowlist is stage-scoped. "
                 "Use --override-human-feedback-action STAGE=ACTION[,ACTION...] instead."
             )
-        if key not in supported_keys:
+        if "." in key:
+            _set_nested_human_feedback_override(config, key, value, raw)
+        elif key not in supported_keys:
             known = ", ".join(sorted(supported_keys))
             raise ValueError(
                 f"Unknown human feedback override '{key}'. Supported keys: {known}"
             )
-        if key in HUMAN_FEEDBACK_BOOLEAN_KEYS:
+        elif key in HUMAN_FEEDBACK_BOOLEAN_KEYS:
             config.human_feedback[key] = parse_bool(value, key)
         else:
             config.human_feedback[key] = parse_override_value(value)
+        applied = True
+
+    # Re-validate so overridden values (mode enum, nested trigger thresholds,
+    # stray keys) are schema-checked exactly as file-loaded config would be.
+    if applied:
+        config.human_feedback = _validate_human_feedback(config.human_feedback)
 
 
 def apply_human_feedback_action_overrides(

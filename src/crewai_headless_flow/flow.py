@@ -35,6 +35,11 @@ from .human_feedback_actions import (
     supported_human_feedback_actions,
     StageName,
 )
+from .hitl_policy import (
+    GateContext,
+    describe_trigger_reason,
+    should_prompt,
+)
 from .do_work_crew import run_do_work_crew
 from .plan_contract import (
     PlanOutput,
@@ -62,6 +67,7 @@ from .state import (
     StageRuntimeSnapshot,
     TaskItem,
     TaskExecutionEntry,
+    TriggerReason,
 )
 from .task_batches import (
     has_pending_tasks,
@@ -540,6 +546,7 @@ Optional instructions after approval: {"enabled" if capture_instructions else "d
         task_ids: list[int] | None,
         message: str,
         gate: str,
+        trigger_reason: TriggerReason | None = None,
     ) -> None:
         stage_cfg = self.config.get_stage(stage)
         self.state.human_feedback_log.append(
@@ -556,6 +563,7 @@ Optional instructions after approval: {"enabled" if capture_instructions else "d
                 skill=stage_cfg.skill,
                 can_mutate=stage_mutates_files(stage),
                 message=message,
+                trigger_reason=trigger_reason,
             )
         )
         self._refresh_debug_report()
@@ -586,6 +594,22 @@ Optional instructions after approval: {"enabled" if capture_instructions else "d
             return entry
         return None
 
+    def _build_gate_context(self, gate: str) -> GateContext:
+        """Build the ``GateContext`` a gate's triggers need from live state.
+
+        Only ``before_do_work`` needs task state in Phase 0: it fires once per
+        ``do_work`` invocation *before* ``execution_target_task_ids`` is resolved,
+        so the trigger scans the current task set as it stands at gate time.
+        """
+
+        if gate != "before_do_work":
+            return GateContext()
+        tasks = tuple(
+            task if isinstance(task, TaskItem) else TaskItem.model_validate(task)
+            for task in self.state.tasks
+        )
+        return GateContext(tasks=tasks)
+
     def _maybe_ask_human(
         self,
         stage: StageName,
@@ -606,16 +630,28 @@ Optional instructions after approval: {"enabled" if capture_instructions else "d
                 response="auto-disabled",
             )
 
-        # Check specific gate
+        # Decide whether this gate should prompt: in static mode the gate's
+        # boolean decides; in conditional mode a deterministic, state-derived
+        # trigger does (hitl_policy owns that logic and the reason).
         gate = gate or default_human_feedback_gate(stage)
-        if not hf.get(gate, True):
+        gate_decision = should_prompt(
+            gate, hf, self.state, self._build_gate_context(gate)
+        )
+        if not gate_decision.should_prompt:
             return HumanFeedbackDecision(
                 proceed=True,
                 action="auto-gate-disabled",
                 response="auto-gate-disabled",
             )
 
-        print(f"\n{self._human_feedback_prompt(stage, message, gate)}")
+        trigger_reason = gate_decision.trigger_reason
+        prompt_message = message
+        if trigger_reason is not None:
+            prompt_message = (
+                f"{message}\n\nTrigger: {describe_trigger_reason(trigger_reason)}"
+            )
+
+        print(f"\n{self._human_feedback_prompt(stage, prompt_message, gate)}")
         try:
             raw_answer = input("Proceed? [y/N]: ").strip()
         except (EOFError, KeyboardInterrupt):
@@ -628,7 +664,8 @@ Optional instructions after approval: {"enabled" if capture_instructions else "d
                 response="no-input",
                 instructions=None,
                 task_ids=None,
-                message=message,
+                message=prompt_message,
+                trigger_reason=trigger_reason,
             )
             return HumanFeedbackDecision(
                 proceed=False,
@@ -664,7 +701,8 @@ Optional instructions after approval: {"enabled" if capture_instructions else "d
             response=answer or "empty",
             instructions=instructions,
             task_ids=task_ids,
-            message=message,
+            message=prompt_message,
+            trigger_reason=trigger_reason,
         )
         return HumanFeedbackDecision(
             proceed=proceed,

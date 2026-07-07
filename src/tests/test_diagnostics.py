@@ -542,3 +542,97 @@ def test_preflight_reports_clean_git_repo_and_tooling(tmp_path: Path, monkeypatc
     assert report.tooling["pyproject.toml"] is True
     assert report.tooling["README.md"] is True
     assert json.loads(json.dumps(report.to_dict())) == report.to_dict()
+
+
+def _codex_probe(cmd, timeout=3):
+    from crewai_headless_flow.diagnostics import ProbeResult
+
+    return ProbeResult(
+        returncode=0,
+        stdout="--sandbox --output-schema --always-approve --json-schema",
+        stderr="",
+    )
+
+
+def _run_doctor_with_hf(config_dir: Path, monkeypatch, human_feedback: dict):
+    from crewai_headless_flow.diagnostics import run_doctor
+
+    worker_data = yaml.safe_load((config_dir / "worker.yaml").read_text())
+    worker_data["human_feedback"] = human_feedback
+    (config_dir / "worker.yaml").write_text(yaml.safe_dump(worker_data))
+    monkeypatch.setattr(
+        "crewai_headless_flow.diagnostics.shutil.which", lambda name: f"/bin/{name}"
+    )
+    monkeypatch.setattr("crewai_headless_flow.diagnostics._run_probe", _codex_probe)
+    return run_doctor(config_dir=config_dir)
+
+
+def _conditional_check(report):
+    return next(
+        (c for c in report.checks if c.name == "config.human_feedback.conditional"),
+        None,
+    )
+
+
+def test_doctor_warns_conditional_mode_with_no_triggers(config_dir: Path, monkeypatch):
+    report = _run_doctor_with_hf(
+        config_dir, monkeypatch, {"enabled": True, "mode": "conditional"}
+    )
+
+    check = _conditional_check(report)
+    assert check is not None
+    assert check.status == "warn"
+    assert "no triggers are enabled" in check.message
+
+
+def test_doctor_warns_conditional_mode_with_dead_gate_boolean(
+    config_dir: Path, monkeypatch
+):
+    report = _run_doctor_with_hf(
+        config_dir,
+        monkeypatch,
+        {
+            "enabled": True,
+            "mode": "conditional",
+            "before_finalize": True,
+            "conditional": {"triggers": {"repeated_task_failure": {"enabled": True}}},
+        },
+    )
+
+    check = _conditional_check(report)
+    assert check is not None
+    assert check.status == "warn"
+    assert "before_finalize" in check.message
+
+
+def test_doctor_passes_conditional_mode_with_enabled_trigger(
+    config_dir: Path, monkeypatch
+):
+    report = _run_doctor_with_hf(
+        config_dir,
+        monkeypatch,
+        {
+            "enabled": True,
+            "mode": "conditional",
+            # Zero the trigger-less gates so their defaults (before_finalize
+            # defaults True) are not flagged as dead config.
+            "before_do_work": False,
+            "before_finalize": False,
+            "conditional": {
+                "triggers": {"approaching_max_revisions": {"enabled": True}}
+            },
+        },
+    )
+
+    check = _conditional_check(report)
+    assert check is not None
+    assert check.status == "pass"
+    assert "approaching_max_revisions" in check.message
+
+
+def test_doctor_adds_no_conditional_check_in_static_mode(config_dir: Path, monkeypatch):
+    report = _run_doctor_with_hf(
+        config_dir, monkeypatch, {"enabled": True, "mode": "static"}
+    )
+
+    assert _conditional_check(report) is None

@@ -183,6 +183,7 @@ want a narrower, precomposed lane without editing YAML:
 | `examples/configs/finalize-targeting-gate` | You want the final checkpoint to reopen only selected structured tasks before docs/ADR. |
 | `examples/configs/finalize-review-gate` | You want a single final checkpoint that can rerun review or reopen work before docs/ADR. |
 | `examples/configs/guided-operator-loop` | You want prompts before edit work, after review, and before finalize in one guided operator path. |
+| `examples/configs/conditional-hitl` | You want the flow mostly autonomous, prompting only when a deterministic trigger fires (a task keeps failing, or the revise loop nears its ceiling). |
 | `examples/configs/parallel-replan` | You want parallel `do_work`, planner-assisted batching, and execution-time replanning. |
 
 The operator playbook keeps copy-paste commands for each pack.
@@ -1005,6 +1006,34 @@ When `action_allowlist` is set, it becomes a stage- or gate-scoped subset overri
 
 These advanced actions stay opt-in so the default safety model remains explicit approve/abort only.
 
+#### Conditional Human-in-the-Loop (autonomous unless a trigger fires)
+
+By default HITL is **static**: each gate either always prompts or never does, for the whole run. Set `human_feedback.mode: "conditional"` to instead keep the run autonomous and prompt only when a deterministic, state-derived **trigger** fires. Phase 0 ships two triggers:
+
+| Trigger | Gate | Fires when |
+|---|---|---|
+| `repeated_task_failure` | `before_do_work` | A not-yet-done task has failed `min_attempts - 1` consecutive times since its last success (default `min_attempts: 2` → after 1 prior failure) |
+| `approaching_max_revisions` | `after_review` | `revisions >= max_revisions - within` (default `within: 1`) |
+
+```yaml
+human_feedback:
+  enabled: true
+  mode: "conditional"          # "static" (default) | "conditional"
+  before_finalize: false       # see the silent-gate note below
+  conditional:
+    triggers:
+      repeated_task_failure:
+        enabled: true
+        min_attempts: 2
+      approaching_max_revisions:
+        enabled: true
+        within: 1
+```
+
+**Silent-gate consequence — read this before flipping `mode: conditional`.** Under conditional mode the five legacy gate booleans are **ignored entirely**. Gates with no Phase 0 trigger (`before_plan`, `before_review`, `before_finalize`) therefore go permanently silent regardless of their boolean value, until a future phase adds a trigger for them. Because `before_do_work` and `before_finalize` default to `true`, `doctor` warns when their now-dead boolean is left set under conditional mode. The trigger→gate mapping is fixed in code (not configurable); a trigger's config carries only `enabled` and its own thresholds. See `examples/configs/conditional-hitl`, and tune a threshold for one run with `--override-human-feedback conditional.triggers.repeated_task_failure.min_attempts=3`.
+
+When a trigger fires, its reason is appended to the checkpoint message and persisted as a structured `trigger_reason` on the audit entry, so the log distinguishes "static gate fired" from exactly which trigger fired.
+
 ## Testing
 
 ```bash
@@ -1055,6 +1084,7 @@ examples/
 ├── create_sample_target.py
 └── configs/
     ├── claude-do-work/
+    ├── conditional-hitl/
     ├── do-work-replan-gate/
     ├── do-work-skip-to-review-gate/
     ├── do-work-targeting-gate/

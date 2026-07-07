@@ -421,6 +421,8 @@ def _validate_config_files(
             )
             ollama_required = ollama_required or review_requires_ollama
 
+        _check_conditional_human_feedback(report, cfg)
+
         if ollama_required:
             _check_ollama(report)
 
@@ -575,6 +577,59 @@ def _check_cursor_auth(report: DiagnosticReport, required_workers: set[str]) -> 
         "auth.cursor_api_key",
         "warn",
         "CURSOR_API_KEY is not set; export it in your shell or use `cursor agent login`",
+    )
+
+
+def _check_conditional_human_feedback(
+    report: DiagnosticReport, cfg: FlowConfig
+) -> None:
+    """Warn about no-op or dead conditional-HITL config.
+
+    Only runs under ``mode: conditional``. Flags (a) zero enabled triggers
+    (the flow would never prompt) and (b) legacy gate booleans that are now
+    dead config because their gate has no Phase 0 trigger targeting it.
+    """
+
+    hf = cfg.human_feedback
+    if hf.get("mode") != "conditional":
+        return
+
+    triggers = (hf.get("conditional") or {}).get("triggers") or {}
+    enabled = sorted(
+        name
+        for name, trigger in triggers.items()
+        if isinstance(trigger, dict) and trigger.get("enabled") is True
+    )
+    # before_do_work / after_review are the only gates with a Phase 0 trigger.
+    silent_gates = ("before_plan", "before_review", "before_finalize")
+    dead_booleans = [gate for gate in silent_gates if hf.get(gate) is True]
+
+    warnings: list[str] = []
+    if not enabled:
+        warnings.append(
+            "mode is 'conditional' but no triggers are enabled; the flow will "
+            "never prompt"
+        )
+    if dead_booleans:
+        warnings.append(
+            "these gate booleans are ignored under mode: conditional because no "
+            f"Phase 0 trigger targets them: {', '.join(dead_booleans)}"
+        )
+
+    if warnings:
+        report.add_check(
+            "config.human_feedback.conditional",
+            "warn",
+            "; ".join(warnings),
+            {"enabled_triggers": enabled, "dead_gate_booleans": dead_booleans},
+        )
+        return
+
+    report.add_check(
+        "config.human_feedback.conditional",
+        "pass",
+        f"Conditional HITL enabled with triggers: {', '.join(enabled)}",
+        {"enabled_triggers": enabled},
     )
 
 

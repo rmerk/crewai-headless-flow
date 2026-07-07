@@ -68,12 +68,33 @@ DEFAULT_HUMAN_FEEDBACK_GATES: dict[str, bool] = {
     gate: human_feedback_gate_default_enabled(gate)
     for gate in supported_human_feedback_gates()
 }
+# Conditional HITL (see hitl_policy.py). ``mode: "static"`` is the historical
+# behavior (gate booleans decide). ``mode: "conditional"`` ignores those booleans
+# and fires from the deterministic triggers below. Trigger→gate mapping is
+# hardcoded in hitl_policy, so it is intentionally absent from this schema.
+HUMAN_FEEDBACK_MODES = ("static", "conditional")
+DEFAULT_CONDITIONAL_TRIGGERS: dict[str, dict[str, Any]] = {
+    "approaching_max_revisions": {"enabled": False, "within": 1},
+    "repeated_task_failure": {"enabled": False, "min_attempts": 2},
+}
+
+
+def _default_conditional() -> dict[str, Any]:
+    return {
+        "triggers": {
+            name: dict(cfg) for name, cfg in DEFAULT_CONDITIONAL_TRIGGERS.items()
+        }
+    }
+
+
 DEFAULT_HUMAN_FEEDBACK = {
     "enabled": False,
+    "mode": "static",
     **DEFAULT_HUMAN_FEEDBACK_GATES,
     "capture_instructions": False,
     "advanced_actions": False,
     "action_allowlist": {},
+    "conditional": _default_conditional(),
 }
 HUMAN_FEEDBACK_BOOLEAN_KEYS = {
     "enabled",
@@ -89,6 +110,10 @@ def _is_bool(value: Any) -> bool:
 
 def _is_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _is_positive_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 1
 
 
 def _is_number(value: Any) -> bool:
@@ -200,6 +225,63 @@ ENFORCED_STAGE_EXTRA_PATHS: dict[str, tuple[tuple[str, ...], ...]] = {
 }
 
 
+# Per-trigger schemas for `human_feedback.conditional.triggers.*`. Unknown keys
+# (e.g. a stray `gate`, which is hardcoded in hitl_policy, not configurable) are
+# rejected by _validate_value_against_schema.
+_CONDITIONAL_TRIGGER_SCHEMAS: dict[str, dict[str, Any]] = {
+    "approaching_max_revisions": {"enabled": _is_bool, "within": _is_positive_int},
+    "repeated_task_failure": {"enabled": _is_bool, "min_attempts": _is_positive_int},
+}
+
+
+def _validate_conditional(raw: Any) -> dict[str, Any]:
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        value_type = type(raw).__name__
+        raise ValueError(
+            f"human_feedback.conditional must be a mapping, got {value_type}"
+        )
+    unknown = sorted(set(raw) - {"triggers"})
+    if unknown:
+        unknown_text = ", ".join(unknown)
+        raise ValueError(
+            f"human_feedback.conditional contains unsupported keys: {unknown_text}. "
+            "Supported keys: triggers"
+        )
+
+    triggers_raw = raw.get("triggers", {})
+    if not isinstance(triggers_raw, dict):
+        value_type = type(triggers_raw).__name__
+        raise ValueError(
+            f"human_feedback.conditional.triggers must be a mapping, got {value_type}"
+        )
+    unknown_triggers = sorted(set(triggers_raw) - set(_CONDITIONAL_TRIGGER_SCHEMAS))
+    if unknown_triggers:
+        supported = ", ".join(sorted(_CONDITIONAL_TRIGGER_SCHEMAS))
+        unknown_text = ", ".join(unknown_triggers)
+        raise ValueError(
+            f"human_feedback.conditional.triggers contains unsupported triggers: "
+            f"{unknown_text}. Supported triggers: {supported}"
+        )
+
+    triggers: dict[str, Any] = {}
+    for name, schema in _CONDITIONAL_TRIGGER_SCHEMAS.items():
+        override = triggers_raw.get(name, {})
+        if not isinstance(override, dict):
+            value_type = type(override).__name__
+            raise ValueError(
+                f"human_feedback.conditional.triggers.{name} must be a mapping, "
+                f"got {value_type}"
+            )
+        merged = {**DEFAULT_CONDITIONAL_TRIGGERS[name], **override}
+        _validate_value_against_schema(
+            f"human_feedback.conditional.triggers.{name}", merged, schema
+        )
+        triggers[name] = merged
+    return {"triggers": triggers}
+
+
 def _validate_human_feedback(raw: dict[str, Any] | None) -> dict[str, Any]:
     human_feedback = {**DEFAULT_HUMAN_FEEDBACK, **(raw or {})}
     for key in HUMAN_FEEDBACK_BOOLEAN_KEYS:
@@ -208,6 +290,16 @@ def _validate_human_feedback(raw: dict[str, Any] | None) -> dict[str, Any]:
             raise ValueError(
                 f"human_feedback.{key} must be a boolean, got {value_type}"
             )
+    mode = human_feedback.get("mode", "static")
+    if mode not in HUMAN_FEEDBACK_MODES:
+        supported = ", ".join(HUMAN_FEEDBACK_MODES)
+        raise ValueError(
+            f"human_feedback.mode must be one of {supported}, got {mode!r}"
+        )
+    human_feedback["mode"] = mode
+    human_feedback["conditional"] = _validate_conditional(
+        human_feedback.get("conditional")
+    )
     human_feedback["action_allowlist"] = _validate_action_allowlist(
         human_feedback.get("action_allowlist")
     )
@@ -262,6 +354,8 @@ def _validator_description(validator: Any) -> str:
         return "boolean"
     if validator is _is_int:
         return "integer"
+    if validator is _is_positive_int:
+        return "a positive integer (>= 1)"
     if validator is _is_number:
         return "number"
     if validator is _is_string:
