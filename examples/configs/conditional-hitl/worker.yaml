@@ -1,0 +1,48 @@
+defaults:
+  worker: "codex"
+  model: null
+  timeout: 300
+
+stages:
+  plan:
+    worker: "codex"
+    model: null
+
+  do_work:
+    worker: "grok"
+    model: "grok-3-latest"
+    always_approve: true
+
+  review:
+    worker: "codex"
+    sandbox: "read-only"
+
+  finalize:
+    worker: "codex"
+    model: null
+
+human_feedback:
+  enabled: true
+  # Conditional mode: the flow stays autonomous and only prompts when a
+  # deterministic, state-derived trigger fires. The five legacy gate booleans
+  # below are IGNORED under mode: conditional (kept at defaults for clarity).
+  mode: "conditional"
+  before_plan: false
+  before_do_work: false
+  before_review: false
+  after_review: false
+  before_finalize: false
+  capture_instructions: true
+  advanced_actions: false
+  action_allowlist: {}
+  conditional:
+    triggers:
+      # Prompt before do_work if a task keeps failing (fires after 1 prior
+      # failure — i.e. before its 2nd attempt).
+      repeated_task_failure:
+        enabled: true
+        min_attempts: 2
+      # Prompt after review when the revise loop is within 1 of max_revisions.
+      approaching_max_revisions:
+        enabled: true
+        within: 1

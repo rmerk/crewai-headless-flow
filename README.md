@@ -183,6 +183,7 @@ want a narrower, precomposed lane without editing YAML:
 | `examples/configs/finalize-targeting-gate` | You want the final checkpoint to reopen only selected structured tasks before docs/ADR. |
 | `examples/configs/finalize-review-gate` | You want a single final checkpoint that can rerun review or reopen work before docs/ADR. |
 | `examples/configs/guided-operator-loop` | You want prompts before edit work, after review, and before finalize in one guided operator path. |
+| `examples/configs/conditional-hitl` | You want the flow mostly autonomous, prompting only when a deterministic trigger fires (a task keeps failing, or the revise loop nears its ceiling). |
 | `examples/configs/parallel-replan` | You want parallel `do_work`, planner-assisted batching, and execution-time replanning. |
 
 The operator playbook keeps copy-paste commands for each pack.
@@ -1055,6 +1056,7 @@ examples/
 ├── create_sample_target.py
 └── configs/
     ├── claude-do-work/
+    ├── conditional-hitl/
     ├── do-work-replan-gate/
     ├── do-work-skip-to-review-gate/
     ├── do-work-targeting-gate/

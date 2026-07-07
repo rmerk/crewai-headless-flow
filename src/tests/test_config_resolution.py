@@ -1257,6 +1257,23 @@ def test_example_config_claude_do_work_loads():
     assert cfg.human_feedback["enabled"] is False
 
 
+def test_example_config_conditional_hitl_loads():
+    config_dir = (
+        Path(__file__).resolve().parents[2]
+        / "examples"
+        / "configs"
+        / "conditional-hitl"
+    )
+
+    cfg = load_config(config_dir)
+
+    assert cfg.human_feedback["enabled"] is True
+    assert cfg.human_feedback["mode"] == "conditional"
+    triggers = cfg.human_feedback["conditional"]["triggers"]
+    assert triggers["repeated_task_failure"] == {"enabled": True, "min_attempts": 2}
+    assert triggers["approaching_max_revisions"] == {"enabled": True, "within": 1}
+
+
 def test_example_config_operator_review_gate_loads():
     config_dir = (
         Path(__file__).resolve().parents[2]

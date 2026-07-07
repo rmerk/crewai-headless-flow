@@ -636,7 +636,36 @@ uv run python -m crewai_headless_flow run \
   --state-file /tmp/guided-operator-state.json
 ```
 
-## 18. Parallel Structured Work
+## 18. Conditional HITL (autonomous unless a trigger fires)
+
+Use when:
+- You want the flow mostly autonomous, prompting only when it likely needs guidance
+- You want a prompt before `do_work` if a task keeps failing (a stuck-task signal)
+- You want a prompt after review when the revise loop is nearing its `max_revisions` ceiling
+
+Under `mode: conditional` the five static gate booleans are ignored; prompting is
+driven solely by the enabled triggers. Gates without a trigger stay silent.
+
+Config dir:
+- `examples/configs/conditional-hitl`
+
+Command:
+
+```bash
+uv run python -m crewai_headless_flow run \
+  --request "Add subtract and divide helpers plus tests and update README usage notes" \
+  --target-repo /tmp/demo-target \
+  --config-dir examples/configs/conditional-hitl \
+  --state-file /tmp/conditional-hitl-state.json
+```
+
+Tune a trigger for a single run without editing YAML:
+
+```bash
+  --override-human-feedback conditional.triggers.repeated_task_failure.min_attempts=3
+```
+
+## 19. Parallel Structured Work
 
 Use when:
 - The request likely produces multiple independent tasks
