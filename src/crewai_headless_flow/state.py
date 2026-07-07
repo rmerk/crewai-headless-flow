@@ -89,6 +89,10 @@ class HumanFeedbackEntry(BaseModel):
     skill: str
     can_mutate: bool = False
     message: str
+    #: Why a conditional gate fired (``None`` for static gates). Defaults to
+    #: ``None`` so state snapshots persisted before conditional HITL existed —
+    #: i.e. dicts lacking this key entirely — resume without modification.
+    trigger_reason: TriggerReason | None = None
 
 
 class TaskItem(BaseModel):

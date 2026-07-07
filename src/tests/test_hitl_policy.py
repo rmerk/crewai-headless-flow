@@ -16,9 +16,29 @@ from crewai_headless_flow.hitl_policy import (
     RepeatedTaskFailureDetail,
     should_prompt,
 )
-from crewai_headless_flow.state import FlowState, TaskExecutionEntry, TaskItem
+from crewai_headless_flow.state import (
+    FlowState,
+    HumanFeedbackEntry,
+    TaskExecutionEntry,
+    TaskItem,
+    TriggerReason,
+)
 
 pytestmark = pytest.mark.offline
+
+
+def _entry(**overrides: object) -> dict[str, object]:
+    base: dict[str, object] = {
+        "stage": "do_work",
+        "gate": "before_do_work",
+        "approved": True,
+        "response": "y",
+        "worker": "codex",
+        "skill": "incremental-implementation",
+        "message": "proceed?",
+    }
+    base.update(overrides)
+    return base
 
 
 def _task(task_id: int, status: str = "pending") -> TaskItem:
@@ -216,3 +236,45 @@ def test_trigger_only_fires_at_its_mapped_gate() -> None:
     state = FlowState(task_executions=[_exec(1, success=False)])
     ctx = GateContext(tasks=(_task(1),))
     assert should_prompt("after_review", hf, state, ctx).should_prompt is False
+
+
+# --- HumanFeedbackEntry.trigger_reason persistence ---------------------------
+
+
+def test_human_feedback_entry_defaults_trigger_reason_to_none() -> None:
+    entry = HumanFeedbackEntry.model_validate(_entry())
+    assert entry.trigger_reason is None
+
+
+def test_human_feedback_entry_loads_legacy_dict_without_trigger_reason() -> None:
+    # A snapshot written before conditional HITL lacks the key entirely; it must
+    # still validate (resume/backward-compat), not raise on the missing field.
+    legacy = _entry()
+    assert "trigger_reason" not in legacy
+    entry = HumanFeedbackEntry.model_validate(legacy)
+    assert entry.trigger_reason is None
+
+
+def test_human_feedback_entry_round_trips_trigger_reason() -> None:
+    reason = TriggerReason(
+        kind="repeated_task_failure",
+        detail=RepeatedTaskFailureDetail(task_id=3, attempts=2),
+    )
+    entry = HumanFeedbackEntry.model_validate(_entry(trigger_reason=reason))
+    restored = HumanFeedbackEntry.model_validate(entry.model_dump())
+    assert restored.trigger_reason == reason
+    assert isinstance(restored.trigger_reason, TriggerReason)
+    assert isinstance(restored.trigger_reason.detail, RepeatedTaskFailureDetail)
+
+
+def test_human_feedback_entry_round_trips_approaching_max_revisions_detail() -> None:
+    # Round-trip the *other* union member to prove smart-union disambiguation.
+    reason = TriggerReason(
+        kind="approaching_max_revisions",
+        detail=ApproachingMaxRevisionsDetail(revisions=1, max_revisions=2),
+    )
+    entry = HumanFeedbackEntry.model_validate(_entry(trigger_reason=reason))
+    restored = HumanFeedbackEntry.model_validate(entry.model_dump())
+    assert restored.trigger_reason == reason
+    assert isinstance(restored.trigger_reason, TriggerReason)
+    assert isinstance(restored.trigger_reason.detail, ApproachingMaxRevisionsDetail)
