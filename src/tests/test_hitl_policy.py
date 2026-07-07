@@ -8,6 +8,8 @@ the ``approaching_max_revisions`` boundary.
 
 from __future__ import annotations
 
+from typing import Literal
+
 import pytest
 
 from crewai_headless_flow.hitl_policy import (
@@ -41,7 +43,10 @@ def _entry(**overrides: object) -> dict[str, object]:
     return base
 
 
-def _task(task_id: int, status: str = "pending") -> TaskItem:
+_TaskStatus = Literal["pending", "in_progress", "needs_revision", "failed", "done"]
+
+
+def _task(task_id: int, status: _TaskStatus = "pending") -> TaskItem:
     return TaskItem(id=task_id, description=f"task {task_id}", status=status)
 
 

@@ -15,7 +15,12 @@ from crewai_headless_flow.config import FlowConfig
 from crewai_headless_flow.flow import CrewAIHeadlessFlow
 from crewai_headless_flow.review_contract import ReviewDecision
 from crewai_headless_flow.workers.base import CoderResult
-from crewai_headless_flow.state import FlowState, TaskExecutionEntry, TaskItem
+from crewai_headless_flow.state import (
+    FlowState,
+    RepeatedTaskFailureDetail,
+    TaskExecutionEntry,
+    TaskItem,
+)
 
 
 pytestmark = pytest.mark.offline
@@ -1933,3 +1938,111 @@ def test_finalize_human_target_tasks_reopens_selected_tasks_without_worker():
     assert flow.state.review_task_hints[0].summary == "Only reopen docs before finalize"
     assert flow.state.human_feedback_log[-1].action == "target-tasks"
     assert flow.state.human_feedback_log[-1].task_ids == [2]
+
+
+# --- Conditional HITL mode (mode: conditional) integration -------------------
+
+
+def _conditional_do_work_config(before_do_work: bool, min_attempts: int = 2):
+    return _hitl_config(
+        enabled=True,
+        before_do_work=before_do_work,
+        mode="conditional",
+        conditional={
+            "triggers": {
+                "repeated_task_failure": {
+                    "enabled": True,
+                    "min_attempts": min_attempts,
+                }
+            }
+        },
+    )
+
+
+def test_conditional_trigger_prompts_even_when_legacy_boolean_off():
+    # Legacy before_do_work is False, but the enabled trigger meets threshold,
+    # so conditional mode still prompts.
+    cfg = _conditional_do_work_config(before_do_work=False)
+    flow = CrewAIHeadlessFlow(config=cfg)
+    flow._state = FlowState(  # type: ignore[attr-defined]
+        request="test",
+        target_repo="/tmp/fake",
+        tasks=[TaskItem(id=1, description="x", status="needs_revision")],
+        task_executions=[
+            TaskExecutionEntry(
+                task_id=1, attempt=1, worker="grok", success=False, summary=""
+            )
+        ],
+    )
+
+    with patch("builtins.input", return_value="y") as mock_input:
+        result = flow._maybe_ask_human("do_work", "About to do expensive work")
+
+    assert result.proceed is True
+    mock_input.assert_called_once()
+    entry = flow.state.human_feedback_log[-1]
+    assert entry.trigger_reason is not None
+    assert entry.trigger_reason.kind == "repeated_task_failure"
+    assert isinstance(entry.trigger_reason.detail, RepeatedTaskFailureDetail)
+    assert entry.trigger_reason.detail.task_id == 1
+    assert entry.trigger_reason.detail.attempts == 1
+
+
+def test_conditional_prompt_message_shows_trigger_reason(capsys):
+    cfg = _conditional_do_work_config(before_do_work=False)
+    flow = CrewAIHeadlessFlow(config=cfg)
+    flow._state = FlowState(  # type: ignore[attr-defined]
+        request="test",
+        target_repo="/tmp/fake",
+        tasks=[TaskItem(id=1, description="x", status="needs_revision")],
+        task_executions=[
+            TaskExecutionEntry(
+                task_id=1, attempt=1, worker="grok", success=False, summary=""
+            )
+        ],
+    )
+
+    with patch("builtins.input", return_value="y"):
+        flow._maybe_ask_human("do_work", "About to do expensive work")
+
+    out = capsys.readouterr().out
+    assert "Trigger: repeated_task_failure (task 1, 1 prior failure)" in out
+
+
+def test_conditional_trigger_not_met_ignores_legacy_boolean():
+    # Legacy before_do_work is True (would prompt in static mode), but under
+    # conditional mode with no trigger met, the gate stays silent.
+    cfg = _conditional_do_work_config(before_do_work=True)
+    flow = CrewAIHeadlessFlow(config=cfg)
+    flow._state = FlowState(  # type: ignore[attr-defined]
+        request="test",
+        target_repo="/tmp/fake",
+        tasks=[TaskItem(id=1, description="x")],
+        task_executions=[],
+    )
+
+    with patch("builtins.input") as mock_input:
+        result = flow._maybe_ask_human("do_work", "About to do expensive work")
+
+    assert result.proceed is True
+    assert result.response == "auto-gate-disabled"
+    mock_input.assert_not_called()
+
+
+def test_conditional_silent_gate_has_no_phase0_trigger():
+    # before_finalize has no Phase 0 trigger; under conditional mode it goes
+    # silent regardless of its legacy boolean.
+    cfg = _hitl_config(
+        enabled=True,
+        before_finalize=True,
+        mode="conditional",
+    )
+    flow = CrewAIHeadlessFlow(config=cfg)
+    flow._state = FlowState(request="test", target_repo="/tmp/fake")  # type: ignore[attr-defined]
+
+    with patch("builtins.input") as mock_input:
+        result = flow._maybe_ask_human("finalize", "About to finalize")
+
+    assert result.proceed is True
+    assert result.response == "auto-gate-disabled"
+    mock_input.assert_not_called()

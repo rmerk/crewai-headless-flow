@@ -170,7 +170,7 @@ _TRIGGERS: dict[str, tuple[HumanFeedbackGate, _Evaluator]] = {
 
 
 def should_prompt(
-    gate: HumanFeedbackGate,
+    gate: str,
     hf_config: Mapping[str, object],
     state: FlowState,
     context: GateContext = GateContext(),
@@ -206,6 +206,20 @@ def should_prompt(
     return GateDecision(should_prompt=False)
 
 
+def describe_trigger_reason(reason: TriggerReason) -> str:
+    """One-line, operator-facing summary of why a conditional gate fired."""
+
+    detail = reason.detail
+    if isinstance(detail, RepeatedTaskFailureDetail):
+        noun = "failure" if detail.attempts == 1 else "failures"
+        return f"{reason.kind} (task {detail.task_id}, {detail.attempts} prior {noun})"
+    if isinstance(detail, ApproachingMaxRevisionsDetail):
+        return (
+            f"{reason.kind} (revision {detail.revisions} of {detail.max_revisions})"
+        )
+    return reason.kind
+
+
 __all__ = [
     "ApproachingMaxRevisionsDetail",
     "GateContext",
@@ -213,5 +227,6 @@ __all__ = [
     "RepeatedTaskFailureDetail",
     "TriggerDetail",
     "TriggerReason",
+    "describe_trigger_reason",
     "should_prompt",
 ]
