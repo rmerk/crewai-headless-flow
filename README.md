@@ -1034,6 +1034,22 @@ human_feedback:
 
 When a trigger fires, its reason is appended to the checkpoint message and persisted as a structured `trigger_reason` on the audit entry, so the log distinguishes "static gate fired" from exactly which trigger fired.
 
+## Domain Model Integration (OpenWiki pass-through)
+
+If your target repository already uses [OpenWiki](https://github.com/langchain-ai/openwiki) to generate and maintain its own domain documentation, **the `cursor`, `claude`, `codex`, and `grok` workers pick up that context automatically — no `crewai-headless-flow` configuration needed.** OpenWiki self-registers by appending a pointer into the target repo's `AGENTS.md`/`CLAUDE.md`, and all four workers already read those files natively when invoked in that repo's working directory.
+
+This is deliberately **documentation-only**: the Flow never invokes `openwiki` itself (staleness is OpenWiki's own CI loop to manage) and never parses the `openwiki/` directory's structure. There is no `worker.yaml` toggle and no CLI override — it either works because the worker natively reads the pointer file, or it doesn't apply.
+
+| Worker | Status | Notes |
+|---|---|---|
+| `cursor` | **Confirmed** | Reads `AGENTS.md` natively, no config required. |
+| `claude` | **Confirmed** | Reads `CLAUDE.md` natively; OpenWiki writes both `AGENTS.md` and `CLAUDE.md`. |
+| `codex` | **Confirmed** | Empirically verified with a live `codex exec` run (real read-only invocation shape) — it read and quoted a marker string from a test `AGENTS.md`. |
+| `grok` | **Confirmed** | Empirically verified via `grok inspect --json` — this project's actual `workers/grok.py` binary lists `AGENTS.md` under its discovered project instructions. |
+| `gemini` | Known gap | Gemini CLI defaults to `GEMINI.md` only. OpenWiki does not write `GEMINI.md`. If you use `gemini` with an OpenWiki-enabled target repo, add `context.fileName` (including `"AGENTS.md"`) to that target repo's own `.gemini/settings.json` — this is a target-repo setting, not a `crewai-headless-flow` one. |
+
+See `docs/plans/2026-07-06-domain-model-integration.md` for the full design history and per-worker verification evidence.
+
 ## Testing
 
 ```bash

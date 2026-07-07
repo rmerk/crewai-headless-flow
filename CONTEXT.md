@@ -5,7 +5,7 @@ A reusable, multi-agent CrewAI Flow that treats agent-skills as operating proced
 ## Language
 
 **Domain Model Integration**:
-A documentation-only reliance on [OpenWiki](https://github.com/langchain-ai/openwiki)'s own `AGENTS.md`/`CLAUDE.md` self-registration in a target repository, which the `cursor` and `claude` workers already read natively — no Flow-side code, config, or maintenance. Superseded an earlier `domain-modeling`-skill-based design (Flow-authored `CONTEXT.md`/`docs/adr/`); see `docs/plans/2026-07-06-domain-model-integration.md`.
+A documentation-only reliance on [OpenWiki](https://github.com/langchain-ai/openwiki)'s own `AGENTS.md`/`CLAUDE.md` self-registration in a target repository, which the `cursor`, `claude`, `codex`, and `grok` workers already read natively — no Flow-side code, config, or maintenance. Superseded an earlier `domain-modeling`-skill-based design (Flow-authored `CONTEXT.md`/`docs/adr/`); see `docs/plans/2026-07-06-domain-model-integration.md`.
 _Avoid_: Wiki, agent wiki, target-repo domain model (see below, now historical)
 
 **Target-repo domain model** _(historical — see Domain Model Integration)_:
