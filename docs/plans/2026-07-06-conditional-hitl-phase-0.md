@@ -4,34 +4,34 @@ overview: Add an opt-in "conditional" Human-in-the-Loop mode that keeps runs mos
 todos:
   - id: hitl-policy-module
     content: Create hitl_policy.py with GateContext, TriggerReason (+ per-trigger detail dataclasses), GateDecision, and should_prompt()
-    status: pending
+    status: completed
   - id: config-schema
     content: Extend config.py's _validate_human_feedback with mode + conditional.triggers.* schema validation
-    status: pending
+    status: completed
   - id: state-schema
     content: Add HumanFeedbackEntry.trigger_reason field to state.py
-    status: pending
+    status: completed
   - id: flow-integration
     content: Wire should_prompt() into flow.py's five _maybe_ask_human call sites (lines 898, 1234, 2806, 2949, 3358) with per-gate GateContext construction; before_do_work's context must be built from self.state.tasks before execution_target_task_ids is resolved
-    status: pending
+    status: completed
   - id: cli-overrides
     content: Extend --override-human-feedback to support dotted nested paths for conditional.triggers.*
-    status: pending
+    status: completed
   - id: example-config
     content: Add examples/configs/conditional-hitl/ example pack
-    status: pending
+    status: completed
   - id: diagnostics
     content: Add doctor check warning when mode=conditional has zero triggers enabled, or when a gate with no Phase 0 trigger (before_plan/before_review/before_finalize) has its legacy boolean set to true and will now be dead config
-    status: pending
+    status: completed
   - id: docs
     content: Append Gate/Trigger entries to the existing CONTEXT.md (## Language section, already holds DMI's Domain Model Integration entries); update README.md, AGENTS.md, and DESIGN.md; record the hitl_policy.py seam as docs/adr/0003-hitl-policy-seam.md; add CONTEXT.md, docs/adr/, and docs/plans/ to AGENTS.md's Related Documentation list
-    status: pending
+    status: completed
   - id: tests
     content: Add offline tests for hitl_policy (including revision-spanning streaks, multi-task tie-break, off-by-one boundary), config validation, CLI overrides, flow integration, doctor check, and a resume/backward-compat test for HumanFeedbackEntry without trigger_reason
-    status: pending
+    status: completed
   - id: verify-recipes
     content: Re-run test_documented_*_override_recipes_match_example_packs after the schema change to confirm the DEFAULT_HUMAN_FEEDBACK merge really does make the new mode/conditional keys apply to all 34 example packs with zero edits, as assumed (do not just trust the assumption)
-    status: pending
+    status: completed
 isProject: false
 ---
 
