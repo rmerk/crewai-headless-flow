@@ -352,6 +352,99 @@ def test_run_applies_human_feedback_overrides_without_yaml_edits(
     assert cfg.human_feedback["advanced_actions"] is True
 
 
+def test_run_applies_conditional_trigger_dotted_overrides(
+    tmp_path: Path, config_dir: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from crewai_headless_flow import cli
+
+    calls: list[dict] = []
+
+    def fake_run_headless_flow(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            status="completed", model_dump=lambda: {"status": "completed"}
+        )
+
+    monkeypatch.setattr(cli, "run_headless_flow", fake_run_headless_flow)
+
+    rc = cli.main(
+        [
+            "run",
+            "--request",
+            "ship cli",
+            "--target-repo",
+            str(tmp_path),
+            "--config-dir",
+            str(config_dir),
+            "--override-human-feedback",
+            "enabled=true",
+            "--override-human-feedback",
+            "mode=conditional",
+            "--override-human-feedback",
+            "conditional.triggers.repeated_task_failure.enabled=true",
+            "--override-human-feedback",
+            "conditional.triggers.repeated_task_failure.min_attempts=3",
+        ]
+    )
+
+    cfg: FlowConfig = calls[0]["config"]
+
+    assert rc == 0
+    assert cfg.human_feedback["mode"] == "conditional"
+    triggers = cfg.human_feedback["conditional"]["triggers"]
+    assert triggers["repeated_task_failure"] == {"enabled": True, "min_attempts": 3}
+    # Sibling trigger keeps its defaults; only the targeted leaf changed.
+    assert triggers["approaching_max_revisions"] == {"enabled": False, "within": 1}
+
+
+def test_run_rejects_invalid_conditional_threshold_override(
+    tmp_path: Path, config_dir: Path, capsys: pytest.CaptureFixture[str]
+):
+    from crewai_headless_flow import cli
+
+    rc = cli.main(
+        [
+            "run",
+            "--request",
+            "ship cli",
+            "--target-repo",
+            str(tmp_path),
+            "--config-dir",
+            str(config_dir),
+            "--override-human-feedback",
+            "conditional.triggers.repeated_task_failure.min_attempts=0",
+        ]
+    )
+
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "min_attempts must be a positive integer" in err
+
+
+def test_run_rejects_unknown_dotted_human_feedback_override_root(
+    tmp_path: Path, config_dir: Path, capsys: pytest.CaptureFixture[str]
+):
+    from crewai_headless_flow import cli
+
+    rc = cli.main(
+        [
+            "run",
+            "--request",
+            "ship cli",
+            "--target-repo",
+            str(tmp_path),
+            "--config-dir",
+            str(config_dir),
+            "--override-human-feedback",
+            "bogus.nested.key=1",
+        ]
+    )
+
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "Dotted overrides are only supported under" in err
+
+
 def test_run_applies_future_human_feedback_override_when_key_exists_in_yaml(
     tmp_path: Path, config_dir: Path, monkeypatch: pytest.MonkeyPatch
 ):
