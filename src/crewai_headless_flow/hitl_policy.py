@@ -214,9 +214,7 @@ def describe_trigger_reason(reason: TriggerReason) -> str:
         noun = "failure" if detail.attempts == 1 else "failures"
         return f"{reason.kind} (task {detail.task_id}, {detail.attempts} prior {noun})"
     if isinstance(detail, ApproachingMaxRevisionsDetail):
-        return (
-            f"{reason.kind} (revision {detail.revisions} of {detail.max_revisions})"
-        )
+        return f"{reason.kind} (revision {detail.revisions} of {detail.max_revisions})"
     return reason.kind
 
 
