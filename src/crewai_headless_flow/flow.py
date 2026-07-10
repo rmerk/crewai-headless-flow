@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
@@ -90,6 +91,7 @@ from .task_batches import (
     select_execution_batch,
 )
 from .tools.coder_tool import HeadlessCoderTool
+from .verification import VerificationReport, VerifyRunner, run_verification
 from .workers import (
     ClaudeAdapter,
     CodexAdapter,
@@ -163,6 +165,9 @@ class CrewAIHeadlessFlow(Flow[FlowState]):
         # at ask time (so a run_store attached after construction — the
         # resume path — still reaches the file channel).
         self._escalation: EscalationHandler | None = None
+        # Test/injection seam for the Flow-owned verification subprocess
+        # boundary (never routed through a worker adapter).
+        self._verification_runner: VerifyRunner = subprocess.run
         self._workers: dict[str, HeadlessCoderTool] = {}
         self._setup_workers()
 
@@ -837,6 +842,7 @@ Optional instructions after approval: {"enabled" if capture_instructions else "d
         work_summary: str,
         human_guidance: str | None = None,
         review_rerun_guidance: str | None = None,
+        verification_evidence: str | None = None,
     ) -> str:
         rerun_guidance = (
             f"\nHuman rerun instructions:\n- {review_rerun_guidance}\n"
@@ -846,6 +852,11 @@ Optional instructions after approval: {"enabled" if capture_instructions else "d
         human_guidance_text = (
             f"\nHuman approval instructions:\n- {human_guidance}\n"
             if human_guidance
+            else ""
+        )
+        verification_text = (
+            f"\nObjective verification evidence:\n{verification_evidence}\n"
+            if verification_evidence
             else ""
         )
         return f"""You are performing a rigorous code review following the assigned procedure.
@@ -860,7 +871,7 @@ Changed files so far: {self.state.changed_files}
 
 Planned tasks:
 {self._planned_task_review_context()}
-{human_guidance_text}{rerun_guidance}
+{verification_text}{human_guidance_text}{rerun_guidance}
 
 Respond with a single JSON object ONLY (no other text):
 
@@ -884,6 +895,78 @@ If everything looks good according to the review procedure, use "pass".
 Otherwise use "revise" and list the concrete issues that must be addressed.
 Use `task_hints` when you can map an issue to planned tasks or likely files. Use an empty list when you cannot map confidently.
 """
+
+    def _run_verification_round(self) -> VerificationReport | None:
+        """Run the operator-declared verify commands for this review round.
+
+        Returns None when no commands are configured. Runs once per entry
+        into the review loop, so every revise cycle (and a human
+        rerun-review) re-verifies the tree.
+        """
+
+        verify_cfg = self.config.verify
+        if not verify_cfg.get("commands"):
+            return None
+
+        self.state.last_stage = "review"
+        print(
+            f"[Flow] Running {len(verify_cfg['commands'])} verification "
+            f"command(s) in {self.state.target_repo}..."
+        )
+        report = run_verification(
+            verify_cfg,
+            cwd=self.state.target_repo,
+            runner=self._verification_runner,
+        )
+        report.revision = self.state.revisions
+        self.state.verification_runs.append(report)
+        outcome = "passed" if report.passed else "FAILED"
+        print(f"[Flow] Verification {outcome}: {report.message}")
+        self._refresh_debug_report()
+        return report
+
+    def _verification_revise_decision(
+        self, report: VerificationReport
+    ) -> ReviewDecision:
+        issues: list[str] = []
+        for result in report.results:
+            if result.exit_code == 0:
+                continue
+            suffix = " (timed out)" if result.timed_out else ""
+            issue = (
+                f"Verification command `{result.command}` exited "
+                f"{result.exit_code}{suffix}"
+            )
+            tail = result.output_tail.strip()
+            if tail:
+                issue += f":\n{tail}"
+            issues.append(issue)
+        return ReviewDecision(
+            status="revise",
+            issues=issues,
+            summary="Objective verification failed; automated review skipped.",
+            task_hints=[],
+        )
+
+    def _render_verification_evidence(
+        self, report: VerificationReport | None
+    ) -> str | None:
+        if report is None:
+            return None
+        header = "passed" if report.passed else "FAILED"
+        lines = [f"Verification commands ({header}):"]
+        for result in report.results:
+            if result.timed_out:
+                status = "timed out"
+            elif result.exit_code == 0:
+                status = "ok"
+            else:
+                status = f"exit {result.exit_code}"
+            lines.append(f"- `{result.command}` — {status}")
+            tail = result.output_tail.strip()
+            if result.exit_code != 0 and tail:
+                lines.extend(f"  {tail_line}" for tail_line in tail.splitlines())
+        return "\n".join(lines)
 
     def _record_review_decision_state(self, decision: ReviewDecision) -> None:
         status = decision.status
@@ -950,6 +1033,7 @@ Use `task_hints` when you can map an issue to planned tasks or likely files. Use
         work_summary: str,
         human_guidance: str | None = None,
         review_rerun_guidance: str | None = None,
+        verification_evidence: str | None = None,
     ) -> ReviewDecision:
         worker_tool = self._get_worker("review")
         stage_cfg = self.config.get_stage("review")
@@ -957,6 +1041,7 @@ Use `task_hints` when you can map an issue to planned tasks or likely files. Use
             work_summary=work_summary,
             human_guidance=human_guidance,
             review_rerun_guidance=review_rerun_guidance,
+            verification_evidence=verification_evidence,
         )
 
         self.state.last_stage = "review"
@@ -3163,11 +3248,26 @@ Execute the work. After you are done, summarize what changed and whether tests n
         review_rerun_guidance: str | None = None
 
         while True:
-            decision = self._run_automated_review_once(
-                work_summary=work_summary,
-                human_guidance=human_guidance,
-                review_rerun_guidance=review_rerun_guidance,
-            )
+            verification = self._run_verification_round()
+            if (
+                verification is not None
+                and not verification.passed
+                and verification.mode == "gate"
+            ):
+                # Objective failure: the command output IS the review. Skip
+                # the LLM entirely and feed the tails into the revise loop
+                # through the same funnel an automated review uses.
+                decision = self._verification_revise_decision(verification)
+                self._record_review_decision_state(decision)
+            else:
+                decision = self._run_automated_review_once(
+                    work_summary=work_summary,
+                    human_guidance=human_guidance,
+                    review_rerun_guidance=review_rerun_guidance,
+                    verification_evidence=self._render_verification_evidence(
+                        verification
+                    ),
+                )
             print(
                 f"[Flow] Review decision: {decision.status} | Issues: {len(decision.issues)}"
             )

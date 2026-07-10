@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field, model_serializer, model_validator
 from .delivery import DeliveryReport
 from .human_feedback_actions import StageName
 from .review_contract import ReviewTaskHint
+from .verification import VerificationReport
 
 
 # --- Conditional-HITL trigger reasons (persisted on HumanFeedbackEntry) ------
@@ -222,6 +223,7 @@ class FlowState(BaseModel):
     final_artifact: str | None = None
     debug_report: str | None = None
     delivery_report: DeliveryReport | None = None
+    verification_runs: list[VerificationReport] = Field(default_factory=list)
 
     # Internal / diagnostics
     status: Literal["pending", "running", "completed", "aborted_by_human", "failed"] = (

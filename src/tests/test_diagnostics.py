@@ -636,3 +636,65 @@ def test_doctor_adds_no_conditional_check_in_static_mode(config_dir: Path, monke
     )
 
     assert _conditional_check(report) is None
+
+
+# =============================================================================
+# config.verify doctor checks (autonomy Gap 1)
+# =============================================================================
+
+
+def _run_doctor_with_blocks(config_dir: Path, monkeypatch, **blocks):
+    from crewai_headless_flow.diagnostics import run_doctor
+
+    worker_data = yaml.safe_load((config_dir / "worker.yaml").read_text())
+    worker_data.update(blocks)
+    (config_dir / "worker.yaml").write_text(yaml.safe_dump(worker_data))
+    monkeypatch.setattr(
+        "crewai_headless_flow.diagnostics.shutil.which", lambda name: f"/bin/{name}"
+    )
+    monkeypatch.setattr("crewai_headless_flow.diagnostics._run_probe", _codex_probe)
+    return run_doctor(config_dir=config_dir)
+
+
+def _verify_check(report):
+    return next((c for c in report.checks if c.name == "config.verify"), None)
+
+
+def test_doctor_reports_verify_configuration(config_dir: Path, monkeypatch):
+    report = _run_doctor_with_blocks(
+        config_dir,
+        monkeypatch,
+        verify={"commands": ["uv run pytest -q", "uv run ruff check ."]},
+    )
+
+    check = _verify_check(report)
+    assert check is not None
+    assert check.status == "pass"
+    assert "mode: gate" in check.message
+    assert "2 command(s)" in check.message
+
+
+def test_doctor_warns_when_push_enabled_without_verify_commands(
+    config_dir: Path, monkeypatch
+):
+    report = _run_doctor_with_blocks(
+        config_dir,
+        monkeypatch,
+        deliver={"enabled": True, "push": True},
+    )
+
+    check = _verify_check(report)
+    assert check is not None
+    assert check.status == "warn"
+    assert "unverified" in check.message
+
+
+def test_doctor_passes_verify_unconfigured_without_shipping(
+    config_dir: Path, monkeypatch
+):
+    report = _run_doctor_with_blocks(config_dir, monkeypatch)
+
+    check = _verify_check(report)
+    assert check is not None
+    assert check.status == "pass"
+    assert "No verification commands" in check.message

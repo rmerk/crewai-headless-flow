@@ -167,6 +167,7 @@ def run_doctor(
     human_feedback_overrides: list[str] | None = None,
     human_feedback_action_overrides: list[str] | None = None,
     deliver_overrides: list[str] | None = None,
+    verify_overrides: list[str] | None = None,
 ) -> DiagnosticReport:
     config_path = normalize_path(config_dir or _default_config_dir())
     report = DiagnosticReport(config_dir=str(config_path))
@@ -192,6 +193,7 @@ def run_doctor(
             human_feedback_overrides=human_feedback_overrides,
             human_feedback_action_overrides=human_feedback_action_overrides,
             deliver_overrides=deliver_overrides,
+            verify_overrides=verify_overrides,
         )
         required_workers = _validate_config_files(
             report=report,
@@ -424,6 +426,7 @@ def _validate_config_files(
             ollama_required = ollama_required or review_requires_ollama
 
         _check_conditional_human_feedback(report, cfg)
+        _check_verify(report, cfg)
 
         if ollama_required:
             _check_ollama(report)
@@ -473,6 +476,7 @@ def _resolve_runtime_config_for_doctor(
     human_feedback_overrides: list[str] | None,
     human_feedback_action_overrides: list[str] | None,
     deliver_overrides: list[str] | None,
+    verify_overrides: list[str] | None = None,
 ) -> FlowConfig | None:
     override_sets = (
         skill_overrides,
@@ -486,6 +490,7 @@ def _resolve_runtime_config_for_doctor(
         human_feedback_overrides,
         human_feedback_action_overrides,
         deliver_overrides,
+        verify_overrides,
     )
     if not any(override_sets):
         return None
@@ -504,6 +509,7 @@ def _resolve_runtime_config_for_doctor(
             human_feedback_overrides=human_feedback_overrides,
             human_feedback_action_overrides=human_feedback_action_overrides,
             deliver_overrides=deliver_overrides,
+            verify_overrides=verify_overrides,
         )
     except Exception as exc:
         report.add_check(
@@ -635,6 +641,49 @@ def _check_conditional_human_feedback(
         "pass",
         f"Conditional HITL enabled with triggers: {', '.join(enabled)}",
         {"enabled_triggers": enabled},
+    )
+
+
+def _check_verify(report: DiagnosticReport, cfg: FlowConfig) -> None:
+    """Report the verify-gate configuration and flag unverified push/pr.
+
+    ``deliver.push``/``deliver.pr`` with no ``verify.commands`` means the
+    run would ship work no objective check ever ran against — legal (the
+    operator opted out) but worth a loud warning.
+    """
+
+    verify = cfg.verify
+    commands = verify.get("commands") or []
+    deliver = cfg.deliver
+    shipping = [key for key in ("push", "pr") if deliver.get(key)]
+
+    if not commands:
+        if shipping:
+            report.add_check(
+                "config.verify",
+                "warn",
+                "deliver."
+                + "/".join(shipping)
+                + " is enabled but verify.commands is empty; delivery would "
+                "ship unverified work",
+                {"mode": verify.get("mode"), "commands": 0},
+            )
+            return
+        report.add_check(
+            "config.verify",
+            "pass",
+            "No verification commands configured; review relies on the LLM "
+            "decision alone",
+            {"mode": verify.get("mode"), "commands": 0},
+        )
+        return
+
+    report.add_check(
+        "config.verify",
+        "pass",
+        f"Verification enabled (mode: {verify.get('mode')}, "
+        f"{len(commands)} command(s))",
+        {"mode": verify.get("mode"), "commands": len(commands)},
     )
 
 

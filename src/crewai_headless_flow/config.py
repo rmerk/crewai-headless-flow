@@ -108,6 +108,13 @@ DEFAULT_DELIVER: dict[str, Any] = {
 _DELIVER_BOOLEAN_KEYS = ("enabled", "commit", "push", "pr")
 _BRANCH_PREFIX_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
 
+VERIFY_MODES = ("gate", "advisory")
+DEFAULT_VERIFY: dict[str, Any] = {
+    "commands": [],
+    "mode": "gate",
+    "timeout": 600,
+}
+
 
 DEFAULT_HUMAN_FEEDBACK = {
     "enabled": False,
@@ -461,6 +468,55 @@ def _validate_deliver(raw: Any) -> dict[str, Any]:
     return deliver
 
 
+def _validate_verify(raw: Any) -> dict[str, Any]:
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        value_type = type(raw).__name__
+        raise ValueError(f"verify must be a mapping, got {value_type}")
+    unknown = sorted(set(raw) - set(DEFAULT_VERIFY))
+    if unknown:
+        supported = ", ".join(sorted(DEFAULT_VERIFY))
+        unknown_text = ", ".join(unknown)
+        raise ValueError(
+            f"verify contains unsupported keys: {unknown_text}. "
+            f"Supported keys: {supported}"
+        )
+
+    verify = {**DEFAULT_VERIFY, **raw}
+
+    commands = verify["commands"]
+    if not isinstance(commands, list):
+        value_type = type(commands).__name__
+        raise ValueError(f"verify.commands must be a list, got {value_type}")
+    for command in commands:
+        if isinstance(command, str) and command.strip():
+            continue
+        if (
+            isinstance(command, list)
+            and command
+            and all(isinstance(part, str) and part for part in command)
+        ):
+            continue
+        raise ValueError(
+            "verify.commands entries must be non-empty strings or non-empty "
+            f"lists of non-empty strings, got {command!r}"
+        )
+
+    mode = verify["mode"]
+    if mode not in VERIFY_MODES:
+        supported = ", ".join(VERIFY_MODES)
+        raise ValueError(f"verify.mode must be one of {supported}, got {mode!r}")
+
+    if not _is_positive_int(verify["timeout"]):
+        value_type = type(verify["timeout"]).__name__
+        raise ValueError(
+            f"verify.timeout must be a positive integer (>= 1), got {value_type}"
+        )
+
+    return verify
+
+
 def _validate_action_allowlist(raw: Any) -> dict[str, list[str]]:
     if raw is None:
         return {}
@@ -740,12 +796,14 @@ class FlowConfig:
         defaults: dict[str, Any],
         human_feedback: dict[str, Any] | None = None,
         deliver: dict[str, Any] | None = None,
+        verify: dict[str, Any] | None = None,
     ) -> None:
         self.skills = skills
         self.workers = workers
         self.defaults = defaults
         self.human_feedback = _validate_human_feedback(human_feedback)
         self.deliver = _validate_deliver(deliver)
+        self.verify = _validate_verify(verify)
         self._stage_cache: dict[str, StageConfig] = {}
 
     def get_stage(self, stage: str) -> StageConfig:
@@ -851,6 +909,7 @@ def load_config(config_dir: Optional[Path] = None) -> FlowConfig:
     workers = worker_raw.get("stages", {})
     human_feedback = worker_raw.get("human_feedback", {"enabled": False})
     deliver = worker_raw.get("deliver", {})
+    verify = worker_raw.get("verify", {})
 
     return FlowConfig(
         skills=skills,
@@ -858,6 +917,7 @@ def load_config(config_dir: Optional[Path] = None) -> FlowConfig:
         defaults=defaults,
         human_feedback=human_feedback,
         deliver=deliver,
+        verify=verify,
     )
 
 

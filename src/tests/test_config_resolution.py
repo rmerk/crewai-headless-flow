@@ -2243,3 +2243,115 @@ def test_example_config_implementation_crew_loads():
     assert do_work.extra["crew"]["max_rounds"] == 2
     assert do_work.extra["crew"]["decomposition"]["enabled"] is True
     assert do_work.extra["crew"]["decomposition"]["max_subtasks"] == 3
+
+
+# =============================================================================
+# verify: block (autonomy Gap 1 — objective verification gate)
+# =============================================================================
+
+
+def test_verify_defaults_when_absent(sample_config_dir: Path):
+    cfg = load_config(sample_config_dir)
+
+    assert cfg.verify == {"commands": [], "mode": "gate", "timeout": 600}
+
+
+def test_verify_partial_override_merges_defaults(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["verify"] = {"commands": ["uv run pytest -q"]}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    cfg = load_config(sample_config_dir)
+
+    assert cfg.verify["commands"] == ["uv run pytest -q"]
+    assert cfg.verify["mode"] == "gate"
+    assert cfg.verify["timeout"] == 600
+
+
+def test_verify_unknown_key_rejected(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["verify"] = {"comands": []}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ValueError, match="verify contains unsupported keys: comands"):
+        load_config(sample_config_dir)
+
+
+def test_verify_non_list_commands_rejected(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["verify"] = {"commands": "pytest -q"}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ValueError, match="verify.commands must be a list"):
+        load_config(sample_config_dir)
+
+
+def test_verify_empty_command_entry_rejected(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["verify"] = {"commands": ["pytest -q", ""]}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ValueError, match="verify.commands entries must be"):
+        load_config(sample_config_dir)
+
+
+def test_verify_list_command_entry_accepted(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["verify"] = {"commands": [["uv", "run", "pytest", "-q"]]}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    cfg = load_config(sample_config_dir)
+
+    assert cfg.verify["commands"] == [["uv", "run", "pytest", "-q"]]
+
+
+def test_verify_bad_mode_rejected(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["verify"] = {"mode": "strict"}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ValueError, match="verify.mode must be one of gate, advisory"):
+        load_config(sample_config_dir)
+
+
+def test_verify_non_positive_timeout_rejected(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["verify"] = {"timeout": 0}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ValueError, match="verify.timeout must be a positive integer"):
+        load_config(sample_config_dir)
+
+
+def test_verify_override_sets_commands(sample_config_dir: Path):
+    cfg = load_runtime_config(
+        config_dir=sample_config_dir,
+        verify_overrides=['commands=["uv run pytest -q"]', "mode=advisory"],
+    )
+
+    assert cfg.verify["commands"] == ["uv run pytest -q"]
+    assert cfg.verify["mode"] == "advisory"
+    assert cfg.verify["timeout"] == 600
+
+
+def test_verify_override_unknown_key_rejected(sample_config_dir: Path):
+    with pytest.raises(ValueError, match="Unknown verify override 'command'"):
+        load_runtime_config(
+            config_dir=sample_config_dir,
+            verify_overrides=["command=pytest"],
+        )
+
+
+def test_verify_override_is_revalidated(sample_config_dir: Path):
+    with pytest.raises(ValueError, match="verify.mode must be one of"):
+        load_runtime_config(
+            config_dir=sample_config_dir,
+            verify_overrides=["mode=strict"],
+        )

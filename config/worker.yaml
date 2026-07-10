@@ -197,6 +197,23 @@ deliver:
   pr: false
   protected_branches: [main, master]
 
+# =============================================================================
+# Objective verification gate (autonomy Phase 2)
+# =============================================================================
+# Commands the Flow runs in the target repo at the top of every review round
+# (e.g. ["uv run pytest -q", "uv run ruff check ."]). They run as argv with no
+# shell — wrap pipes/&& in a script. mode: gate means a failure skips the LLM
+# review entirely and feeds the command output into the revise loop as issues;
+# mode: advisory appends the results to the review prompt as evidence instead.
+# Either way, deliver.push/pr require the latest verification to have passed
+# whenever commands are configured. timeout is per command, in seconds.
+# Override per run via --override-verify KEY=VALUE
+# (e.g. --override-verify 'commands=["uv run pytest -q"]').
+verify:
+  commands: []
+  mode: gate
+  timeout: 600
+
 # Stage extras like `plan.crew.*`, `do_work.crew.*`, `do_work.parallel.*`, or
 # `review.crew.*` can be overridden per run via
 # --override-stage-extra STAGE.PATH=VALUE

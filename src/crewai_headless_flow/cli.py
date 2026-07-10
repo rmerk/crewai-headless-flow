@@ -97,6 +97,7 @@ def _handle_run(args: argparse.Namespace) -> int:
         human_feedback_overrides=args.override_human_feedback,
         human_feedback_action_overrides=args.override_human_feedback_action,
         deliver_overrides=args.override_deliver,
+        verify_overrides=args.override_verify,
     )
 
     preflight = run_preflight(target_repo, config_dir=config_dir)
@@ -151,6 +152,7 @@ def _handle_doctor(args: argparse.Namespace) -> int:
         human_feedback_overrides=args.override_human_feedback,
         human_feedback_action_overrides=args.override_human_feedback_action,
         deliver_overrides=args.override_deliver,
+        verify_overrides=args.override_verify,
     )
     _print_report(report, args.format)
     return 1 if report.status == "fail" else 0
@@ -498,6 +500,7 @@ def _add_runtime_override_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--override-human-feedback", action="append", default=[])
     parser.add_argument("--override-human-feedback-action", action="append", default=[])
     parser.add_argument("--override-deliver", action="append", default=[])
+    parser.add_argument("--override-verify", action="append", default=[])
 
 
 def _build_help_parser() -> argparse.ArgumentParser:
