@@ -946,3 +946,112 @@ def test_grok_does_one_repair_retry_on_structured_failure():
 
         assert call_count["n"] >= 2
         assert result.exit_code == 0
+
+
+# =============================================================================
+# Failure paths: non-zero exits map to failed CoderResults (all adapters),
+# and codex/grok raise typed infrastructure errors like the other adapters
+# =============================================================================
+
+
+def test_codex_nonzero_exit_returns_failed_coder_result():
+    adapter = CodexAdapter(binary="codex")
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value.stdout = "partial output"
+        mock_run.return_value.stderr = "codex: model unavailable"
+        mock_run.return_value.returncode = 2
+
+        result = adapter.run("task", cwd="/tmp/r", mode="edit")
+
+        assert result.exit_code == 2
+        assert result.error == "codex: model unavailable"
+        assert result.success is False
+        assert result.tests_passed is False
+
+
+def test_grok_nonzero_exit_returns_failed_coder_result():
+    adapter = GrokAdapter(binary="grok")
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value.stdout = ""
+        mock_run.return_value.stderr = "grok: rate limited"
+        mock_run.return_value.returncode = 2
+
+        result = adapter.run("task", cwd="/tmp/r", mode="edit")
+
+        assert result.exit_code == 2
+        assert result.error == "grok: rate limited"
+        assert result.success is False
+
+
+def test_claude_nonzero_exit_returns_failed_coder_result():
+    adapter = ClaudeAdapter(binary="claude")
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value.stdout = ""
+        mock_run.return_value.stderr = "claude: authentication failed"
+        mock_run.return_value.returncode = 2
+
+        result = adapter.run("task", cwd="/tmp/r", mode="edit")
+
+        assert result.exit_code == 2
+        assert result.error == "claude: authentication failed"
+        assert result.success is False
+
+
+def test_gemini_nonzero_exit_returns_failed_coder_result():
+    adapter = GeminiAdapter(binary="gemini")
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value.stdout = ""
+        mock_run.return_value.stderr = "gemini: quota exceeded"
+        mock_run.return_value.returncode = 2
+
+        result = adapter.run("task", cwd="/tmp/r", mode="edit")
+
+        assert result.exit_code == 2
+        assert result.error == "gemini: quota exceeded"
+        assert result.success is False
+
+
+def test_cursor_nonzero_exit_returns_failed_coder_result():
+    adapter = CursorAdapter(binary="cursor")
+    with patch.object(adapter, "_run_subprocess") as mock_run:
+        mock_run.return_value.stdout = ""
+        mock_run.return_value.stderr = "cursor: workspace not trusted"
+        mock_run.return_value.returncode = 2
+
+        result = adapter.run("task", cwd="/tmp/r", mode="edit")
+
+        assert result.exit_code == 2
+        assert result.error == "cursor: workspace not trusted"
+        assert result.success is False
+
+
+def test_codex_timeout_raises_worker_timeout():
+    adapter = CodexAdapter(binary="codex")
+
+    with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("codex", 3)):
+        with pytest.raises(WorkerTimeout, match="Codex timed out after 3s"):
+            adapter.run("task", cwd="/tmp/r", mode="edit", timeout=3)
+
+
+def test_codex_invocation_error_raises_worker_invocation_error():
+    adapter = CodexAdapter(binary="codex")
+
+    with patch("subprocess.run", side_effect=OSError("missing binary")):
+        with pytest.raises(WorkerInvocationError, match="Failed to invoke Codex"):
+            adapter.run("task", cwd="/tmp/r", mode="edit")
+
+
+def test_grok_timeout_raises_worker_timeout():
+    adapter = GrokAdapter(binary="grok")
+
+    with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("grok", 3)):
+        with pytest.raises(WorkerTimeout, match="Grok timed out after 3s"):
+            adapter.run("task", cwd="/tmp/r", mode="edit", timeout=3)
+
+
+def test_grok_invocation_error_raises_worker_invocation_error():
+    adapter = GrokAdapter(binary="grok")
+
+    with patch("subprocess.run", side_effect=OSError("missing binary")):
+        with pytest.raises(WorkerInvocationError, match="Failed to invoke Grok"):
+            adapter.run("task", cwd="/tmp/r", mode="edit")
