@@ -636,3 +636,198 @@ def test_doctor_adds_no_conditional_check_in_static_mode(config_dir: Path, monke
     )
 
     assert _conditional_check(report) is None
+
+
+# =============================================================================
+# config.verify doctor checks (autonomy Gap 1)
+# =============================================================================
+
+
+def _run_doctor_with_blocks(config_dir: Path, monkeypatch, **blocks):
+    from crewai_headless_flow.diagnostics import run_doctor
+
+    worker_data = yaml.safe_load((config_dir / "worker.yaml").read_text())
+    worker_data.update(blocks)
+    (config_dir / "worker.yaml").write_text(yaml.safe_dump(worker_data))
+    monkeypatch.setattr(
+        "crewai_headless_flow.diagnostics.shutil.which", lambda name: f"/bin/{name}"
+    )
+    monkeypatch.setattr("crewai_headless_flow.diagnostics._run_probe", _codex_probe)
+    return run_doctor(config_dir=config_dir)
+
+
+def _verify_check(report):
+    return next((c for c in report.checks if c.name == "config.verify"), None)
+
+
+def test_doctor_reports_verify_configuration(config_dir: Path, monkeypatch):
+    report = _run_doctor_with_blocks(
+        config_dir,
+        monkeypatch,
+        verify={"commands": ["uv run pytest -q", "uv run ruff check ."]},
+    )
+
+    check = _verify_check(report)
+    assert check is not None
+    assert check.status == "pass"
+    assert "mode: gate" in check.message
+    assert "2 command(s)" in check.message
+
+
+def test_doctor_warns_when_push_enabled_without_verify_commands(
+    config_dir: Path, monkeypatch
+):
+    report = _run_doctor_with_blocks(
+        config_dir,
+        monkeypatch,
+        deliver={"enabled": True, "push": True},
+    )
+
+    check = _verify_check(report)
+    assert check is not None
+    assert check.status == "warn"
+    assert "unverified" in check.message
+
+
+def test_doctor_passes_verify_unconfigured_without_shipping(
+    config_dir: Path, monkeypatch
+):
+    report = _run_doctor_with_blocks(config_dir, monkeypatch)
+
+    check = _verify_check(report)
+    assert check is not None
+    assert check.status == "pass"
+    assert "No verification commands" in check.message
+
+
+def test_doctor_warns_when_pr_enabled_without_gh(config_dir: Path, monkeypatch):
+    report = _run_doctor_with_blocks(
+        config_dir,
+        monkeypatch,
+        deliver={"enabled": True, "push": True, "pr": True},
+    )
+    # _run_doctor_with_blocks fakes shutil.which to find everything; re-run
+    # with gh explicitly missing.
+    from crewai_headless_flow.diagnostics import run_doctor
+
+    monkeypatch.setattr(
+        "crewai_headless_flow.diagnostics.shutil.which",
+        lambda name: None if name == "gh" else f"/bin/{name}",
+    )
+    report = run_doctor(config_dir=config_dir)
+
+    check = next((c for c in report.checks if c.name == "cli.gh"), None)
+    assert check is not None
+    assert check.status == "warn"
+    assert "gh" in check.message
+
+
+def test_doctor_passes_gh_check_when_present(config_dir: Path, monkeypatch):
+    report = _run_doctor_with_blocks(
+        config_dir,
+        monkeypatch,
+        deliver={"enabled": True, "push": True, "pr": True},
+    )
+
+    check = next((c for c in report.checks if c.name == "cli.gh"), None)
+    assert check is not None
+    assert check.status == "pass"
+
+
+def test_doctor_adds_no_gh_check_when_pr_disabled(config_dir: Path, monkeypatch):
+    report = _run_doctor_with_blocks(config_dir, monkeypatch)
+
+    assert not any(c.name == "cli.gh" for c in report.checks)
+
+
+def test_doctor_warns_deny_paths_with_serial_in_place(config_dir: Path, monkeypatch):
+    report = _run_doctor_with_blocks(
+        config_dir,
+        monkeypatch,
+        paths={"deny": ["*.env"]},
+    )
+
+    check = next((c for c in report.checks if c.name == "config.paths"), None)
+    assert check is not None
+    assert check.status == "warn"
+    assert "post-hoc" in check.message
+
+
+def test_doctor_passes_deny_paths_with_isolation_copy(config_dir: Path, monkeypatch):
+    worker_data = yaml.safe_load((config_dir / "worker.yaml").read_text())
+    stages = worker_data.setdefault("stages", {})
+    stages.setdefault("do_work", {})["isolation"] = "copy"
+    (config_dir / "worker.yaml").write_text(yaml.safe_dump(worker_data))
+
+    report = _run_doctor_with_blocks(
+        config_dir,
+        monkeypatch,
+        paths={"deny": ["*.env"]},
+    )
+
+    check = next((c for c in report.checks if c.name == "config.paths"), None)
+    assert check is not None
+    assert check.status == "pass"
+
+
+def test_doctor_adds_no_paths_check_when_deny_empty(config_dir: Path, monkeypatch):
+    report = _run_doctor_with_blocks(config_dir, monkeypatch)
+
+    assert not any(c.name == "config.paths" for c in report.checks)
+
+
+# =============================================================================
+# WorkerSpec derivations + configured-binary probing (autonomy Gap 10)
+# =============================================================================
+
+
+def test_worker_dicts_are_derived_from_worker_specs():
+    from crewai_headless_flow.diagnostics import (
+        SUPPORTED_WORKERS,
+        WORKER_BINARIES,
+        WORKER_HELP_COMMANDS,
+        WORKER_REQUIRED_FLAGS,
+    )
+    from crewai_headless_flow.flow import WORKER_ADAPTERS
+    from crewai_headless_flow.workers import WORKER_SPECS
+
+    assert set(WORKER_ADAPTERS) == set(WORKER_SPECS)
+    assert SUPPORTED_WORKERS == set(WORKER_SPECS)
+    assert set(WORKER_BINARIES) == set(WORKER_SPECS)
+    assert set(WORKER_HELP_COMMANDS) == set(WORKER_SPECS)
+    assert set(WORKER_REQUIRED_FLAGS) == set(WORKER_SPECS)
+    for name, spec in WORKER_SPECS.items():
+        assert WORKER_ADAPTERS[name] is spec.adapter_cls
+        assert WORKER_BINARIES[name] == spec.binary
+        assert WORKER_HELP_COMMANDS[name] == spec.help_command
+        assert WORKER_REQUIRED_FLAGS[name] == spec.required_flags
+        assert spec.help_command[0] == spec.binary
+
+
+def test_doctor_probes_configured_worker_binary(config_dir: Path, monkeypatch):
+    from crewai_headless_flow.diagnostics import run_doctor
+
+    worker_data = yaml.safe_load((config_dir / "worker.yaml").read_text())
+    worker_data["workers"] = {"codex": {"binary": "/opt/bin/codex-nightly"}}
+    (config_dir / "worker.yaml").write_text(yaml.safe_dump(worker_data))
+
+    which_calls: list[str] = []
+
+    def fake_which(name: str):
+        which_calls.append(name)
+        return f"/bin/{name}"
+
+    probe_calls: list[tuple[str, ...]] = []
+
+    def fake_probe(command):
+        probe_calls.append(tuple(command))
+        return _codex_probe(command)
+
+    monkeypatch.setattr("crewai_headless_flow.diagnostics.shutil.which", fake_which)
+    monkeypatch.setattr("crewai_headless_flow.diagnostics._run_probe", fake_probe)
+
+    run_doctor(config_dir=config_dir)
+
+    assert "/opt/bin/codex-nightly" in which_calls
+    assert ("/opt/bin/codex-nightly", "exec", "--help") in probe_calls
+    assert ("/opt/bin/codex-nightly", "--version") in probe_calls

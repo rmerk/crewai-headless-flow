@@ -9,11 +9,14 @@ import yaml
 
 from .config import (
     DEFAULT_DELIVER,
+    DEFAULT_VERIFY,
     HUMAN_FEEDBACK_BOOLEAN_KEYS,
     FlowConfig,
     _validate_deliver,
     _validate_human_feedback,
     _validate_value_against_schema,
+    _validate_verify,
+    _validate_workers_block,
     get_stage_extra_schema,
     load_config,
 )
@@ -38,6 +41,8 @@ def load_runtime_config(
     human_feedback_overrides: list[str] | None = None,
     human_feedback_action_overrides: list[str] | None = None,
     deliver_overrides: list[str] | None = None,
+    verify_overrides: list[str] | None = None,
+    worker_binary_overrides: list[str] | None = None,
 ) -> FlowConfig:
     config = load_config(config_dir)
     apply_skill_overrides(config, skill_overrides)
@@ -61,6 +66,8 @@ def load_runtime_config(
     apply_human_feedback_overrides(config, human_feedback_overrides)
     apply_human_feedback_action_overrides(config, human_feedback_action_overrides)
     apply_deliver_overrides(config, deliver_overrides)
+    apply_verify_overrides(config, verify_overrides)
+    apply_worker_binary_overrides(config, worker_binary_overrides)
     return config
 
 
@@ -239,6 +246,65 @@ def apply_deliver_overrides(
     # file-loaded config would be.
     if applied:
         config.deliver = _validate_deliver(config.deliver)
+
+
+def apply_verify_overrides(
+    config: FlowConfig,
+    overrides: list[str] | None,
+) -> None:
+    applied = False
+    for raw in overrides or []:
+        if "=" not in raw:
+            raise ValueError(
+                f"Invalid override '{raw}'. Expected KEY=VALUE for verify."
+            )
+        key, value = raw.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key or not value:
+            raise ValueError(
+                f"Invalid override '{raw}'. Expected KEY=VALUE for verify."
+            )
+        if key not in DEFAULT_VERIFY:
+            known = ", ".join(sorted(DEFAULT_VERIFY))
+            raise ValueError(
+                f"Unknown verify override '{key}'. Supported keys: {known}"
+            )
+        config.verify[key] = parse_override_value(value)
+        applied = True
+
+    # Re-validate so overridden values are schema-checked exactly as
+    # file-loaded config would be.
+    if applied:
+        config.verify = _validate_verify(config.verify)
+
+
+def apply_worker_binary_overrides(
+    config: FlowConfig,
+    overrides: list[str] | None,
+) -> None:
+    applied = False
+    for raw in overrides or []:
+        if "=" not in raw:
+            raise ValueError(
+                f"Invalid override '{raw}'. Expected WORKER=PATH for worker binary."
+            )
+        worker, binary = raw.split("=", 1)
+        worker = worker.strip()
+        binary = binary.strip()
+        if not worker or not binary:
+            raise ValueError(
+                f"Invalid override '{raw}'. Expected WORKER=PATH for worker binary."
+            )
+        entry = dict(config.worker_settings.get(worker) or {})
+        entry["binary"] = binary
+        config.worker_settings[worker] = entry
+        applied = True
+
+    # Re-validate so overridden values (unknown worker names, empty paths)
+    # are schema-checked exactly as file-loaded config would be.
+    if applied:
+        config.worker_settings = _validate_workers_block(config.worker_settings)
 
 
 def apply_human_feedback_action_overrides(

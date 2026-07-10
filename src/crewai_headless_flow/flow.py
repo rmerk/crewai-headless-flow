@@ -12,12 +12,14 @@ Topology (as specified):
 from __future__ import annotations
 
 import json
+import logging
 import re
+import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Callable, Literal, cast
 
 from crewai.flow.flow import Flow, listen, router, start
 
@@ -89,14 +91,10 @@ from .task_batches import (
     ready_execution_tasks,
     select_execution_batch,
 )
+from .paths_policy import match_denied, restore_denied_paths
 from .tools.coder_tool import HeadlessCoderTool
-from .workers import (
-    ClaudeAdapter,
-    CodexAdapter,
-    CursorAdapter,
-    GeminiAdapter,
-    GrokAdapter,
-)
+from .verification import VerificationReport, VerifyRunner, run_verification
+from .workers import WORKER_SPECS
 from .workers.base import CoderResult, HeadlessCoder
 from .workspace_changes import (
     apply_changed_files,
@@ -107,12 +105,13 @@ from .workspace_changes import (
 )
 
 
+logger = logging.getLogger(__name__)
+
+
+# The Flow's only knowledge of concrete workers (AGENTS.md invariant home),
+# derived from the single WORKER_SPECS registration table.
 WORKER_ADAPTERS: dict[str, type[HeadlessCoder]] = {
-    "codex": CodexAdapter,
-    "grok": GrokAdapter,
-    "claude": ClaudeAdapter,
-    "gemini": GeminiAdapter,
-    "cursor": CursorAdapter,
+    name: spec.adapter_cls for name, spec in WORKER_SPECS.items()
 }
 
 
@@ -163,6 +162,12 @@ class CrewAIHeadlessFlow(Flow[FlowState]):
         # at ask time (so a run_store attached after construction — the
         # resume path — still reaches the file channel).
         self._escalation: EscalationHandler | None = None
+        # Test/injection seam for the Flow-owned verification subprocess
+        # boundary (never routed through a worker adapter).
+        self._verification_runner: VerifyRunner = subprocess.run
+        # Clock seam so event-log timestamps are deterministic in tests
+        # (same pattern as run_store.generate_run_id(now=...)).
+        self._now_fn: Callable[[], datetime] = datetime.now
         self._workers: dict[str, HeadlessCoderTool] = {}
         self._setup_workers()
 
@@ -179,7 +184,7 @@ class CrewAIHeadlessFlow(Flow[FlowState]):
                     f"Unsupported worker '{stage_cfg.worker}' configured for stage "
                     f"'{stage}'. Supported workers: {supported}"
                 )
-            base_worker = adapter_cls()
+            base_worker = self._instantiate_worker(adapter_cls, stage_cfg.worker)
 
             fallback_worker = self._resolve_fallback_worker(stage, stage_cfg)
             retry_cfg = stage_cfg.extra.get("retry") or {}
@@ -211,7 +216,21 @@ class CrewAIHeadlessFlow(Flow[FlowState]):
                 f"Unsupported fallback worker '{fallback_name}' configured for "
                 f"stage '{stage}'. Supported workers: {supported}"
             )
-        return fallback_cls()
+        return self._instantiate_worker(fallback_cls, fallback_name)
+
+    def _instantiate_worker(
+        self, adapter_cls: type[HeadlessCoder], worker_name: str
+    ) -> HeadlessCoder:
+        """Build an adapter, honoring a configured binary override.
+
+        Every adapter accepts ``binary=``; the zero-arg call keeps their
+        defaults when no override is configured.
+        """
+        settings = getattr(self.config, "worker_settings", {}) or {}
+        binary = (settings.get(worker_name) or {}).get("binary")
+        if binary:
+            return adapter_cls(binary=binary)  # type: ignore[call-arg]
+        return adapter_cls()
 
     def _get_worker(self, stage: str) -> HeadlessCoderTool:
         if stage not in self._workers:
@@ -616,6 +635,13 @@ Optional instructions after approval: {"enabled" if capture_instructions else "d
                 trigger_reason=trigger_reason,
             )
         )
+        self._log_event(
+            "human_feedback",
+            stage=stage,
+            gate=gate,
+            action=action,
+            approved=approved,
+        )
         self._refresh_debug_report()
 
     def _normalized_human_feedback_entries(self) -> list[HumanFeedbackEntry]:
@@ -802,6 +828,7 @@ Optional instructions after approval: {"enabled" if capture_instructions else "d
             self.state.errors.append(f"Aborted by human before {stage}")
         else:
             self.state.errors.append(f"Aborted by human at {gate}")
+        self._log_event("human_abort", stage=stage, gate=gate)
         self._refresh_debug_report()
 
     def _after_review_message(self, decision: ReviewCrewDecision) -> str:
@@ -837,6 +864,7 @@ Optional instructions after approval: {"enabled" if capture_instructions else "d
         work_summary: str,
         human_guidance: str | None = None,
         review_rerun_guidance: str | None = None,
+        verification_evidence: str | None = None,
     ) -> str:
         rerun_guidance = (
             f"\nHuman rerun instructions:\n- {review_rerun_guidance}\n"
@@ -846,6 +874,11 @@ Optional instructions after approval: {"enabled" if capture_instructions else "d
         human_guidance_text = (
             f"\nHuman approval instructions:\n- {human_guidance}\n"
             if human_guidance
+            else ""
+        )
+        verification_text = (
+            f"\nObjective verification evidence:\n{verification_evidence}\n"
+            if verification_evidence
             else ""
         )
         return f"""You are performing a rigorous code review following the assigned procedure.
@@ -860,7 +893,7 @@ Changed files so far: {self.state.changed_files}
 
 Planned tasks:
 {self._planned_task_review_context()}
-{human_guidance_text}{rerun_guidance}
+{verification_text}{human_guidance_text}{rerun_guidance}
 
 Respond with a single JSON object ONLY (no other text):
 
@@ -884,6 +917,86 @@ If everything looks good according to the review procedure, use "pass".
 Otherwise use "revise" and list the concrete issues that must be addressed.
 Use `task_hints` when you can map an issue to planned tasks or likely files. Use an empty list when you cannot map confidently.
 """
+
+    def _run_verification_round(self) -> VerificationReport | None:
+        """Run the operator-declared verify commands for this review round.
+
+        Returns None when no commands are configured. Runs once per entry
+        into the review loop, so every revise cycle (and a human
+        rerun-review) re-verifies the tree.
+        """
+
+        verify_cfg = self.config.verify
+        if not verify_cfg.get("commands"):
+            return None
+
+        self.state.last_stage = "review"
+        logger.info(
+            f"[Flow] Running {len(verify_cfg['commands'])} verification "
+            f"command(s) in {self.state.target_repo}..."
+        )
+        report = run_verification(
+            verify_cfg,
+            cwd=self.state.target_repo,
+            runner=self._verification_runner,
+        )
+        report.revision = self.state.revisions
+        self.state.verification_runs.append(report)
+        outcome = "passed" if report.passed else "FAILED"
+        log = logger.info if report.passed else logger.warning
+        log(f"[Flow] Verification {outcome}: {report.message}")
+        self._log_event(
+            "verification",
+            passed=report.passed,
+            mode=report.mode,
+            commands=len(report.results),
+            message=report.message,
+        )
+        self._refresh_debug_report()
+        return report
+
+    def _verification_revise_decision(
+        self, report: VerificationReport
+    ) -> ReviewDecision:
+        issues: list[str] = []
+        for result in report.results:
+            if result.exit_code == 0:
+                continue
+            suffix = " (timed out)" if result.timed_out else ""
+            issue = (
+                f"Verification command `{result.command}` exited "
+                f"{result.exit_code}{suffix}"
+            )
+            tail = result.output_tail.strip()
+            if tail:
+                issue += f":\n{tail}"
+            issues.append(issue)
+        return ReviewDecision(
+            status="revise",
+            issues=issues,
+            summary="Objective verification failed; automated review skipped.",
+            task_hints=[],
+        )
+
+    def _render_verification_evidence(
+        self, report: VerificationReport | None
+    ) -> str | None:
+        if report is None:
+            return None
+        header = "passed" if report.passed else "FAILED"
+        lines = [f"Verification commands ({header}):"]
+        for result in report.results:
+            if result.timed_out:
+                status = "timed out"
+            elif result.exit_code == 0:
+                status = "ok"
+            else:
+                status = f"exit {result.exit_code}"
+            lines.append(f"- `{result.command}` — {status}")
+            tail = result.output_tail.strip()
+            if result.exit_code != 0 and tail:
+                lines.extend(f"  {tail_line}" for tail_line in tail.splitlines())
+        return "\n".join(lines)
 
     def _record_review_decision_state(self, decision: ReviewDecision) -> None:
         status = decision.status
@@ -950,6 +1063,7 @@ Use `task_hints` when you can map an issue to planned tasks or likely files. Use
         work_summary: str,
         human_guidance: str | None = None,
         review_rerun_guidance: str | None = None,
+        verification_evidence: str | None = None,
     ) -> ReviewDecision:
         worker_tool = self._get_worker("review")
         stage_cfg = self.config.get_stage("review")
@@ -957,6 +1071,7 @@ Use `task_hints` when you can map an issue to planned tasks or likely files. Use
             work_summary=work_summary,
             human_guidance=human_guidance,
             review_rerun_guidance=review_rerun_guidance,
+            verification_evidence=verification_evidence,
         )
 
         self.state.last_stage = "review"
@@ -1007,7 +1122,7 @@ Use `task_hints` when you can map an issue to planned tasks or likely files. Use
         )
         if not after_review_decision.proceed:
             if after_review_decision.action == "force-revise":
-                print("[Flow] Human forced review revise after automated review.")
+                logger.info("[Flow] Human forced review revise after automated review.")
                 self.state.last_stage = "review"
                 self.state.review_status = "revise"
                 if automated_status == "revise":
@@ -1033,7 +1148,7 @@ Use `task_hints` when you can map an issue to planned tasks or likely files. Use
                 )
                 return "revise", None
             if after_review_decision.action == "replan":
-                print("[Flow] Human requested replanning after automated review.")
+                logger.info("[Flow] Human requested replanning after automated review.")
                 reason = self._set_pending_revision_replan(
                     after_review_decision.instructions
                 )
@@ -1055,7 +1170,7 @@ Use `task_hints` when you can map an issue to planned tasks or likely files. Use
                 )
                 return "revise", None
             if after_review_decision.action == "force-pass":
-                print("[Flow] Human forced review pass after automated review.")
+                logger.info("[Flow] Human forced review pass after automated review.")
                 self.state.last_stage = "review"
                 self.state.review_status = "pass"
                 self.state.issues = []
@@ -1068,7 +1183,7 @@ Use `task_hints` when you can map an issue to planned tasks or likely files. Use
                 )
                 return "pass", None
             if after_review_decision.action == "target-tasks":
-                print("[Flow] Human selected targeted revision tasks.")
+                logger.info("[Flow] Human selected targeted revision tasks.")
                 selected_ids = after_review_decision.task_ids or []
                 reason = (
                     after_review_decision.instructions
@@ -1100,7 +1215,7 @@ Use `task_hints` when you can map an issue to planned tasks or likely files. Use
                 )
                 return "revise", None
             if after_review_decision.action == "rerun-review":
-                print("[Flow] Human requested automated review rerun.")
+                logger.info("[Flow] Human requested automated review rerun.")
                 review_rerun_guidance = (
                     after_review_decision.instructions
                     or "Human requested automated review rerun."
@@ -1114,7 +1229,7 @@ Use `task_hints` when you can map an issue to planned tasks or likely files. Use
                     ],
                 )
                 return "rerun-review", review_rerun_guidance
-            print("[Flow] Human aborted after review decision.")
+            logger.info("[Flow] Human aborted after review decision.")
             self._mark_human_abort(
                 "review",
                 stage_input=work_summary,
@@ -1200,7 +1315,7 @@ Use `task_hints` when you can map an issue to planned tasks or likely files. Use
                 review_rerun_guidance=review_rerun_guidance,
             )
             automated_status = decision.status
-            print(
+            logger.info(
                 f"[Flow] Review decision: {automated_status} | Issues: {len(decision.issues)}"
             )
             after_review_message = self._after_review_message(decision)
@@ -1322,15 +1437,16 @@ Produce a single structured plan with:
         self.state.last_stage = "plan"
         self._refresh_debug_report()
 
-        print(
-            "\n[Flow] Planning complete.",
-            f"Spec length: {len(plan.spec)} | Tasks: {len(plan.tasks)}",
+        logger.info(
+            f"\n[Flow] Planning complete. "
+            f"Spec length: {len(plan.spec)} | Tasks: {len(plan.tasks)}"
         )
         return output
 
     @start()
     def plan(self) -> str:
         self._mark_running()
+        self._log_event("stage_start", stage="plan")
         self.config.print_mapping()  # Visibility into current wiring
         human_gate_message = (
             "About to run planning stage (plan). "
@@ -1341,7 +1457,7 @@ Produce a single structured plan with:
             human_gate_message,
         )
         if not decision.proceed:
-            print("[Flow] Human aborted before plan.")
+            logger.info("[Flow] Human aborted before plan.")
             self._mark_human_abort("plan", message=human_gate_message)
             return "aborted-by-human"
         return self._execute_plan_stage(human_instructions=decision.instructions)
@@ -1385,6 +1501,15 @@ Produce a single structured plan with:
                 files=files or [],
                 details=details or [],
             )
+        )
+        # The single history funnel doubles as the event-log funnel: every
+        # FlowHistoryEntry kind is also a JSONL event kind.
+        self._log_event(
+            kind,
+            summary=summary,
+            task_ids=task_ids or [],
+            files=files or [],
+            details=details or [],
         )
         self._refresh_debug_report()
 
@@ -1455,7 +1580,28 @@ Produce a single structured plan with:
             )
             self._run_store.save_debug_report(self.state.debug_report or "")
         except OSError as exc:
-            print(f"[RunStore] WARNING: checkpoint write failed: {exc}")
+            logger.warning(f"[RunStore] WARNING: checkpoint write failed: {exc}")
+
+    def _log_event(self, kind: str, **fields: Any) -> None:
+        """Append one structured event to runs/<run_id>/events.jsonl.
+
+        Envelope: {ts, run_id, revision, kind, ...kind-specific fields}.
+        Same durability policy as _persist_checkpoint: no run dir means no
+        event log, and a write failure never kills the run.
+        """
+        if self._run_store is None:
+            return
+        event = {
+            "ts": self._now_fn().isoformat(timespec="seconds"),
+            "run_id": self.state.run_id,
+            "revision": self.state.revisions,
+            "kind": kind,
+            **fields,
+        }
+        try:
+            self._run_store.append_event(json.dumps(event, sort_keys=True))
+        except OSError as exc:
+            logger.warning(f"[RunStore] WARNING: event write failed: {exc}")
 
     def _build_task_execution_prompt(
         self,
@@ -1639,6 +1785,7 @@ After you are done, summarize what changed and whether task verification now pas
         after = snapshot_workspace(Path(cwd))
         detected = diff_workspace_snapshots(before, after)
         changed_files = sorted(set(result.changed_files) | set(detected))
+        created_files = sorted(set(after) - set(before))
         self._record_task_execution(
             task=task,
             stage_cfg=stage_cfg,
@@ -1648,7 +1795,189 @@ After you are done, summarize what changed and whether task verification now pas
             crew_rounds=crew_rounds,
             parallel_batch_id=parallel_batch_id,
         )
-        return result, changed_files
+        return result, changed_files, created_files
+
+    def _deny_patterns(self) -> list[str]:
+        return list(self.config.paths.get("deny") or [])
+
+    def _denied_failure_result(
+        self, denied: dict[str, str], unrestorable: list[str]
+    ) -> CoderResult:
+        details = ", ".join(
+            f"{path} (matched {pattern!r})" for path, pattern in sorted(denied.items())
+        )
+        error = f"Denied paths touched: {details}."
+        if unrestorable:
+            error += " Could not restore: " + ", ".join(sorted(unrestorable)) + "."
+        return CoderResult(summary="", raw_output="", exit_code=1, error=error)
+
+    def _run_serial_task(
+        self,
+        *,
+        worker_tool: HeadlessCoderTool,
+        task: TaskItem,
+        stage_cfg,
+        plan_output: str,
+        human_instructions: str | None,
+    ) -> tuple[CoderResult, list[str]]:
+        """Run one structured task serially, enforcing paths.deny.
+
+        ``do_work.isolation: copy`` runs the task in a disposable workspace
+        copy and merges only clean results back — denied or unsafe paths
+        never reach the real repo, and a failed task leaves it pristine.
+        The default ``in_place`` keeps today's behavior with post-hoc
+        restore of denied paths.
+        """
+        deny = self._deny_patterns()
+        isolation = stage_cfg.extra.get("isolation", "in_place")
+
+        if isolation != "copy":
+            result, changed_files, created_files = self._run_task_with_change_tracking(
+                worker_tool=worker_tool,
+                task=task,
+                cwd=self.state.target_repo,
+                stage_cfg=stage_cfg,
+                plan_output=plan_output,
+                human_instructions=human_instructions,
+                parallel_batch_id=None,
+            )
+            denied = match_denied(changed_files, deny)
+            if not denied:
+                return result, changed_files
+            unrestorable = restore_denied_paths(
+                self.state.target_repo,
+                sorted(denied),
+                created=created_files,
+            )
+            remaining = [
+                path
+                for path in changed_files
+                if path not in denied or path in unrestorable
+            ]
+            return self._denied_failure_result(denied, unrestorable), remaining
+
+        workspace = create_workspace_copy(
+            Path(self.state.target_repo),
+            prefix=f"flow-serial-task-{task.id}-",
+        )
+        try:
+            result, changed_files, _created = self._run_task_with_change_tracking(
+                worker_tool=worker_tool,
+                task=task,
+                cwd=str(workspace),
+                stage_cfg=stage_cfg,
+                plan_output=plan_output,
+                human_instructions=human_instructions,
+                parallel_batch_id=None,
+            )
+            if not result.success:
+                # Nothing merged: the target repo is untouched.
+                return result, []
+            denied = match_denied(changed_files, deny)
+            if denied:
+                return self._denied_failure_result(denied, []), []
+            try:
+                apply_changed_files(
+                    src_root=workspace,
+                    dest_root=Path(self.state.target_repo),
+                    changed_files=changed_files,
+                )
+            except ValueError as exc:
+                return (
+                    CoderResult(
+                        summary="",
+                        raw_output="",
+                        exit_code=1,
+                        error=f"Mergeback rejected unsafe path: {exc}",
+                    ),
+                    [],
+                )
+            return result, changed_files
+        finally:
+            cleanup_workspace_copy(workspace)
+
+    def _run_unstructured_edit(
+        self,
+        worker_tool: HeadlessCoderTool,
+        stage_cfg,
+        prompt: str,
+    ) -> tuple[CoderResult, list[str]]:
+        """Run the direct (task-less) edit, enforcing paths.deny.
+
+        Snapshot-brackets the run so change detection no longer relies on
+        the worker's self-report (mirrors finalize). Honors
+        ``do_work.isolation: copy`` like the structured serial path.
+        """
+        deny = self._deny_patterns()
+        isolation = stage_cfg.extra.get("isolation", "in_place")
+        target = Path(self.state.target_repo)
+
+        if isolation == "copy":
+            workspace = create_workspace_copy(target, prefix="flow-direct-edit-")
+            try:
+                before = snapshot_workspace(workspace)
+                result = worker_tool.run(
+                    task=prompt,
+                    cwd=str(workspace),
+                    mode="edit",
+                    timeout=stage_cfg.timeout,
+                    model=stage_cfg.model,
+                )
+                after = snapshot_workspace(workspace)
+                changed = sorted(
+                    set(result.changed_files)
+                    | set(diff_workspace_snapshots(before, after))
+                )
+                if not result.success:
+                    # Nothing merged: the target repo is untouched.
+                    return result, []
+                denied = match_denied(changed, deny)
+                if denied:
+                    failure = self._denied_failure_result(denied, [])
+                    self.state.errors.append(failure.error or "")
+                    return failure, []
+                try:
+                    apply_changed_files(
+                        src_root=workspace,
+                        dest_root=target,
+                        changed_files=changed,
+                    )
+                except ValueError as exc:
+                    error = f"Mergeback rejected unsafe path: {exc}"
+                    self.state.errors.append(error)
+                    return (
+                        CoderResult(
+                            summary="", raw_output="", exit_code=1, error=error
+                        ),
+                        [],
+                    )
+                return result, changed
+            finally:
+                cleanup_workspace_copy(workspace)
+
+        before = snapshot_workspace(target)
+        result = worker_tool.run(
+            task=prompt,
+            cwd=self.state.target_repo,
+            mode="edit",
+            timeout=stage_cfg.timeout,
+            model=stage_cfg.model,
+        )
+        after = snapshot_workspace(target)
+        changed = sorted(
+            set(result.changed_files) | set(diff_workspace_snapshots(before, after))
+        )
+        denied = match_denied(changed, deny)
+        if not denied:
+            return result, changed
+        created = sorted(set(after) - set(before))
+        unrestorable = restore_denied_paths(target, sorted(denied), created=created)
+        failure = self._denied_failure_result(denied, unrestorable)
+        self.state.errors.append(failure.error or "")
+        remaining = [
+            path for path in changed if path not in denied or path in unrestorable
+        ]
+        return failure, remaining
 
     def _mark_task_complete(
         self,
@@ -2676,14 +3005,12 @@ Rules:
 
             if len(batch) == 1:
                 task = batch[0]
-                result, changed_files = self._run_task_with_change_tracking(
+                result, changed_files = self._run_serial_task(
                     worker_tool=worker_tool,
                     task=task,
-                    cwd=self.state.target_repo,
                     stage_cfg=stage_cfg,
                     plan_output=plan_output,
                     human_instructions=human_instructions,
-                    parallel_batch_id=None,
                 )
                 if result.success:
                     self._mark_task_complete(
@@ -2765,7 +3092,7 @@ Rules:
                         task = future_map[future]
                         workspace = workspaces[task.id]
                         try:
-                            result, changed_files = future.result()
+                            result, changed_files, _created = future.result()
                         except Exception as exc:
                             outcomes.append(
                                 ParallelTaskOutcome(
@@ -2816,6 +3143,20 @@ Rules:
                                 outcome,
                                 outcome.error or "Task failed in parallel batch.",
                             )
+                        )
+                        continue
+
+                    denied = match_denied(outcome.changed_files, self._deny_patterns())
+                    if denied:
+                        # Fail closed: merging an allowed subset would mark
+                        # the task complete while silently dropping changes.
+                        # Nothing leaves the isolated copy.
+                        details = ", ".join(
+                            f"{path} (matched {pattern!r})"
+                            for path, pattern in sorted(denied.items())
+                        )
+                        failed_outcomes.append(
+                            (outcome, f"Denied paths touched: {details}.")
                         )
                         continue
 
@@ -2917,11 +3258,12 @@ Rules:
     @listen("plan")
     def do_work(self, plan_output: str) -> str:
         if self._is_terminal_status():
-            print(
+            logger.info(
                 f"[Flow] Skipping do_work because flow is terminal: {self.state.status}"
             )
             return self._terminal_result()
         self._mark_running()
+        self._log_event("stage_start", stage="do_work")
         worker_tool = self._get_worker("do_work")
         stage_cfg = self.config.get_stage("do_work")
         human_gate_message = (
@@ -2935,7 +3277,9 @@ Rules:
             if decision.proceed:
                 break
             if decision.action == "skip-to-review":
-                print("[Flow] Human skipped do_work and routed directly to review.")
+                logger.info(
+                    "[Flow] Human skipped do_work and routed directly to review."
+                )
                 self.state.last_stage = "do_work"
                 self._refresh_debug_report()
                 return (
@@ -2943,7 +3287,7 @@ Rules:
                     "No automated edits were performed in this stage."
                 )
             if decision.action == "replan":
-                print("[Flow] Human requested replanning before do_work.")
+                logger.info("[Flow] Human requested replanning before do_work.")
                 self._record_history(
                     kind="human_replanning",
                     summary="Human requested a fresh plan before do_work.",
@@ -2995,9 +3339,9 @@ Rules:
                         reason,
                     ],
                 )
-                print("[Flow] Human narrowed do_work to targeted tasks.")
+                logger.info("[Flow] Human narrowed do_work to targeted tasks.")
                 break
-            print("[Flow] Human aborted before do_work.")
+            logger.info("[Flow] Human aborted before do_work.")
             self._mark_human_abort(
                 "do_work",
                 stage_input=plan_output,
@@ -3005,7 +3349,9 @@ Rules:
             )
             return "aborted-by-human"
 
-        print(f"\n[Flow] do_work using {stage_cfg.worker} (skill: {stage_cfg.skill})")
+        logger.info(
+            f"\n[Flow] do_work using {stage_cfg.worker} (skill: {stage_cfg.skill})"
+        )
 
         if self.state.tasks:
             self.state.last_stage = "do_work"
@@ -3039,19 +3385,15 @@ Current revision count: {self.state.revisions}
 Execute the work. After you are done, summarize what changed and whether tests now pass.
 """
 
-        result = worker_tool.run(
-            task=prompt,
-            cwd=self.state.target_repo,
-            mode="edit",
-            timeout=stage_cfg.timeout,
-            model=stage_cfg.model,
+        result, changed_files = self._run_unstructured_edit(
+            worker_tool, stage_cfg, prompt
         )
 
-        if result.changed_files:
-            self.state.changed_files.extend(result.changed_files)
+        if changed_files:
+            self.state.changed_files.extend(changed_files)
 
         self.state.last_stage = "do_work"
-        return result.summary or result.raw_output
+        return result.summary or result.raw_output or result.error or ""
 
     # ------------------------------------------------------------------
     # Review router - uses configured worker in INSPECT (read-only) mode
@@ -3059,15 +3401,16 @@ Execute the work. After you are done, summarize what changed and whether tests n
     @router("do_work")
     def review(self, work_summary: str) -> Literal["pass", "revise", "aborted"]:
         if self._is_terminal_status():
-            print(
+            logger.info(
                 f"[Flow] Skipping review because flow is terminal: {self.state.status}"
             )
             return "aborted"
         self._mark_running()
+        self._log_event("stage_start", stage="review")
         self.state.latest_work_summary = work_summary
         stage_cfg = self.config.get_stage("review")
 
-        print(
+        logger.info(
             f"\n[Flow] review using {stage_cfg.worker} in INSPECT mode (skill: {stage_cfg.skill})"
         )
         before_review_message = (
@@ -3080,7 +3423,9 @@ Execute the work. After you are done, summarize what changed and whether tests n
         )
         if not human_decision.proceed:
             if human_decision.action == "force-revise":
-                print("[Flow] Human forced review revise without inspect-mode worker.")
+                logger.info(
+                    "[Flow] Human forced review revise without inspect-mode worker."
+                )
                 reason = (
                     human_decision.instructions
                     or "Human requested revision before inspect-mode review."
@@ -3097,7 +3442,9 @@ Execute the work. After you are done, summarize what changed and whether tests n
                 )
                 return "revise"
             if human_decision.action == "replan":
-                print("[Flow] Human requested replanning without inspect-mode review.")
+                logger.info(
+                    "[Flow] Human requested replanning without inspect-mode review."
+                )
                 reason = self._set_pending_revision_replan(human_decision.instructions)
                 self.state.last_stage = "review"
                 self.state.review_status = "revise"
@@ -3111,7 +3458,9 @@ Execute the work. After you are done, summarize what changed and whether tests n
                 )
                 return "revise"
             if human_decision.action == "force-pass":
-                print("[Flow] Human forced review pass without inspect-mode worker.")
+                logger.info(
+                    "[Flow] Human forced review pass without inspect-mode worker."
+                )
                 self.state.last_stage = "review"
                 self.state.review_status = "pass"
                 self.state.issues = []
@@ -3124,7 +3473,7 @@ Execute the work. After you are done, summarize what changed and whether tests n
                 )
                 return "pass"
             if human_decision.action == "target-tasks":
-                print(
+                logger.info(
                     "[Flow] Human selected targeted revision tasks without inspect-mode worker."
                 )
                 selected_ids = human_decision.task_ids or []
@@ -3151,7 +3500,7 @@ Execute the work. After you are done, summarize what changed and whether tests n
                     details=["Skipped inspect-mode review worker.", reason],
                 )
                 return "revise"
-            print("[Flow] Human aborted before review.")
+            logger.info("[Flow] Human aborted before review.")
             self._mark_human_abort(
                 "review",
                 stage_input=work_summary,
@@ -3163,12 +3512,27 @@ Execute the work. After you are done, summarize what changed and whether tests n
         review_rerun_guidance: str | None = None
 
         while True:
-            decision = self._run_automated_review_once(
-                work_summary=work_summary,
-                human_guidance=human_guidance,
-                review_rerun_guidance=review_rerun_guidance,
-            )
-            print(
+            verification = self._run_verification_round()
+            if (
+                verification is not None
+                and not verification.passed
+                and verification.mode == "gate"
+            ):
+                # Objective failure: the command output IS the review. Skip
+                # the LLM entirely and feed the tails into the revise loop
+                # through the same funnel an automated review uses.
+                decision = self._verification_revise_decision(verification)
+                self._record_review_decision_state(decision)
+            else:
+                decision = self._run_automated_review_once(
+                    work_summary=work_summary,
+                    human_guidance=human_guidance,
+                    review_rerun_guidance=review_rerun_guidance,
+                    verification_evidence=self._render_verification_evidence(
+                        verification
+                    ),
+                )
+            logger.info(
                 f"[Flow] Review decision: {decision.status} | Issues: {len(decision.issues)}"
             )
             result, review_rerun_guidance = self._handle_after_review_checkpoint(
@@ -3187,24 +3551,26 @@ Execute the work. After you are done, summarize what changed and whether tests n
     @listen("revise")
     def revise(self, decision: str) -> str:
         if self._is_terminal_status():
-            print(
+            logger.info(
                 f"[Flow] Skipping revise because flow is terminal: {self.state.status}"
             )
             return self._terminal_result()
         self._mark_running()
+        self._log_event("stage_start", stage="revise")
         self.state.increment_revision()
-        print(
+        logger.info(
             f"\n[Flow] Revising (revision {self.state.revisions}/{self.state.max_revisions})"
         )
 
         if self.state.revisions >= self.state.max_revisions:
             message = "Max revisions reached before review could pass."
-            print("[Flow] Max revisions reached. Marking flow failed.")
+            logger.warning("[Flow] Max revisions reached. Marking flow failed.")
             self.state.last_stage = "revise"
             self.state.status = "failed"
             self.state.review_status = "revise"
             self.state.issues = [*self.state.issues, message]
             self.state.errors.append(message)
+            self._log_event("run_failed", reason=message)
             self._refresh_debug_report()
             self._record_history(
                 kind="review_decision",
@@ -3475,11 +3841,12 @@ Execute the work. After you are done, summarize what changed and whether tests n
     @listen("pass")
     def finalize(self, _decision: str) -> str:
         if self._is_terminal_status():
-            print(
+            logger.info(
                 f"[Flow] Skipping finalize because flow is terminal: {self.state.status}"
             )
             return self._terminal_result()
         self._mark_running()
+        self._log_event("stage_start", stage="finalize")
         human_gate_message = (
             "About to finalize and write documentation/ADR. This is the last step."
         )
@@ -3489,7 +3856,7 @@ Execute the work. After you are done, summarize what changed and whether tests n
         )
         if not decision.proceed:
             if decision.action == "skip-finalize":
-                print(
+                logger.info(
                     "[Flow] Human skipped finalize. Marking flow complete without final docs."
                 )
                 self.state.final_artifact = (
@@ -3498,10 +3865,11 @@ Execute the work. After you are done, summarize what changed and whether tests n
                 self.state.last_stage = "finalize"
                 self._maybe_deliver([])
                 self.state.status = "completed"
+                self._log_event("run_completed", via="skip-finalize")
                 self._refresh_debug_report()
                 return self.state.final_artifact
             if decision.action == "force-revise":
-                print("[Flow] Human reopened work before finalize.")
+                logger.info("[Flow] Human reopened work before finalize.")
                 reason = (
                     decision.instructions or "Human requested revision before finalize."
                 )
@@ -3520,7 +3888,7 @@ Execute the work. After you are done, summarize what changed and whether tests n
                 )
                 return "revise"
             if decision.action == "replan":
-                print("[Flow] Human requested replanning before finalize.")
+                logger.info("[Flow] Human requested replanning before finalize.")
                 reason = self._set_pending_revision_replan(decision.instructions)
                 self.state.last_stage = "finalize"
                 self.state.review_status = "revise"
@@ -3534,7 +3902,9 @@ Execute the work. After you are done, summarize what changed and whether tests n
                 )
                 return "revise"
             if decision.action == "rerun-review":
-                print("[Flow] Human requested automated review rerun before finalize.")
+                logger.info(
+                    "[Flow] Human requested automated review rerun before finalize."
+                )
                 work_summary = self.state.latest_work_summary
                 if not work_summary:
                     reason = (
@@ -3577,7 +3947,7 @@ Execute the work. After you are done, summarize what changed and whether tests n
                     human_guidance=human_guidance,
                     review_rerun_guidance=review_rerun_guidance,
                 )
-                print(
+                logger.info(
                     "[Flow] Review decision: "
                     f"{review_decision.status} | Issues: {len(review_decision.issues)}"
                 )
@@ -3586,7 +3956,9 @@ Execute the work. After you are done, summarize what changed and whether tests n
                 direct_flow = cast(Any, self)
                 return direct_flow.finalize("pass")
             if decision.action == "target-tasks":
-                print("[Flow] Human selected targeted revision tasks before finalize.")
+                logger.info(
+                    "[Flow] Human selected targeted revision tasks before finalize."
+                )
                 selected_ids = decision.task_ids or []
                 reason = (
                     decision.instructions
@@ -3612,7 +3984,7 @@ Execute the work. After you are done, summarize what changed and whether tests n
                     details=[reason, "Skipped finalize stage."],
                 )
                 return "revise"
-            print("[Flow] Human aborted before finalize.")
+            logger.info("[Flow] Human aborted before finalize.")
             self._mark_human_abort(
                 "finalize",
                 stage_input=_decision,
@@ -3623,7 +3995,9 @@ Execute the work. After you are done, summarize what changed and whether tests n
         worker_tool = self._get_worker("finalize")
         stage_cfg = self.config.get_stage("finalize")
 
-        print(f"\n[Flow] finalize using {stage_cfg.worker} (skill: {stage_cfg.skill})")
+        logger.info(
+            f"\n[Flow] finalize using {stage_cfg.worker} (skill: {stage_cfg.skill})"
+        )
 
         human_guidance = (
             f"\nHuman approval instructions:\n- {decision.instructions}\n"
@@ -3662,41 +4036,104 @@ Recent flow history:
             | set(result.changed_files)
         )
 
+        denied = match_denied(finalize_changed, self._deny_patterns())
+        if denied:
+            created = sorted(set(after_finalize) - set(before_finalize))
+            unrestorable = restore_denied_paths(
+                self.state.target_repo, sorted(denied), created=created
+            )
+            failure = self._denied_failure_result(denied, unrestorable)
+            self.state.errors.append(f"Finalize: {failure.error}")
+            # Denied paths never reach the delivery commit, restored or not.
+            finalize_changed = [path for path in finalize_changed if path not in denied]
+
         self.state.final_artifact = result.summary or result.raw_output
         self.state.last_stage = "finalize"
         self._maybe_deliver(finalize_changed)
         self.state.status = "completed"
+        self._log_event("run_completed")
         self._refresh_debug_report()
 
-        print("[Flow] Flow completed successfully.")
+        logger.info("[Flow] Flow completed successfully.")
         return self.state.final_artifact or "Flow completed"
+
+    def _delivery_verification_ok(self) -> bool:
+        """Whether push/pr may ship: the latest verification round passed.
+
+        Mode-independent on purpose: ``advisory`` only controls whether a
+        failure short-circuits the LLM review — shipping unverified work is
+        never OK while commands are configured. Empty ``verify.commands``
+        means the operator opted out of verification and owns the risk.
+        A human force-pass does not override this predicate either.
+        """
+
+        if not self.config.verify.get("commands"):
+            return True
+        runs = self.state.verification_runs
+        if not runs:
+            return False
+        last = runs[-1]
+        if isinstance(last, VerificationReport):
+            return last.passed
+        return bool(last.get("passed"))
+
+    def _delivery_verification_note(self, verification_ok: bool) -> str:
+        commands = self.config.verify.get("commands") or []
+        if not commands:
+            return "Verification: not configured."
+        if verification_ok:
+            return f"Verification: passed ({len(commands)} command(s))."
+        return "Verification: latest round did not pass."
 
     def _maybe_deliver(self, extra_changed: list[str]) -> None:
         deliver_cfg = self.config.deliver
         if not deliver_cfg.get("enabled", False):
             return
         staged = list(dict.fromkeys([*self.state.changed_files, *extra_changed]))
+        # Belt-and-braces: denied paths (e.g. unrestorable ones a failed task
+        # still tracked) must never be laundered into the delivery commit.
+        denied = match_denied(staged, self._deny_patterns())
+        if denied:
+            self.state.errors.append(
+                "Delivery excluded denied paths: " + ", ".join(sorted(denied))
+            )
+            staged = [path for path in staged if path not in denied]
+        verification_ok = self._delivery_verification_ok()
         report = deliver(
             deliver_cfg,
             target_repo=self.state.target_repo,
             changed_files=staged,
             run_id=self.state.run_id,
             request=self.state.request,
+            verification_ok=verification_ok,
+            verification_note=self._delivery_verification_note(verification_ok),
         )
         self.state.delivery_report = report
+        self._log_event(
+            "delivery",
+            status=report.status,
+            branch=report.branch,
+            push=report.push,
+            pr=report.pr,
+            pr_url=report.pr_url,
+        )
         if report.status == "failed":
             # The work exists; delivery is packaging. Record the failure but
             # keep the run completed.
             self.state.errors.append(f"Delivery failed: {report.message}")
+        if report.push == "failed":
+            self.state.errors.append(f"Delivery push failed: {report.message}")
+        if report.pr == "failed":
+            self.state.errors.append(f"Delivery PR failed: {report.message}")
 
     @listen("aborted")
     def aborted(self, _decision: str) -> str:
-        print(f"[Flow] Flow stopped at terminal status: {self.state.status}")
+        logger.info(f"[Flow] Flow stopped at terminal status: {self.state.status}")
         return self._terminal_result()
 
     @listen("failed")
     def failed(self, _decision: str) -> str:
-        print(f"[Flow] Flow stopped at terminal status: {self.state.status}")
+        logger.info(f"[Flow] Flow stopped at terminal status: {self.state.status}")
         return self._terminal_result()
 
 

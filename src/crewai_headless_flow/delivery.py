@@ -1,5 +1,6 @@
 """
-Flow-owned git delivery (autonomy Phase 1, Gap 2 — commit-only mode).
+Flow-owned git delivery (autonomy Gap 2 — commit, then push/PR behind the
+verification gate).
 
 A "completed" run used to leave the target repo's working tree dirty on
 whatever branch it was on. When ``deliver.enabled`` is true, the Flow now
@@ -15,21 +16,42 @@ commit, under hard guardrails:
   deletion);
 - ``deliver()`` never raises — failures come back as a ``failed`` report.
 
-``push`` / ``pr`` are validated config keys but deliberately not implemented
-in Phase 1: shipping work off the machine waits for Phase 2's verification
-gate. Adapters keep zero git responsibility; this module is the only git
-writer in the platform.
+``push``/``pr`` (Phase 2) ship the committed branch off the machine, but
+only when the caller vouches that the latest objective verification passed
+(``verification_ok``) — otherwise they report ``blocked_unverified``. A
+push or PR failure never demotes a successful commit: ``status`` stays
+``committed`` and the failure is carried on the ``push``/``pr`` fields.
+PRs go through the ``gh`` CLI via an injectable runner so the offline
+suite never touches the network. Adapters keep zero git responsibility;
+this module is the only git writer in the platform.
 """
 
 from __future__ import annotations
 
+import logging
 import subprocess
 from pathlib import Path
 from typing import Any, Callable, Literal, Mapping
 
 from pydantic import BaseModel, Field
 
+logger = logging.getLogger(__name__)
+
 GitRunner = Callable[[list[str], Path], "subprocess.CompletedProcess[str]"]
+
+# "requested_not_implemented" is retired (nothing produces it anymore) but
+# stays in the unions so Phase-1 state.json files still deserialize on resume.
+PushStatus = Literal[
+    "off", "pushed", "failed", "blocked_unverified", "requested_not_implemented"
+]
+PrStatus = Literal[
+    "off",
+    "created",
+    "failed",
+    "blocked_unverified",
+    "skipped_no_push",
+    "requested_not_implemented",
+]
 
 _BRANCH_COLLISION_LIMIT = 20
 _IDENTITY_FALLBACK = ("crewai-headless-flow", "crewai-headless-flow@localhost")
@@ -45,8 +67,9 @@ class DeliveryReport(BaseModel):
     staged_files: list[str] = Field(default_factory=list)
     skipped_files: list[str] = Field(default_factory=list)
     message: str = ""
-    push: Literal["off", "requested_not_implemented"] = "off"
-    pr: Literal["off", "requested_not_implemented"] = "off"
+    push: PushStatus = "off"
+    pr: PrStatus = "off"
+    pr_url: str | None = None
 
 
 def run_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -60,6 +83,17 @@ def run_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
+def run_gh(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["gh", *args],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+
 def deliver(
     cfg: Mapping[str, Any],
     *,
@@ -67,26 +101,12 @@ def deliver(
     changed_files: list[str],
     run_id: str | None,
     request: str,
+    verification_ok: bool = True,
+    verification_note: str | None = None,
     git: GitRunner = run_git,
+    gh: GitRunner = run_gh,
 ) -> DeliveryReport:
     """Commit the flow's changed files onto a fresh branch. Never raises."""
-    push_flag: Literal["off", "requested_not_implemented"] = (
-        "requested_not_implemented" if cfg.get("push") else "off"
-    )
-    pr_flag: Literal["off", "requested_not_implemented"] = (
-        "requested_not_implemented" if cfg.get("pr") else "off"
-    )
-    if cfg.get("push"):
-        print(
-            "[Delivery] deliver.push=true is not implemented in Phase 1 "
-            "(deferred to Phase 2 behind the verify gate); ignoring."
-        )
-    if cfg.get("pr"):
-        print(
-            "[Delivery] deliver.pr=true is not implemented in Phase 1 "
-            "(deferred to Phase 2 behind the verify gate); ignoring."
-        )
-
     if not cfg.get("enabled", False):
         return DeliveryReport(status="skipped", message="deliver.enabled is false")
 
@@ -98,16 +118,15 @@ def deliver(
             changed_files=changed_files,
             run_id=run_id,
             request=request,
+            verification_ok=verification_ok,
+            verification_note=verification_note,
             git=git,
-            push_flag=push_flag,
-            pr_flag=pr_flag,
+            gh=gh,
         )
     except Exception as exc:  # never let packaging kill a completed run
         return DeliveryReport(
             status="failed",
             message=f"Delivery failed unexpectedly: {type(exc).__name__}: {exc}",
-            push=push_flag,
-            pr=pr_flag,
         )
 
 
@@ -118,15 +137,14 @@ def _deliver_enabled(
     changed_files: list[str],
     run_id: str | None,
     request: str,
+    verification_ok: bool,
+    verification_note: str | None,
     git: GitRunner,
-    push_flag: Literal["off", "requested_not_implemented"],
-    pr_flag: Literal["off", "requested_not_implemented"],
+    gh: GitRunner,
 ) -> DeliveryReport:
     def fail(message: str) -> DeliveryReport:
-        print(f"[Delivery] {message}")
-        return DeliveryReport(
-            status="failed", message=message, push=push_flag, pr=pr_flag
-        )
+        logger.warning(f"[Delivery] {message}")
+        return DeliveryReport(status="failed", message=message)
 
     probe = git(["rev-parse", "--is-inside-work-tree"], target)
     if probe.returncode != 0 or probe.stdout.strip() != "true":
@@ -139,15 +157,13 @@ def _deliver_enabled(
 
     safe_files, skipped_files = _partition_safe_paths(changed_files, target)
     for skipped in skipped_files:
-        print(f"[Delivery] Skipping unsafe changed-file path: {skipped!r}")
+        logger.warning(f"[Delivery] Skipping unsafe changed-file path: {skipped!r}")
     if not safe_files:
         return DeliveryReport(
             status="nothing_to_commit",
             base_ref=base_ref,
             skipped_files=skipped_files,
             message="No safe changed files to stage.",
-            push=push_flag,
-            pr=pr_flag,
         )
 
     branch, branch_error = _allocate_branch(cfg, git, target, run_id)
@@ -168,8 +184,6 @@ def _deliver_enabled(
             staged_files=[],
             skipped_files=skipped_files,
             message="Branch created; commit disabled by deliver.commit=false.",
-            push=push_flag,
-            pr=pr_flag,
         )
 
     add = git(["add", "--", *safe_files], target)
@@ -185,8 +199,6 @@ def _deliver_enabled(
             base_ref=base_ref,
             skipped_files=skipped_files,
             message="Changed files matched the tree; nothing staged.",
-            push=push_flag,
-            pr=pr_flag,
         )
 
     commit_message = _build_commit_message(run_id, request, staged_files)
@@ -212,10 +224,27 @@ def _deliver_enabled(
     sha = git(["rev-parse", "HEAD"], target)
     commit_sha = sha.stdout.strip() if sha.returncode == 0 else None
 
-    print(
+    logger.info(
         f"[Delivery] Committed {len(staged_files)} file(s) on {branch}"
         f"{f' @ {commit_sha[:12]}' if commit_sha else ''}{identity_note}"
     )
+
+    push_flag, pr_flag, pr_url, ship_notes = _ship(
+        cfg,
+        target=target,
+        branch=branch,
+        run_id=run_id,
+        request=request,
+        staged_files=staged_files,
+        verification_ok=verification_ok,
+        verification_note=verification_note,
+        git=git,
+        gh=gh,
+    )
+
+    message = f"Committed on fresh branch {branch}.{identity_note}"
+    if ship_notes:
+        message += " " + " ".join(ship_notes)
     return DeliveryReport(
         status="committed",
         branch=branch,
@@ -223,10 +252,114 @@ def _deliver_enabled(
         commit_sha=commit_sha,
         staged_files=staged_files,
         skipped_files=skipped_files,
-        message=f"Committed on fresh branch {branch}.{identity_note}",
+        message=message,
         push=push_flag,
         pr=pr_flag,
+        pr_url=pr_url,
     )
+
+
+def _ship(
+    cfg: Mapping[str, Any],
+    *,
+    target: Path,
+    branch: str,
+    run_id: str | None,
+    request: str,
+    staged_files: list[str],
+    verification_ok: bool,
+    verification_note: str | None,
+    git: GitRunner,
+    gh: GitRunner,
+) -> tuple[PushStatus, PrStatus, str | None, list[str]]:
+    """Push the delivery branch and open a PR, gated on verification.
+
+    A failure here never demotes the commit: it comes back as a
+    ``failed`` push/pr flag plus a human-readable note.
+    """
+
+    if not cfg.get("push"):
+        return "off", "off", None, []
+
+    pr_requested = bool(cfg.get("pr"))
+    if not verification_ok:
+        note = (
+            "push/pr blocked: the latest objective verification did not pass "
+            "(see verify: config)."
+        )
+        logger.warning(f"[Delivery] {note}")
+        return (
+            "blocked_unverified",
+            "blocked_unverified" if pr_requested else "off",
+            None,
+            [note],
+        )
+
+    remote = str(cfg.get("remote", "origin"))
+    try:
+        pushed = git(["push", "-u", remote, branch], target)
+    except Exception as exc:
+        note = f"git push failed: {type(exc).__name__}: {exc}"
+        logger.warning(f"[Delivery] {note}")
+        return "failed", "skipped_no_push" if pr_requested else "off", None, [note]
+    if pushed.returncode != 0:
+        note = f"git push failed: {(pushed.stderr or '').strip()[:300]}"
+        logger.warning(f"[Delivery] {note}")
+        return "failed", "skipped_no_push" if pr_requested else "off", None, [note]
+    logger.info(f"[Delivery] Pushed {branch} to {remote}.")
+
+    if not pr_requested:
+        return "pushed", "off", None, []
+
+    # No --base on purpose: the base ref may be whatever feature branch the
+    # operator happened to be on; let gh target the repo's default branch.
+    title = _build_commit_message(run_id, request, staged_files).splitlines()[0]
+    body = _build_pr_body(run_id, request, staged_files, verification_note)
+    try:
+        created = gh(
+            ["pr", "create", "--head", branch, "--title", title, "--body", body],
+            target,
+        )
+    except Exception as exc:
+        note = f"gh pr create failed: {type(exc).__name__}: {exc}"
+        logger.warning(f"[Delivery] {note}")
+        return "pushed", "failed", None, [note]
+    if created.returncode != 0:
+        note = f"gh pr create failed: {(created.stderr or '').strip()[:300]}"
+        logger.warning(f"[Delivery] {note}")
+        return "pushed", "failed", None, [note]
+
+    pr_url = _extract_pr_url(created.stdout or "")
+    logger.info(f"[Delivery] Opened PR: {pr_url or '(url not reported)'}")
+    return "pushed", "created", pr_url, []
+
+
+def _build_pr_body(
+    run_id: str | None,
+    request: str,
+    staged_files: list[str],
+    verification_note: str | None,
+) -> str:
+    file_lines = "\n".join(f"- {path}" for path in staged_files[:50])
+    if len(staged_files) > 50:
+        file_lines += f"\n- … and {len(staged_files) - 50} more"
+    parts = [
+        f"Automated change produced by crewai-headless-flow.\n\nRequest:\n{request}",
+        f"Files changed by this run:\n{file_lines}",
+    ]
+    if verification_note:
+        parts.append(verification_note)
+    if run_id:
+        parts.append(f"Run-Id: {run_id}")
+    return "\n\n".join(parts)
+
+
+def _extract_pr_url(stdout: str) -> str | None:
+    for line in stdout.splitlines():
+        candidate = line.strip()
+        if candidate.startswith("http://") or candidate.startswith("https://"):
+            return candidate
+    return None
 
 
 def _resolve_base_ref(git: GitRunner, target: Path) -> str:

@@ -327,16 +327,70 @@ def test_git_failure_via_fake_runner_never_raises(tmp_path: Path):
     assert report.status == "failed"
 
 
-def test_push_and_pr_true_are_ignored_with_report_flags(tmp_path: Path, capsys):
-    repo = _git_repo(tmp_path)
-    (repo / "new.py").write_text("x\n")
-    seen_argv: list[list[str]] = []
+# --- push / pr (Phase 2, gated on verification) -----------------------------------
+
+
+def _push_intercepting_git(
+    pushes: list[list[str]], returncode: int = 0, stderr: str = ""
+):
+    """Real git for everything except `push`, which is intercepted."""
 
     from crewai_headless_flow.delivery import run_git
 
-    def recording_git(args, cwd):
-        seen_argv.append(args)
+    def runner(args, cwd):
+        if args and args[0] == "push":
+            pushes.append(args)
+            return subprocess.CompletedProcess(
+                args=["git", *args], returncode=returncode, stdout="", stderr=stderr
+            )
         return run_git(args, cwd)
+
+    return runner
+
+
+def test_push_ships_branch_to_remote_without_force(tmp_path: Path):
+    repo = _git_repo(tmp_path)
+    (repo / "new.py").write_text("x\n")
+    pushes: list[list[str]] = []
+
+    report = deliver(
+        _cfg(push=True),
+        target_repo=repo,
+        changed_files=["new.py"],
+        run_id=RUN_ID,
+        request="push me",
+        git=_push_intercepting_git(pushes),
+    )
+
+    assert report.status == "committed"
+    assert report.push == "pushed"
+    assert report.pr == "off"
+    assert pushes == [["push", "-u", "origin", f"flow/{RUN_ID}"]]
+    assert not any("--force" in argv for argv in pushes)
+
+
+def test_push_honors_configured_remote(tmp_path: Path):
+    repo = _git_repo(tmp_path)
+    (repo / "new.py").write_text("x\n")
+    pushes: list[list[str]] = []
+
+    report = deliver(
+        _cfg(push=True, remote="upstream"),
+        target_repo=repo,
+        changed_files=["new.py"],
+        run_id=RUN_ID,
+        request="push me",
+        git=_push_intercepting_git(pushes),
+    )
+
+    assert report.push == "pushed"
+    assert pushes == [["push", "-u", "upstream", f"flow/{RUN_ID}"]]
+
+
+def test_push_blocked_when_verification_not_ok(tmp_path: Path):
+    repo = _git_repo(tmp_path)
+    (repo / "new.py").write_text("x\n")
+    pushes: list[list[str]] = []
 
     report = deliver(
         _cfg(push=True, pr=True),
@@ -344,18 +398,135 @@ def test_push_and_pr_true_are_ignored_with_report_flags(tmp_path: Path, capsys):
         changed_files=["new.py"],
         run_id=RUN_ID,
         request="push me",
-        git=recording_git,
+        verification_ok=False,
+        git=_push_intercepting_git(pushes),
+    )
+
+    assert report.status == "committed"  # local commit still lands
+    assert report.push == "blocked_unverified"
+    assert report.pr == "blocked_unverified"
+    assert pushes == []
+    assert "blocked" in report.message
+
+
+def test_push_failure_keeps_commit_and_skips_pr(tmp_path: Path):
+    repo = _git_repo(tmp_path)
+    (repo / "new.py").write_text("x\n")
+    pushes: list[list[str]] = []
+
+    report = deliver(
+        _cfg(push=True, pr=True),
+        target_repo=repo,
+        changed_files=["new.py"],
+        run_id=RUN_ID,
+        request="push me",
+        git=_push_intercepting_git(pushes, returncode=128, stderr="no remote"),
     )
 
     assert report.status == "committed"
-    assert report.push == "requested_not_implemented"
-    assert report.pr == "requested_not_implemented"
-    out = capsys.readouterr().out
-    assert "deliver.push=true is not implemented" in out
-    assert "deliver.pr=true is not implemented" in out
-    for argv in seen_argv:
-        assert "push" not in argv
-        assert "gh" not in argv
+    assert report.push == "failed"
+    assert report.pr == "skipped_no_push"
+    assert "git push failed" in report.message
+
+
+def test_pr_created_via_gh_with_url_captured(tmp_path: Path):
+    repo = _git_repo(tmp_path)
+    (repo / "new.py").write_text("x\n")
+    pushes: list[list[str]] = []
+    gh_calls: list[list[str]] = []
+
+    def fake_gh(args, cwd):
+        gh_calls.append(args)
+        return subprocess.CompletedProcess(
+            args=["gh", *args],
+            returncode=0,
+            stdout="https://github.com/acme/repo/pull/42\n",
+            stderr="",
+        )
+
+    report = deliver(
+        _cfg(push=True, pr=True),
+        target_repo=repo,
+        changed_files=["new.py"],
+        run_id=RUN_ID,
+        request="open a pr",
+        verification_note="Verification: passed (2 command(s)).",
+        git=_push_intercepting_git(pushes),
+        gh=fake_gh,
+    )
+
+    assert report.push == "pushed"
+    assert report.pr == "created"
+    assert report.pr_url == "https://github.com/acme/repo/pull/42"
+    assert len(gh_calls) == 1
+    argv = gh_calls[0]
+    assert argv[:2] == ["pr", "create"]
+    assert argv[argv.index("--head") + 1] == f"flow/{RUN_ID}"
+    assert "--base" not in argv  # let gh target the repo's default branch
+    body = argv[argv.index("--body") + 1]
+    assert "open a pr" in body
+    assert f"Run-Id: {RUN_ID}" in body
+    assert "Verification: passed" in body
+
+
+def test_pr_gh_failure_keeps_commit_and_push(tmp_path: Path):
+    repo = _git_repo(tmp_path)
+    (repo / "new.py").write_text("x\n")
+
+    def broken_gh(args, cwd):
+        raise FileNotFoundError("gh not installed")
+
+    report = deliver(
+        _cfg(push=True, pr=True),
+        target_repo=repo,
+        changed_files=["new.py"],
+        run_id=RUN_ID,
+        request="open a pr",
+        git=_push_intercepting_git([]),
+        gh=broken_gh,
+    )
+
+    assert report.status == "committed"
+    assert report.push == "pushed"
+    assert report.pr == "failed"
+    assert "gh pr create failed" in report.message
+
+
+def test_push_disabled_never_calls_push_or_gh(tmp_path: Path):
+    repo = _git_repo(tmp_path)
+    (repo / "new.py").write_text("x\n")
+    pushes: list[list[str]] = []
+
+    def forbidden_gh(args, cwd):
+        raise AssertionError("gh must not be called")
+
+    report = deliver(
+        _cfg(),
+        target_repo=repo,
+        changed_files=["new.py"],
+        run_id=RUN_ID,
+        request="local only",
+        git=_push_intercepting_git(pushes),
+        gh=forbidden_gh,
+    )
+
+    assert report.push == "off"
+    assert report.pr == "off"
+    assert pushes == []
+
+
+def test_legacy_requested_not_implemented_reports_still_deserialize():
+    """Phase-1 state.json files carry the retired flag value; resume must
+    not choke on them."""
+    revived = DeliveryReport.model_validate(
+        {
+            "status": "committed",
+            "push": "requested_not_implemented",
+            "pr": "requested_not_implemented",
+        }
+    )
+
+    assert revived.push == "requested_not_implemented"
 
 
 def test_delivery_report_round_trips_through_flow_state():
@@ -475,3 +646,101 @@ def test_finalize_without_deliver_enabled_records_no_report(tmp_path: Path):
     assert flow.state.status == "completed"
     assert flow.state.delivery_report is None
     assert _git(repo, "rev-parse", "--abbrev-ref", "HEAD") == "main"
+
+
+# --- verification predicate at the flow seam ---------------------------------------
+
+
+def _predicate_flow(tmp_path: Path, verify_commands: list[str]):
+    repo = _git_repo(tmp_path)
+    cfg = FlowConfig(
+        skills={"finalize": "documentation-and-adrs"},
+        workers={"finalize": {"worker": "claude"}},
+        defaults={"worker": "codex", "timeout": 300},
+        deliver={"enabled": True, "push": True},
+        verify={"commands": verify_commands},
+    )
+    flow = CrewAIHeadlessFlow(config=cfg)
+    flow._state = FlowState(  # type: ignore[attr-defined]
+        request="ship it",
+        target_repo=str(repo),
+        run_id=RUN_ID,
+        changed_files=["src/feature.py"],
+        review_status="pass",
+    )
+    flow._workers["finalize"] = FinalizeWritingWorker()  # type: ignore
+    return flow
+
+
+def _spy_deliver(monkeypatch) -> list[dict]:
+    calls: list[dict] = []
+
+    def spy(cfg, **kwargs):
+        calls.append(kwargs)
+        return DeliveryReport(status="committed", branch="flow/x")
+
+    monkeypatch.setattr("crewai_headless_flow.flow.deliver", spy)
+    return calls
+
+
+def test_flow_blocks_push_when_verify_configured_but_never_ran(
+    tmp_path: Path, monkeypatch
+):
+    from crewai_headless_flow.verification import VerificationReport
+
+    flow = _predicate_flow(tmp_path, ["uv run pytest -q"])
+    calls = _spy_deliver(monkeypatch)
+
+    cast(Any, flow).finalize("pass")
+
+    assert calls[0]["verification_ok"] is False
+
+    # ...and when the latest round failed.
+    (tmp_path / "second").mkdir()
+    flow = _predicate_flow(tmp_path / "second", ["uv run pytest -q"])
+    flow.state.verification_runs.append(VerificationReport(passed=False, mode="gate"))
+    cast(Any, flow).finalize("pass")
+    assert calls[1]["verification_ok"] is False
+
+
+def test_flow_allows_push_when_latest_verification_passed(tmp_path: Path, monkeypatch):
+    from crewai_headless_flow.verification import VerificationReport
+
+    flow = _predicate_flow(tmp_path, ["uv run pytest -q"])
+    flow.state.verification_runs.append(VerificationReport(passed=False, mode="gate"))
+    flow.state.verification_runs.append(VerificationReport(passed=True, mode="gate"))
+    calls = _spy_deliver(monkeypatch)
+
+    cast(Any, flow).finalize("pass")
+
+    assert calls[0]["verification_ok"] is True
+    assert "Verification: passed" in calls[0]["verification_note"]
+
+
+def test_flow_allows_push_when_verify_unconfigured(tmp_path: Path, monkeypatch):
+    flow = _predicate_flow(tmp_path, [])
+    calls = _spy_deliver(monkeypatch)
+
+    cast(Any, flow).finalize("pass")
+
+    assert calls[0]["verification_ok"] is True
+    assert "not configured" in calls[0]["verification_note"]
+
+
+def test_flow_records_push_failure_in_errors(tmp_path: Path, monkeypatch):
+    flow = _predicate_flow(tmp_path, [])
+
+    def failing_push_deliver(cfg, **kwargs):
+        return DeliveryReport(
+            status="committed",
+            branch="flow/x",
+            push="failed",
+            message="git push failed: no remote",
+        )
+
+    monkeypatch.setattr("crewai_headless_flow.flow.deliver", failing_push_deliver)
+
+    cast(Any, flow).finalize("pass")
+
+    assert flow.state.status == "completed"
+    assert any("Delivery push failed" in err for err in flow.state.errors)

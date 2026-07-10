@@ -13,6 +13,7 @@ from .state import (
     StageRuntimeSnapshot,
     TaskExecutionEntry,
 )
+from .verification import VerificationReport
 
 
 def render_execution_report(state: FlowState, history_limit: int = 10) -> str:
@@ -156,6 +157,28 @@ def render_execution_report(state: FlowState, history_limit: int = 10) -> str:
         lines.append("- None")
 
     lines.append("")
+    lines.append("## Verification")
+    verification_runs = _normalized_verification_runs(state)
+    if not verification_runs:
+        lines.append("- None")
+    else:
+        for run in verification_runs[-history_limit:]:
+            lines.append(
+                f"- r{run.revision} mode={run.mode} "
+                f"passed={'yes' if run.passed else 'no'} "
+                f"commands={len(run.results)}: {run.message}"
+            )
+            for result in run.results:
+                if result.exit_code == 0:
+                    continue
+                lines.append(f"  exit={result.exit_code} `{result.command}`")
+                if result.output_tail:
+                    lines.extend(
+                        f"    {tail_line}"
+                        for tail_line in _preview_text_lines(result.output_tail)
+                    )
+
+    lines.append("")
     lines.append("## Review Targets")
     if state.review_task_hints:
         for hint in state.review_task_hints:
@@ -293,6 +316,16 @@ def _normalized_human_feedback(state: FlowState) -> list[HumanFeedbackEntry]:
         elif isinstance(entry, dict):
             feedback.append(HumanFeedbackEntry.model_validate(entry))
     return feedback
+
+
+def _normalized_verification_runs(state: FlowState) -> list[VerificationReport]:
+    runs: list[VerificationReport] = []
+    for entry in state.verification_runs:
+        if isinstance(entry, VerificationReport):
+            runs.append(entry)
+        elif isinstance(entry, dict):
+            runs.append(VerificationReport.model_validate(entry))
+    return runs
 
 
 def _normalized_task_executions(state: FlowState) -> list[TaskExecutionEntry]:

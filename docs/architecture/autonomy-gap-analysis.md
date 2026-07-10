@@ -33,8 +33,9 @@ The platform's **inner loop is genuinely done** — a clean five-worker adapter 
 | HITL↔DMI convergence Phases 2–3 (`read_domain_context` seam, domain-aware `sensitive_paths_touched` trigger) | **Planned, not shipped** — gated on reversing ADR-0002's "no Flow-side reading" stance | `docs/plans/2026-07-06-hitl-dmi-convergence.md` (Tasks 3-5, L19, L104) |
 | Domain Model Integration (OpenWiki pass-through) | **Deliberately documentation-only** — "The Flow contributes zero code to this path" | ADR-0002; `docs/plans/2026-07-06-domain-model-integration.md` L20 |
 | Gemini native AGENTS.md pickup for DMI | **Documented target-repo config requirement**, not a Flow gap | DMI plan L17, L26-28; DESIGN.md L239 |
-| Notification channels, approval UX, gate timeouts for HITL | **Not designed anywhere** — a genuine gap (see Gap 4), not deferred work | — |
-| Verification gate, git delivery, crash-safe persistence, triggering/queueing | **Not designed anywhere** — genuine gaps (Gaps 1-3, 11) | — |
+| Escalation channels (stdin/file/command), crash-safe persistence, commit delivery (Phase 1) | **Shipped 2026-07-10** | ADRs 0004–0006 |
+| Verification gate, push/PR delivery, JSONL event log, deny paths + serial isolation, WorkerSpec (Phase 2) | **Shipped 2026-07-10** | ADRs 0007–0009 |
+| Triggering/queueing (Phase 3) | **Not designed anywhere** — genuine gap (Gap 11) | — |
 
 Note also: the `invoke-ticket-flow` entrypoint is an external command (`~/.claude/commands/invoke-ticket-flow.md`) that drives a **different repository** (`my_crew`); this repo contains no ticket ingestion, and even that flow deliberately halts before commit/PR/Jira writes.
 
@@ -165,7 +166,7 @@ All "smallest change" sketches below preserve the AGENTS.md invariants: the insp
 
 ## Phased roadmap (dependency-ordered)
 
-### Phase 1 — Unattended single-run reliability
+### Phase 1 — Unattended single-run reliability — SHIPPED (2026-07-10, ADRs 0004–0006)
 
 *A run must survive its own infrastructure before verification or triggering matter.*
 
@@ -178,7 +179,7 @@ All "smallest change" sketches below preserve the AGENTS.md invariants: the insp
 
 **Exit criterion:** a no-TTY run either completes on its own branch, parks resumably awaiting approval, or fails with a resumable checkpoint — it never crashes unrecoverably and never leaves ambiguous state.
 
-### Phase 2 — Verification & observability
+### Phase 2 — Verification & observability — SHIPPED (2026-07-10, ADRs 0007–0009)
 
 *Make "completed" mean something, and make every run diagnosable after the fact.*
 

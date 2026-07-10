@@ -6,6 +6,7 @@ per-run artifacts (runs/<run_id>/state.json + debug_report.md).
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
@@ -128,7 +129,12 @@ def test_flow_checkpoints_state_at_every_refresh(tmp_path: Path):
     assert store.debug_report_path.exists()
 
 
-def test_checkpoint_write_failure_never_kills_the_run(tmp_path: Path, capsys):
+def test_checkpoint_write_failure_never_kills_the_run(
+    tmp_path: Path, caplog, monkeypatch: pytest.MonkeyPatch
+):
+    # A prior CLI test may have configured the package logger with
+    # propagate=False; caplog listens on the root logger.
+    monkeypatch.setattr(logging.getLogger("crewai_headless_flow"), "propagate", True)
     store = RunStore.allocate(tmp_path / "runs", "doomed writes", now=FIXED_NOW)
     cfg = FlowConfig(
         skills={"do_work": "incremental-implementation"},
@@ -144,9 +150,10 @@ def test_checkpoint_write_failure_never_kills_the_run(tmp_path: Path, capsys):
 
     store.save_state = boom  # type: ignore[method-assign]
 
-    flow._refresh_debug_report()
+    with caplog.at_level("WARNING", logger="crewai_headless_flow.flow"):
+        flow._refresh_debug_report()
 
-    assert "checkpoint write failed" in capsys.readouterr().out
+    assert "checkpoint write failed" in caplog.text
 
 
 def test_run_headless_flow_stamps_run_identity_before_kickoff(
@@ -217,3 +224,146 @@ def test_run_headless_flow_without_runs_dir_has_no_identity(
 
     assert result.run_id is None
     assert result.run_dir is None
+
+
+# =============================================================================
+# JSONL event log (autonomy Gap 9a)
+# =============================================================================
+
+
+def test_append_event_writes_parseable_lines(tmp_path: Path):
+    store = RunStore.allocate(tmp_path, "add feature", now=FIXED_NOW)
+
+    store.append_event(json.dumps({"kind": "stage_start", "stage": "plan"}))
+    store.append_event(json.dumps({"kind": "run_completed"}))
+
+    lines = store.events_path.read_text().splitlines()
+    assert [json.loads(line)["kind"] for line in lines] == [
+        "stage_start",
+        "run_completed",
+    ]
+
+
+def test_events_file_is_created_lazily(tmp_path: Path):
+    store = RunStore.allocate(tmp_path, "add feature", now=FIXED_NOW)
+
+    assert not store.events_path.exists()
+    store.append_event("{}")
+    assert store.events_path.exists()
+
+
+def test_append_event_continues_same_file_after_attach(tmp_path: Path):
+    store = RunStore.allocate(tmp_path, "add feature", now=FIXED_NOW)
+    store.append_event(json.dumps({"kind": "stage_start"}))
+
+    resumed = RunStore.attach(store.run_dir)
+    resumed.append_event(json.dumps({"kind": "run_completed"}))
+
+    lines = store.events_path.read_text().splitlines()
+    assert len(lines) == 2
+
+
+def test_flow_emits_ordered_events_with_deterministic_timestamps(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    store = RunStore.allocate(tmp_path / "runs", "event test", now=FIXED_NOW)
+    cfg = FlowConfig(
+        skills={"do_work": "incremental-implementation"},
+        workers={"do_work": {"worker": "claude"}},
+        defaults={"worker": "codex", "timeout": 300},
+    )
+    flow = CrewAIHeadlessFlow(config=cfg, run_store=store)
+    flow._now_fn = lambda: FIXED_NOW
+    flow._state = FlowState(  # type: ignore[attr-defined]
+        request="event test",
+        target_repo=str(repo),
+        run_id=store.run_id,
+        run_dir=str(store.run_dir),
+    )
+    flow.state.tasks = [
+        TaskItem(id=1, title="one", description="task one", files=["src/a.py"])
+    ]
+    flow._workers["do_work"] = CheckpointStubWorker()  # type: ignore
+
+    cast(Any, flow).do_work("plan output")
+
+    events = [json.loads(line) for line in store.events_path.read_text().splitlines()]
+    kinds = [event["kind"] for event in events]
+    assert kinds[0] == "stage_start"
+    assert "task_complete" in kinds
+    for event in events:
+        assert event["ts"] == "2026-07-10T15:30:00"
+        assert event["run_id"] == store.run_id
+        assert "revision" in event
+
+
+def test_flow_without_run_store_emits_no_events_and_never_fails(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    cfg = FlowConfig(
+        skills={"do_work": "incremental-implementation"},
+        workers={"do_work": {"worker": "claude"}},
+        defaults={"worker": "codex", "timeout": 300},
+    )
+    flow = CrewAIHeadlessFlow(config=cfg)
+    flow._state = FlowState(request="no store", target_repo=str(repo))  # type: ignore[attr-defined]
+    flow._workers["do_work"] = CheckpointStubWorker()  # type: ignore
+
+    cast(Any, flow).do_work("plan output")
+
+    assert flow.state.status == "running"
+    assert not list(tmp_path.glob("**/events.jsonl"))
+
+
+def test_event_write_failure_never_kills_the_run(
+    tmp_path: Path, caplog, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(logging.getLogger("crewai_headless_flow"), "propagate", True)
+    store = RunStore.allocate(tmp_path / "runs", "doomed events", now=FIXED_NOW)
+    cfg = FlowConfig(
+        skills={"do_work": "incremental-implementation"},
+        workers={"do_work": {"worker": "claude"}},
+        defaults={"worker": "codex", "timeout": 300},
+    )
+    flow = CrewAIHeadlessFlow(config=cfg, run_store=store)
+    flow._state = FlowState(request="doomed events", target_repo="/tmp/fake")  # type: ignore[attr-defined]
+
+    def boom(line: str) -> None:
+        raise OSError("disk gone")
+
+    store.append_event = boom  # type: ignore[method-assign]
+
+    with caplog.at_level("WARNING", logger="crewai_headless_flow.flow"):
+        flow._log_event("stage_start", stage="plan")
+
+    assert "event write failed" in caplog.text
+
+
+def test_resumed_flow_appends_to_same_events_file(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    store = RunStore.allocate(tmp_path / "runs", "resume events", now=FIXED_NOW)
+    cfg = FlowConfig(
+        skills={"do_work": "incremental-implementation"},
+        workers={"do_work": {"worker": "claude"}},
+        defaults={"worker": "codex", "timeout": 300},
+    )
+
+    def make_flow() -> CrewAIHeadlessFlow:
+        flow = CrewAIHeadlessFlow(config=cfg, run_store=RunStore.attach(store.run_dir))
+        flow._now_fn = lambda: FIXED_NOW
+        flow._state = FlowState(  # type: ignore[attr-defined]
+            request="resume events",
+            target_repo=str(repo),
+            run_id=store.run_id,
+            run_dir=str(store.run_dir),
+        )
+        flow._workers["do_work"] = CheckpointStubWorker()  # type: ignore
+        return flow
+
+    cast(Any, make_flow()).do_work("first process")
+    cast(Any, make_flow()).do_work("second process")  # simulates a resume
+
+    events = [json.loads(line) for line in store.events_path.read_text().splitlines()]
+    stage_starts = [e for e in events if e["kind"] == "stage_start"]
+    assert len(stage_starts) == 2

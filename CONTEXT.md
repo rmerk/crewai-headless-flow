@@ -36,6 +36,26 @@ _Avoid_: save, backup
 How a fired [[Gate]] reaches a human: `stdin` (blocking terminal prompt), `file` (write `pending_approval.json` to the run dir and park resumably; resume replays the gate and consumes the operator's `answer`), or `command` (configured hook argv; request JSON on stdin, answer on stdout, `on_timeout: abort|proceed`). The seam is `escalation.get_handler(...).ask(request) -> str | None`; `None` parks the run. `hitl_policy` decides *whether* to ask; `escalation` decides *how*.
 _Avoid_: notification (unqualified), approval flow
 
-**Delivery** (autonomy Phase 1):
-The opt-in, Flow-owned git step at the end of `finalize` (`src/crewai_headless_flow/delivery.py`): commit the flow's own changed files onto a fresh `flow/<run_id>` branch. Commit-only until Phase 2's verification gate; never `git add -A`, never force, never a commit on the operator's branch. Outcome persisted as `FlowState.delivery_report`.
-_Avoid_: publish, ship (until push/pr exist), release
+**Delivery** (autonomy Phases 1–2):
+The opt-in, Flow-owned git step at the end of `finalize` (`src/crewai_headless_flow/delivery.py`): commit the flow's own changed files onto a fresh `flow/<run_id>` branch, then optionally push it (`deliver.push`) and open a PR via `gh` (`deliver.pr`) — shipping requires the latest [[Verification Gate]] round to have passed whenever verify commands are configured. Never `git add -A`, never force, never a commit on the operator's branch; a push/PR failure never demotes the local commit. Outcome persisted as `FlowState.delivery_report`.
+_Avoid_: publish, release
+
+**Verification Gate** (autonomy Phase 2):
+The Flow-owned objective check at the top of every review round (`src/crewai_headless_flow/verification.py`): operator-declared `verify.commands` run fail-fast in the target repo, never through a worker adapter. `mode: gate` failures skip the LLM review and become the revise loop's issues; `mode: advisory` becomes review-prompt evidence. Either mode blocks push/PR on failure. Rounds persist on `FlowState.verification_runs`.
+_Avoid_: tests (unqualified), CI, validation (unqualified)
+
+**Event Log** (autonomy Phase 2):
+The append-only `runs/<run_id>/events.jsonl` stream: one JSON object per line, `{ts, run_id, revision, kind, ...}`, emitted from the history funnel plus lifecycle seams (stage starts, verification, delivery, human feedback/abort, run completion/failure). A resumed run continues the same file. Distinct from the [[Checkpoint]] snapshots, which are whole-file and atomic.
+_Avoid_: audit log (that is `human_feedback_log`), trace
+
+**Deny Path** (autonomy Phase 2):
+An operator-declared glob (`paths.deny`) no run may change (`src/crewai_headless_flow/paths_policy.py`). Matched with fnmatch semantics where `*` crosses `/` (broad by design); enforced fail-closed at the Flow's merge/diff boundaries and always excluded from [[Delivery]]. File-only config — no CLI override.
+_Avoid_: blacklist, ignore pattern (that is snapshot ignore rules)
+
+**Isolation** (do_work knob, autonomy Phase 2):
+Where serial (single-task and direct) edits run: `in_place` (default — the target repo, with post-hoc deny restore) or `copy` (a disposable workspace copy with pre-merge deny filtering; a failed or denied edit leaves the target pristine). Parallel batches always use copies.
+_Avoid_: sandbox (that is the adapters' CLI flag domain)
+
+**WorkerSpec** (autonomy Phase 2):
+The single registration record for one worker (`workers/__init__.py::WORKER_SPECS`): adapter class, default binary, doctor help command, required flags. `WORKER_ADAPTERS` and doctor's worker dicts are derived from it; the top-level `workers:` config block overrides binaries per worker.
+_Avoid_: adapter registry (unqualified), plugin table

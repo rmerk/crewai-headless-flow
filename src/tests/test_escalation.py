@@ -9,6 +9,7 @@ took before (record no-input, mark aborted, park resumably).
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 from pathlib import Path
 from typing import Any, cast
@@ -141,13 +142,17 @@ def test_file_handler_ignores_blank_answer_and_rewrites_request(tmp_path: Path):
     assert not (tmp_path / ANSWERED_APPROVAL_FILENAME).exists()
 
 
-def test_file_handler_without_run_dir_parks_without_artifact(capsys):
+def test_file_handler_without_run_dir_parks_without_artifact(
+    caplog, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(logging.getLogger("crewai_headless_flow"), "propagate", True)
     handler = FileEscalationHandler(None)
 
-    answer = handler.ask(REQUEST)
+    with caplog.at_level("WARNING", logger="crewai_headless_flow.escalation"):
+        answer = handler.ask(REQUEST)
 
     assert answer is None
-    assert "no run directory" in capsys.readouterr().out
+    assert "no run directory" in caplog.text
 
 
 # --- command channel ------------------------------------------------------------

@@ -23,6 +23,7 @@ from pathlib import Path
 STATE_FILENAME = "state.json"
 DEBUG_REPORT_FILENAME = "debug_report.md"
 PENDING_APPROVAL_FILENAME = "pending_approval.json"
+EVENTS_FILENAME = "events.jsonl"
 
 _SLUG_MAX_LEN = 24
 
@@ -88,11 +89,25 @@ class RunStore:
     def pending_approval_path(self) -> Path:
         return self.run_dir / PENDING_APPROVAL_FILENAME
 
+    @property
+    def events_path(self) -> Path:
+        return self.run_dir / EVENTS_FILENAME
+
     def save_state(self, state_json: str) -> None:
         self._atomic_write(self.state_path, state_json)
 
     def save_debug_report(self, report: str) -> None:
         self._atomic_write(self.debug_report_path, report)
+
+    def append_event(self, line: str) -> None:
+        """Append one pre-serialized JSON line to events.jsonl.
+
+        Unlike state/report snapshots this is append-only (a resumed run
+        continues the same file), so it uses a plain append-mode write —
+        one write() call per line, not the replace-based atomic path.
+        """
+        with self.events_path.open("a") as handle:
+            handle.write(line + "\n")
 
     def _atomic_write(self, target: Path, content: str) -> None:
         fd, tmp_name = tempfile.mkstemp(

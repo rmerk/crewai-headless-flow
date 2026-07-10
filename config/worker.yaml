@@ -52,6 +52,12 @@ stages:
     # Fixed safety declaration for Grok edit mode. The adapter already runs
     # edit mode non-interactively; unsupported values fail config validation.
     always_approve: true
+    # Optional `isolation` knob: where serial (single-task and direct) edits
+    # run. "in_place" (default when omitted) edits the target repo directly;
+    # "copy" runs each edit in a disposable workspace copy and merges only
+    # clean results back — a failed or deny-blocked edit leaves the target
+    # repo pristine. Parallel batches always use copies.
+    # Override: --override-stage-extra do_work.isolation=copy
     crew:
       # Optional richer multi-agent implementation. Disabled by default; when
       # combined with do_work.parallel.enabled, crew-backed tasks can still use
@@ -181,13 +187,17 @@ human_feedback:
     on_timeout: abort     # abort | proceed
 
 # =============================================================================
-# Git delivery (autonomy Phase 1 — commit-only mode)
+# Git delivery (autonomy Gap 2 — commit, then push/PR behind the verify gate)
 # =============================================================================
 # When enabled, a completed run commits the flow's own changed files onto a
 # fresh {branch_prefix}{run_id} branch instead of leaving a dirty tree.
 # Guardrails: never commits on the branch you were on, never `git add -A`
 # (pre-existing dirt stays out of the flow's commit), never force-pushes.
-# push/pr are accepted but not implemented until Phase 2's verification gate.
+# push ships the branch to `remote`; pr opens a PR via the `gh` CLI after a
+# successful push (pr requires push, push requires commit). Whenever
+# verify.commands is configured, push/pr require the latest verification
+# round to have passed — otherwise they report blocked_unverified. A push/PR
+# failure never demotes a successful local commit.
 # Override per run via --override-deliver KEY=VALUE (e.g. enabled=true).
 deliver:
   enabled: false
@@ -195,7 +205,51 @@ deliver:
   commit: true
   push: false
   pr: false
+  remote: origin
   protected_branches: [main, master]
+
+# =============================================================================
+# Objective verification gate (autonomy Phase 2)
+# =============================================================================
+# Commands the Flow runs in the target repo at the top of every review round
+# (e.g. ["uv run pytest -q", "uv run ruff check ."]). They run as argv with no
+# shell — wrap pipes/&& in a script. mode: gate means a failure skips the LLM
+# review entirely and feeds the command output into the revise loop as issues;
+# mode: advisory appends the results to the review prompt as evidence instead.
+# Either way, deliver.push/pr require the latest verification to have passed
+# whenever commands are configured. timeout is per command, in seconds.
+# Override per run via --override-verify KEY=VALUE
+# (e.g. --override-verify 'commands=["uv run pytest -q"]').
+verify:
+  commands: []
+  mode: gate
+  timeout: 600
+
+# =============================================================================
+# Deny paths (autonomy Phase 2 — Flow-owned write constraints)
+# =============================================================================
+# Relative globs matched against every changed file at the boundaries the
+# Flow owns: parallel/isolated mergeback (denied files never leave the
+# workspace copy; the task fails closed) and post-hoc snapshot diff for
+# in-place edits (denied files are restored: tracked -> git checkout --,
+# run-created -> deleted; pre-existing untracked files cannot be restored —
+# use do_work.isolation: copy for full containment). fnmatch semantics with
+# `*` crossing `/` — "*.env" also denies "sub/dir/x.env" (broad by design).
+# Deliberately file-only: no CLI override can weaken this list.
+# Example: deny: ["*.env", ".github/workflows/*", "secrets/*"]
+paths:
+  deny: []
+
+# =============================================================================
+# Per-worker settings (autonomy Phase 2 — WorkerSpec consolidation)
+# =============================================================================
+# Point a worker at a specific executable instead of relying on PATH lookup
+# of its default name. Doctor probes the configured binary too.
+# Override per run via --override-worker-binary WORKER=PATH.
+# Example:
+#   workers:
+#     codex: {binary: "/opt/bin/codex"}
+workers: {}
 
 # Stage extras like `plan.crew.*`, `do_work.crew.*`, `do_work.parallel.*`, or
 # `review.crew.*` can be overridden per run via

@@ -682,6 +682,7 @@ def test_deliver_defaults_when_absent(sample_config_dir: Path):
         "commit": True,
         "push": False,
         "pr": False,
+        "remote": "origin",
         "protected_branches": ["main", "master"],
     }
 
@@ -757,6 +758,49 @@ def test_deliver_override_is_revalidated(sample_config_dir: Path):
             config_dir=sample_config_dir,
             deliver_overrides=["branch_prefix=../evil"],
         )
+
+
+def test_deliver_pr_without_push_rejected(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["deliver"] = {"pr": True}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(
+        ValueError, match="deliver.pr: true requires deliver.push: true"
+    ):
+        load_config(sample_config_dir)
+
+
+def test_deliver_push_without_commit_rejected(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["deliver"] = {"push": True, "commit": False}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(
+        ValueError, match="deliver.push: true requires deliver.commit: true"
+    ):
+        load_config(sample_config_dir)
+
+
+def test_deliver_bad_remote_rejected(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["deliver"] = {"remote": "-oops"}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ValueError, match="deliver.remote must be a non-empty string"):
+        load_config(sample_config_dir)
+
+
+def test_deliver_override_sets_remote(sample_config_dir: Path):
+    cfg = load_runtime_config(
+        config_dir=sample_config_dir,
+        deliver_overrides=["remote=upstream"],
+    )
+
+    assert cfg.deliver["remote"] == "upstream"
 
 
 def test_retry_and_fallback_worker_load_through_stage_extra(sample_config_dir: Path):
@@ -2243,3 +2287,253 @@ def test_example_config_implementation_crew_loads():
     assert do_work.extra["crew"]["max_rounds"] == 2
     assert do_work.extra["crew"]["decomposition"]["enabled"] is True
     assert do_work.extra["crew"]["decomposition"]["max_subtasks"] == 3
+
+
+# =============================================================================
+# verify: block (autonomy Gap 1 — objective verification gate)
+# =============================================================================
+
+
+def test_verify_defaults_when_absent(sample_config_dir: Path):
+    cfg = load_config(sample_config_dir)
+
+    assert cfg.verify == {"commands": [], "mode": "gate", "timeout": 600}
+
+
+def test_verify_partial_override_merges_defaults(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["verify"] = {"commands": ["uv run pytest -q"]}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    cfg = load_config(sample_config_dir)
+
+    assert cfg.verify["commands"] == ["uv run pytest -q"]
+    assert cfg.verify["mode"] == "gate"
+    assert cfg.verify["timeout"] == 600
+
+
+def test_verify_unknown_key_rejected(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["verify"] = {"comands": []}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ValueError, match="verify contains unsupported keys: comands"):
+        load_config(sample_config_dir)
+
+
+def test_verify_non_list_commands_rejected(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["verify"] = {"commands": "pytest -q"}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ValueError, match="verify.commands must be a list"):
+        load_config(sample_config_dir)
+
+
+def test_verify_empty_command_entry_rejected(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["verify"] = {"commands": ["pytest -q", ""]}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ValueError, match="verify.commands entries must be"):
+        load_config(sample_config_dir)
+
+
+def test_verify_list_command_entry_accepted(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["verify"] = {"commands": [["uv", "run", "pytest", "-q"]]}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    cfg = load_config(sample_config_dir)
+
+    assert cfg.verify["commands"] == [["uv", "run", "pytest", "-q"]]
+
+
+def test_verify_bad_mode_rejected(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["verify"] = {"mode": "strict"}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ValueError, match="verify.mode must be one of gate, advisory"):
+        load_config(sample_config_dir)
+
+
+def test_verify_non_positive_timeout_rejected(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["verify"] = {"timeout": 0}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ValueError, match="verify.timeout must be a positive integer"):
+        load_config(sample_config_dir)
+
+
+def test_verify_override_sets_commands(sample_config_dir: Path):
+    cfg = load_runtime_config(
+        config_dir=sample_config_dir,
+        verify_overrides=['commands=["uv run pytest -q"]', "mode=advisory"],
+    )
+
+    assert cfg.verify["commands"] == ["uv run pytest -q"]
+    assert cfg.verify["mode"] == "advisory"
+    assert cfg.verify["timeout"] == 600
+
+
+def test_verify_override_unknown_key_rejected(sample_config_dir: Path):
+    with pytest.raises(ValueError, match="Unknown verify override 'command'"):
+        load_runtime_config(
+            config_dir=sample_config_dir,
+            verify_overrides=["command=pytest"],
+        )
+
+
+def test_verify_override_is_revalidated(sample_config_dir: Path):
+    with pytest.raises(ValueError, match="verify.mode must be one of"):
+        load_runtime_config(
+            config_dir=sample_config_dir,
+            verify_overrides=["mode=strict"],
+        )
+
+
+# =============================================================================
+# paths: block + do_work.isolation (autonomy Gap 8b)
+# =============================================================================
+
+
+def test_paths_defaults_when_absent(sample_config_dir: Path):
+    cfg = load_config(sample_config_dir)
+
+    assert cfg.paths == {"deny": []}
+
+
+def test_paths_deny_loads_from_yaml(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["paths"] = {"deny": ["*.env", "secrets/*"]}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    cfg = load_config(sample_config_dir)
+
+    assert cfg.paths["deny"] == ["*.env", "secrets/*"]
+
+
+def test_paths_unknown_key_rejected(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["paths"] = {"allow": ["*"]}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ValueError, match="paths contains unsupported keys: allow"):
+        load_config(sample_config_dir)
+
+
+def test_paths_deny_non_list_rejected(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["paths"] = {"deny": "*.env"}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ValueError, match="paths.deny must be a list"):
+        load_config(sample_config_dir)
+
+
+def test_paths_deny_absolute_pattern_rejected(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["paths"] = {"deny": ["/etc/*"]}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ValueError, match="paths.deny patterns must be relative"):
+        load_config(sample_config_dir)
+
+
+def test_do_work_isolation_loads_and_overrides(sample_config_dir: Path):
+    cfg = load_runtime_config(
+        config_dir=sample_config_dir,
+        stage_extra_overrides=["do_work.isolation=copy"],
+    )
+
+    assert cfg.get_stage("do_work").extra["isolation"] == "copy"
+
+
+def test_do_work_isolation_invalid_value_rejected(sample_config_dir: Path):
+    with pytest.raises(ValueError):
+        load_runtime_config(
+            config_dir=sample_config_dir,
+            stage_extra_overrides=["do_work.isolation=sandbox"],
+        )
+
+
+# =============================================================================
+# workers: block (autonomy Gap 10 — configurable binaries)
+# =============================================================================
+
+
+def test_workers_block_defaults_empty(sample_config_dir: Path):
+    cfg = load_config(sample_config_dir)
+
+    assert cfg.worker_settings == {}
+
+
+def test_workers_block_loads_binary(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["workers"] = {"codex": {"binary": "/opt/bin/codex"}}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    cfg = load_config(sample_config_dir)
+
+    assert cfg.worker_settings == {"codex": {"binary": "/opt/bin/codex"}}
+
+
+def test_workers_block_unknown_worker_rejected(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["workers"] = {"copilot": {"binary": "copilot"}}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ValueError, match="workers contains unknown worker names"):
+        load_config(sample_config_dir)
+
+
+def test_workers_block_unknown_key_rejected(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["workers"] = {"codex": {"path": "/opt/bin/codex"}}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ValueError, match="workers.codex contains unsupported keys"):
+        load_config(sample_config_dir)
+
+
+def test_workers_block_empty_binary_rejected(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["workers"] = {"codex": {"binary": "  "}}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ValueError, match="workers.codex.binary must be a non-empty"):
+        load_config(sample_config_dir)
+
+
+def test_worker_binary_override_sets_binary(sample_config_dir: Path):
+    cfg = load_runtime_config(
+        config_dir=sample_config_dir,
+        worker_binary_overrides=["grok=/usr/local/bin/grok-nightly"],
+    )
+
+    assert cfg.worker_settings["grok"]["binary"] == "/usr/local/bin/grok-nightly"
+
+
+def test_worker_binary_override_unknown_worker_rejected(sample_config_dir: Path):
+    with pytest.raises(ValueError, match="workers contains unknown worker names"):
+        load_runtime_config(
+            config_dir=sample_config_dir,
+            worker_binary_overrides=["copilot=/bin/copilot"],
+        )

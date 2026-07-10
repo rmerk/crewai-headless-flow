@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from pathlib import Path
 from typing import Sequence
@@ -31,7 +32,27 @@ def resume_headless_flow(**kwargs):
     return backend(**kwargs)
 
 
+def _configure_logging() -> None:
+    """Route the package's diagnostic narration to stdout for CLI runs.
+
+    Deliberately not ``logging.basicConfig``: crewai/litellm configure the
+    root logger themselves and would fight it. Only the package logger is
+    configured (plain messages, INFO, no propagation), and only once —
+    library users who configure ``crewai_headless_flow`` themselves are
+    left alone.
+    """
+    package_logger = logging.getLogger("crewai_headless_flow")
+    if package_logger.handlers:
+        return
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    package_logger.addHandler(handler)
+    package_logger.setLevel(logging.INFO)
+    package_logger.propagate = False
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    _configure_logging()
     args = list(sys.argv[1:] if argv is None else argv)
     parser = _build_help_parser()
 
@@ -97,6 +118,8 @@ def _handle_run(args: argparse.Namespace) -> int:
         human_feedback_overrides=args.override_human_feedback,
         human_feedback_action_overrides=args.override_human_feedback_action,
         deliver_overrides=args.override_deliver,
+        verify_overrides=args.override_verify,
+        worker_binary_overrides=args.override_worker_binary,
     )
 
     preflight = run_preflight(target_repo, config_dir=config_dir)
@@ -151,6 +174,8 @@ def _handle_doctor(args: argparse.Namespace) -> int:
         human_feedback_overrides=args.override_human_feedback,
         human_feedback_action_overrides=args.override_human_feedback_action,
         deliver_overrides=args.override_deliver,
+        verify_overrides=args.override_verify,
+        worker_binary_overrides=args.override_worker_binary,
     )
     _print_report(report, args.format)
     return 1 if report.status == "fail" else 0
@@ -498,6 +523,8 @@ def _add_runtime_override_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--override-human-feedback", action="append", default=[])
     parser.add_argument("--override-human-feedback-action", action="append", default=[])
     parser.add_argument("--override-deliver", action="append", default=[])
+    parser.add_argument("--override-verify", action="append", default=[])
+    parser.add_argument("--override-worker-binary", action="append", default=[])
 
 
 def _build_help_parser() -> argparse.ArgumentParser:

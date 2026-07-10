@@ -3180,3 +3180,243 @@ def test_review_crew_path_fails_closed_to_revise(monkeypatch):
     assert decision == "revise"
     assert flow.state.review_status == "revise"
     assert flow.state.issues == ["Review Crew failed: crew unavailable"]
+
+
+# =============================================================================
+# Objective verification gate (autonomy Gap 1)
+# =============================================================================
+
+
+class FakeVerifyRunner:
+    """Scripted subprocess stand-in for the Flow's verification seam."""
+
+    def __init__(
+        self, outcomes: dict[tuple[str, ...], tuple[int, str, str]] | None = None
+    ):
+        self.outcomes = outcomes or {}
+        self.calls: list[list[str]] = []
+
+    def __call__(self, argv, *, cwd, capture_output, text, timeout, check):
+        import subprocess as _subprocess
+
+        self.calls.append(list(argv))
+        exit_code, stdout, stderr = self.outcomes.get(tuple(argv), (0, "ok", ""))
+        return _subprocess.CompletedProcess(argv, exit_code, stdout, stderr)
+
+
+def _verify_config(commands: list, mode: str = "gate") -> FlowConfig:
+    return FlowConfig(
+        skills={"review": "code-review-and-quality"},
+        workers={"review": {"worker": "codex"}},
+        defaults={"worker": "codex", "timeout": 300},
+        verify={"commands": commands, "mode": mode},
+    )
+
+
+def test_verification_gate_failure_skips_llm_review_and_routes_to_revise():
+    flow = CrewAIHeadlessFlow(config=_verify_config(["pytest -q"]))
+    flow._state = FlowState(request="test", target_repo="/tmp/fake")  # type: ignore[attr-defined]
+    runner = FakeVerifyRunner(
+        outcomes={("pytest", "-q"): (1, "2 failed, 5 passed", "")}
+    )
+    flow._verification_runner = runner
+    worker = RecordingWorker()
+    flow._workers["review"] = worker  # type: ignore
+
+    decision = flow.review("work summary")
+
+    assert decision == "revise"
+    assert worker.calls == []  # LLM review never ran
+    assert flow.state.review_status == "revise"
+    assert len(flow.state.issues) == 1
+    assert "`pytest -q` exited 1" in flow.state.issues[0]
+    assert "2 failed" in flow.state.issues[0]
+    assert len(flow.state.verification_runs) == 1
+    report = flow.state.verification_runs[0]
+    assert report.passed is False
+    assert report.revision == flow.state.revisions
+    assert flow.state.history[-1].kind == "review_decision"
+
+
+def test_verification_gate_pass_falls_through_to_llm_review():
+    flow = CrewAIHeadlessFlow(config=_verify_config(["pytest -q"]))
+    flow._state = FlowState(request="test", target_repo="/tmp/fake")  # type: ignore[attr-defined]
+    runner = FakeVerifyRunner()
+    flow._verification_runner = runner
+    worker = RecordingWorker()
+    flow._workers["review"] = worker  # type: ignore
+
+    decision = flow.review("work summary")
+
+    assert decision == "pass"
+    assert len(worker.calls) == 1
+    assert runner.calls == [["pytest", "-q"]]
+    assert flow.state.verification_runs[0].passed is True
+    # Passing evidence is offered to the reviewer as context.
+    assert "Objective verification evidence" in worker.calls[0]["task"]
+
+
+def test_verification_advisory_failure_still_runs_llm_review_with_evidence():
+    flow = CrewAIHeadlessFlow(config=_verify_config(["pytest -q"], mode="advisory"))
+    flow._state = FlowState(request="test", target_repo="/tmp/fake")  # type: ignore[attr-defined]
+    runner = FakeVerifyRunner(
+        outcomes={("pytest", "-q"): (1, "1 failed", "stderr noise")}
+    )
+    flow._verification_runner = runner
+    worker = RecordingWorker()
+    flow._workers["review"] = worker  # type: ignore
+
+    decision = flow.review("work summary")
+
+    assert decision == "pass"  # advisory: the LLM still decides
+    assert len(worker.calls) == 1
+    prompt = worker.calls[0]["task"]
+    assert "Objective verification evidence" in prompt
+    assert "`pytest -q` — exit 1" in prompt
+    assert "1 failed" in prompt
+    assert flow.state.verification_runs[0].mode == "advisory"
+
+
+def test_verification_unconfigured_never_calls_runner():
+    flow = CrewAIHeadlessFlow()
+    flow._state = FlowState(request="test", target_repo="/tmp/fake")  # type: ignore[attr-defined]
+    runner = FakeVerifyRunner()
+    flow._verification_runner = runner
+    flow._workers["review"] = StubWorker(review_outcome="pass")  # type: ignore
+
+    decision = flow.review("work summary")
+
+    assert decision == "pass"
+    assert runner.calls == []
+    assert flow.state.verification_runs == []
+
+
+def test_verification_reruns_every_review_round():
+    flow = CrewAIHeadlessFlow(config=_verify_config(["pytest -q"]))
+    flow._state = FlowState(request="test", target_repo="/tmp/fake")  # type: ignore[attr-defined]
+    runner = FakeVerifyRunner()
+    flow._verification_runner = runner
+    flow._workers["review"] = StubWorker(review_outcome="pass")  # type: ignore
+
+    flow.review("round one")
+    flow.review("round two")
+
+    assert len(runner.calls) == 2
+    assert len(flow.state.verification_runs) == 2
+
+
+def test_verification_gate_failure_revision_stamp_tracks_state():
+    flow = CrewAIHeadlessFlow(config=_verify_config(["pytest -q"]))
+    flow._state = FlowState(  # type: ignore[attr-defined]
+        request="test", target_repo="/tmp/fake", revisions=1
+    )
+    runner = FakeVerifyRunner(outcomes={("pytest", "-q"): (1, "fail", "")})
+    flow._verification_runner = runner
+    flow._workers["review"] = RecordingWorker()  # type: ignore
+
+    flow.review("work summary")
+
+    assert flow.state.verification_runs[0].revision == 1
+
+
+def test_human_force_pass_skips_verification_round():
+    cfg = FlowConfig(
+        skills={"review": "code-review-and-quality"},
+        workers={"review": {"worker": "codex"}},
+        defaults={"worker": "codex", "timeout": 300},
+        human_feedback={
+            "enabled": True,
+            "before_review": True,
+            "advanced_actions": True,
+        },
+        verify={"commands": ["pytest -q"], "mode": "gate"},
+    )
+    flow = CrewAIHeadlessFlow(config=cfg)
+    flow._state = FlowState(request="test", target_repo="/tmp/fake")  # type: ignore[attr-defined]
+    runner = FakeVerifyRunner(outcomes={("pytest", "-q"): (1, "fail", "")})
+    flow._verification_runner = runner
+    worker = RecordingWorker()
+    flow._workers["review"] = worker  # type: ignore
+
+    from unittest.mock import patch as _patch
+
+    with _patch("builtins.input", return_value="pass"):
+        decision = flow.review("work summary")
+
+    assert decision == "pass"
+    assert runner.calls == []  # human override is sovereign at review time
+    assert worker.calls == []
+    assert flow.state.verification_runs == []
+
+
+# =============================================================================
+# WorkerSpec / configurable binaries (autonomy Gap 10)
+# =============================================================================
+
+
+def test_setup_workers_passes_configured_binary(monkeypatch):
+    captured: list[dict] = []
+
+    class SpyAdapter:
+        def __init__(self, binary: str = "default-bin"):
+            captured.append({"binary": binary})
+
+        def run(self, **kwargs):
+            raise AssertionError("not used")
+
+    monkeypatch.setitem(flow_module.WORKER_ADAPTERS, "claude", SpyAdapter)
+
+    cfg = FlowConfig(
+        skills={"do_work": "incremental-implementation"},
+        workers={"do_work": {"worker": "claude"}},
+        defaults={"worker": "claude", "timeout": 300},
+        worker_settings={"claude": {"binary": "/opt/bin/claude-nightly"}},
+    )
+    CrewAIHeadlessFlow(config=cfg)
+
+    assert {"binary": "/opt/bin/claude-nightly"} in captured
+
+
+def test_setup_workers_uses_adapter_default_without_override(monkeypatch):
+    captured: list[dict] = []
+
+    class SpyAdapter:
+        def __init__(self, binary: str = "default-bin"):
+            captured.append({"binary": binary})
+
+        def run(self, **kwargs):
+            raise AssertionError("not used")
+
+    monkeypatch.setitem(flow_module.WORKER_ADAPTERS, "claude", SpyAdapter)
+
+    cfg = FlowConfig(
+        skills={"do_work": "incremental-implementation"},
+        workers={"do_work": {"worker": "claude"}},
+        defaults={"worker": "claude", "timeout": 300},
+    )
+    CrewAIHeadlessFlow(config=cfg)
+
+    assert {"binary": "default-bin"} in captured
+
+
+def test_fallback_worker_honors_configured_binary(monkeypatch):
+    captured: list[dict] = []
+
+    class SpyAdapter:
+        def __init__(self, binary: str = "default-bin"):
+            captured.append({"binary": binary})
+
+        def run(self, **kwargs):
+            raise AssertionError("not used")
+
+    monkeypatch.setitem(flow_module.WORKER_ADAPTERS, "gemini", SpyAdapter)
+
+    cfg = FlowConfig(
+        skills={"do_work": "incremental-implementation"},
+        workers={"do_work": {"worker": "claude", "fallback_worker": "gemini"}},
+        defaults={"worker": "claude", "timeout": 300},
+        worker_settings={"gemini": {"binary": "/opt/bin/gemini-nightly"}},
+    )
+    CrewAIHeadlessFlow(config=cfg)
+
+    assert {"binary": "/opt/bin/gemini-nightly"} in captured

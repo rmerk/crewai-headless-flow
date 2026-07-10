@@ -24,6 +24,7 @@ from .human_feedback_actions import (
     supported_human_feedback_action_targets,
     supported_human_feedback_actions,
 )
+from .workers import WORKER_SPECS
 
 SOURCE_TREE_CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
 BUNDLED_CONFIG_DIR = Path(__file__).resolve().parent / "_bundled" / "config"
@@ -101,12 +102,33 @@ DEFAULT_DELIVER: dict[str, Any] = {
     "enabled": False,
     "branch_prefix": "flow/",
     "commit": True,
-    "push": False,  # accepted but not implemented until Phase 2's verify gate
-    "pr": False,  # accepted but not implemented until Phase 2's verify gate
+    "push": False,  # ships the branch; requires the latest verification to pass
+    "pr": False,  # opens a PR via `gh` after a successful push
+    "remote": "origin",
     "protected_branches": ["main", "master"],
 }
 _DELIVER_BOOLEAN_KEYS = ("enabled", "commit", "push", "pr")
 _BRANCH_PREFIX_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
+_REMOTE_PATTERN = re.compile(r"^[^\s-][^\s]*$")
+
+VERIFY_MODES = ("gate", "advisory")
+DEFAULT_VERIFY: dict[str, Any] = {
+    "commands": [],
+    "mode": "gate",
+    "timeout": 600,
+}
+
+# Deny-path safety config. Deliberately file-only: there is no CLI override,
+# because a per-run flag that can weaken a deny list undermines the control.
+DEFAULT_PATHS: dict[str, Any] = {
+    "deny": [],
+}
+
+ISOLATION_MODES = ("in_place", "copy")
+
+
+def _is_valid_isolation(value: Any) -> bool:
+    return value in ISOLATION_MODES
 
 
 DEFAULT_HUMAN_FEEDBACK = {
@@ -249,6 +271,7 @@ STAGE_EXTRA_SCHEMAS: dict[str, dict[str, Any]] = {
             "on_ambiguous_success": _is_bool,
             "max_execution_replans": _is_int,
         },
+        "isolation": _is_valid_isolation,
         "retry": _retry_schema(),
         "fallback_worker": _is_string,
     },
@@ -458,7 +481,150 @@ def _validate_deliver(raw: Any) -> dict[str, Any]:
             f"got {protected!r}"
         )
 
+    remote = deliver["remote"]
+    if not isinstance(remote, str) or not _REMOTE_PATTERN.match(remote):
+        raise ValueError(
+            "deliver.remote must be a non-empty string without whitespace "
+            f"(no leading -), got {remote!r}"
+        )
+
+    if deliver["pr"] and not deliver["push"]:
+        raise ValueError(
+            "deliver.pr: true requires deliver.push: true (a PR needs a pushed branch)"
+        )
+    if deliver["push"] and not deliver["commit"]:
+        raise ValueError(
+            "deliver.push: true requires deliver.commit: true (there is "
+            "nothing to push without a commit)"
+        )
+
     return deliver
+
+
+def _validate_verify(raw: Any) -> dict[str, Any]:
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        value_type = type(raw).__name__
+        raise ValueError(f"verify must be a mapping, got {value_type}")
+    unknown = sorted(set(raw) - set(DEFAULT_VERIFY))
+    if unknown:
+        supported = ", ".join(sorted(DEFAULT_VERIFY))
+        unknown_text = ", ".join(unknown)
+        raise ValueError(
+            f"verify contains unsupported keys: {unknown_text}. "
+            f"Supported keys: {supported}"
+        )
+
+    verify = {**DEFAULT_VERIFY, **raw}
+
+    commands = verify["commands"]
+    if not isinstance(commands, list):
+        value_type = type(commands).__name__
+        raise ValueError(f"verify.commands must be a list, got {value_type}")
+    for command in commands:
+        if isinstance(command, str) and command.strip():
+            continue
+        if (
+            isinstance(command, list)
+            and command
+            and all(isinstance(part, str) and part for part in command)
+        ):
+            continue
+        raise ValueError(
+            "verify.commands entries must be non-empty strings or non-empty "
+            f"lists of non-empty strings, got {command!r}"
+        )
+
+    mode = verify["mode"]
+    if mode not in VERIFY_MODES:
+        supported = ", ".join(VERIFY_MODES)
+        raise ValueError(f"verify.mode must be one of {supported}, got {mode!r}")
+
+    if not _is_positive_int(verify["timeout"]):
+        value_type = type(verify["timeout"]).__name__
+        raise ValueError(
+            f"verify.timeout must be a positive integer (>= 1), got {value_type}"
+        )
+
+    return verify
+
+
+_WORKER_SETTINGS_KEYS = {"binary"}
+
+
+def _validate_workers_block(raw: Any) -> dict[str, Any]:
+    """Validate the top-level ``workers:`` block (per-worker settings)."""
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        value_type = type(raw).__name__
+        raise ValueError(f"workers must be a mapping, got {value_type}")
+
+    unknown_workers = sorted(set(raw) - set(WORKER_SPECS))
+    if unknown_workers:
+        supported = ", ".join(sorted(WORKER_SPECS))
+        unknown_text = ", ".join(unknown_workers)
+        raise ValueError(
+            f"workers contains unknown worker names: {unknown_text}. "
+            f"Supported workers: {supported}"
+        )
+
+    settings: dict[str, Any] = {}
+    for name, entry in raw.items():
+        if not isinstance(entry, dict):
+            value_type = type(entry).__name__
+            raise ValueError(f"workers.{name} must be a mapping, got {value_type}")
+        unknown_keys = sorted(set(entry) - _WORKER_SETTINGS_KEYS)
+        if unknown_keys:
+            supported = ", ".join(sorted(_WORKER_SETTINGS_KEYS))
+            unknown_text = ", ".join(unknown_keys)
+            raise ValueError(
+                f"workers.{name} contains unsupported keys: {unknown_text}. "
+                f"Supported keys: {supported}"
+            )
+        binary = entry.get("binary")
+        if binary is not None and (not isinstance(binary, str) or not binary.strip()):
+            raise ValueError(
+                f"workers.{name}.binary must be a non-empty string, got {binary!r}"
+            )
+        settings[name] = dict(entry)
+    return settings
+
+
+def _validate_paths(raw: Any) -> dict[str, Any]:
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        value_type = type(raw).__name__
+        raise ValueError(f"paths must be a mapping, got {value_type}")
+    unknown = sorted(set(raw) - set(DEFAULT_PATHS))
+    if unknown:
+        supported = ", ".join(sorted(DEFAULT_PATHS))
+        unknown_text = ", ".join(unknown)
+        raise ValueError(
+            f"paths contains unsupported keys: {unknown_text}. "
+            f"Supported keys: {supported}"
+        )
+
+    paths = {**DEFAULT_PATHS, **raw}
+
+    deny = paths["deny"]
+    if not isinstance(deny, list):
+        value_type = type(deny).__name__
+        raise ValueError(f"paths.deny must be a list, got {value_type}")
+    for pattern in deny:
+        if not isinstance(pattern, str) or not pattern.strip():
+            raise ValueError(
+                f"paths.deny entries must be non-empty strings, got {pattern!r}"
+            )
+        if pattern.startswith("/") or pattern.startswith("~"):
+            raise ValueError(
+                "paths.deny patterns must be relative globs (matched against "
+                f"repo-relative paths), got {pattern!r}"
+            )
+
+    return paths
 
 
 def _validate_action_allowlist(raw: Any) -> dict[str, list[str]]:
@@ -740,12 +906,21 @@ class FlowConfig:
         defaults: dict[str, Any],
         human_feedback: dict[str, Any] | None = None,
         deliver: dict[str, Any] | None = None,
+        verify: dict[str, Any] | None = None,
+        paths: dict[str, Any] | None = None,
+        worker_settings: dict[str, Any] | None = None,
     ) -> None:
         self.skills = skills
+        # NOTE: ``workers`` is the legacy per-stage mapping (worker.yaml's
+        # ``stages:``); per-worker settings from the top-level ``workers:``
+        # YAML block live on ``worker_settings``.
         self.workers = workers
         self.defaults = defaults
         self.human_feedback = _validate_human_feedback(human_feedback)
         self.deliver = _validate_deliver(deliver)
+        self.verify = _validate_verify(verify)
+        self.paths = _validate_paths(paths)
+        self.worker_settings = _validate_workers_block(worker_settings)
         self._stage_cache: dict[str, StageConfig] = {}
 
     def get_stage(self, stage: str) -> StageConfig:
@@ -851,6 +1026,9 @@ def load_config(config_dir: Optional[Path] = None) -> FlowConfig:
     workers = worker_raw.get("stages", {})
     human_feedback = worker_raw.get("human_feedback", {"enabled": False})
     deliver = worker_raw.get("deliver", {})
+    verify = worker_raw.get("verify", {})
+    paths = worker_raw.get("paths", {})
+    worker_settings = worker_raw.get("workers", {})
 
     return FlowConfig(
         skills=skills,
@@ -858,6 +1036,9 @@ def load_config(config_dir: Optional[Path] = None) -> FlowConfig:
         defaults=defaults,
         human_feedback=human_feedback,
         deliver=deliver,
+        verify=verify,
+        paths=paths,
+        worker_settings=worker_settings,
     )
 
 
