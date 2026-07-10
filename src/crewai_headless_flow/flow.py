@@ -3797,6 +3797,7 @@ def resume_headless_flow(
             "gate) or 'running' (crashed run)"
         )
 
+    checkpoint: AbortedCheckpoint | None
     if crashed:
         checkpoint = synthesize_crash_checkpoint(state)
         # Attempts interrupted mid-flight are unfinished, not done.

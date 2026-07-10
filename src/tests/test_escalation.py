@@ -355,7 +355,8 @@ def test_file_channel_parks_then_resume_consumes_answer(
         run_dir=str(store.run_dir),
     )
     flow._workers = {  # type: ignore[assignment]
-        stage: AllStagesStubWorker() for stage in flow._workers
+        stage: AllStagesStubWorker()  # type: ignore[misc]
+        for stage in flow._workers
     }
 
     cast(Any, flow).do_work("plan output")

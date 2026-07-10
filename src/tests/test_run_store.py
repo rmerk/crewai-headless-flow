@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -118,7 +119,7 @@ def test_flow_checkpoints_state_at_every_refresh(tmp_path: Path):
     ]
     flow._workers["do_work"] = CheckpointStubWorker()  # type: ignore
 
-    flow.do_work("plan output")
+    cast(Any, flow).do_work("plan output")
 
     saved = json.loads(store.state_path.read_text())
     assert saved["run_id"] == store.run_id
@@ -138,7 +139,7 @@ def test_checkpoint_write_failure_never_kills_the_run(tmp_path: Path, capsys):
     flow._state = FlowState(request="doomed writes", target_repo="/tmp/fake")  # type: ignore[attr-defined]
 
     # Simulate a dead disk / removed run dir.
-    def boom(_content: str) -> None:
+    def boom(state_json: str) -> None:
         raise OSError("disk gone")
 
     store.save_state = boom  # type: ignore[method-assign]

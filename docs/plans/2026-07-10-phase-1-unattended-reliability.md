@@ -4,28 +4,28 @@ overview: Implement Phase 1 of docs/architecture/autonomy-gap-analysis.md — si
 todos:
   - id: gap5-containment
     content: Contain WorkerTimeout/WorkerInvocationError at the HeadlessCoderTool seam (exit_code 124 CoderResult); per-stage retry {max_attempts, backoff_seconds} + fallback_worker in STAGE_EXTRA_SCHEMAS; _setup_workers resolves fallback via WORKER_ADAPTERS
-    status: pending
+    status: completed
   - id: gap8a-sanitize
     content: apply_changed_files rejects absolute/../resolve-escaping rel_paths (validate whole list before applying); parallel mergeback call site routes ValueError into failed_outcomes
-    status: pending
+    status: completed
   - id: gap7-codex
     content: codex.py mkstemp for schema file; per-invocation --output-last-message temp path with read-back fallback; inspect mode runs against a codex-inspect- disposable copy (grok pattern), keeping --sandbox read-only as defense in depth
-    status: pending
+    status: completed
   - id: gap3-runstore
     content: run_store.py (allocate/attach, atomic save_state/save_debug_report); FlowState run_id/run_dir/created_at; checkpoint piggybacked in _refresh_debug_report; run/resume_headless_flow runs_dir param; resume accepts status=="running" via synthesize_crash_checkpoint; CLI --runs-dir (default ./runs); fix stale @persist docstring in state.py
-    status: pending
+    status: completed
   - id: gap4-escalation
     content: escalation.py seam (EscalationRequest, EscalationHandler protocol, stdin/file/command channels, get_handler); _maybe_ask_human swaps input() for handler.ask(); human_feedback.escalation config schema + validation + dotted override root
-    status: pending
+    status: completed
   - id: gap2-delivery
     content: delivery.py commit-only git delivery (DeliveryReport pydantic model, fresh {branch_prefix}{run_id} branch, per-path staging, never --force/add -A, push/pr validated-but-ignored); top-level deliver config block + --override-deliver family; finalize wiring with snapshot diff at both completion tails
-    status: pending
+    status: completed
   - id: docs
     content: ADRs 0004 (RunStore checkpoints, @persist rejection), 0005 (escalation channel seam), 0006 (Flow-owned git delivery); README/DESIGN/AGENTS/CONTEXT/operator-playbook sweep
-    status: pending
+    status: completed
   - id: tests
     content: Offline tests per item — test_coder_tool_containment.py, test_workspace_changes.py, codex updates in test_headless_coders.py, test_run_store.py, test_crash_resume.py, test_escalation.py, test_delivery.py (real git in tmp_path) — plus flow/config/CLI integration additions; full suite green after every commit
-    status: pending
+    status: completed
 isProject: false
 ---
 

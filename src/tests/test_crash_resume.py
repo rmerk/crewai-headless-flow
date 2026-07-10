@@ -58,9 +58,11 @@ def _make_fake_flow(calls: list[tuple[str, str | None]]):
 
 
 def _crashed_state(**kwargs) -> FlowState:
-    defaults = dict(request="crashed run", target_repo="/tmp/fake", status="running")
+    defaults: dict[str, object] = dict(
+        request="crashed run", target_repo="/tmp/fake", status="running"
+    )
     defaults.update(kwargs)
-    return FlowState(**defaults)
+    return FlowState(**defaults)  # type: ignore[arg-type]
 
 
 def _tasks() -> list[TaskItem]:

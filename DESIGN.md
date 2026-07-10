@@ -29,9 +29,9 @@ Five concrete adapters are shipped:
 
 #### CodexAdapter (codex-cli 0.132.0)
 
-- Uses `--sandbox read-only` for `mode=inspect`
+- `mode=inspect` runs against a disposable filesystem copy (`/tmp/codex-inspect-*`) like the other adapters, keeping `--sandbox read-only` inside the copy as defense in depth — a sandbox regression in codex-cli can never mutate the real tree
 - Uses `--sandbox workspace-write` + `--dangerously-bypass-approvals-and-sandbox` for `mode=edit`
-- Uses `--output-schema` when a JSON schema is provided
+- Uses `--output-schema` when a JSON schema is provided; otherwise a per-invocation `--output-last-message` temp file (read back as a summary fallback, unlinked after the run — no shared `/tmp` paths across concurrent runs)
 
 #### GrokAdapter (grok 0.2.14)
 
@@ -237,6 +237,18 @@ Stage worker/model/timeout defaults are also overridable per run from the CLI, a
 Domain Model Integration gives Flow stages durable, cross-run grounding in a target repository's own domain vocabulary — by relying entirely on [OpenWiki](https://github.com/langchain-ai/openwiki) rather than any Flow-authored mechanism. An earlier design (`docs/adr/0001-canonical-adr-location-for-domain-model-integration.md`, superseded) had `plan`/`finalize` read and write a Flow-owned `CONTEXT.md`/`docs/adr/` pair using the vendored `domain-modeling` skill's conventions; that approach was dropped in favor of the OpenWiki pivot recorded in `docs/adr/0002-openwiki-replaces-domain-modeling-for-target-repo-context.md`.
 
 The resolved design is intentionally minimal: OpenWiki maintains `openwiki/` and its own `AGENTS.md`/`CLAUDE.md` pointer entirely externally, via its own CI update loop. The Flow contributes zero code to this path — it neither invokes `openwiki` nor parses its output. The only place the domain context reaches an agent is inside whichever worker CLI already reads `AGENTS.md`/`CLAUDE.md` natively when run against that target repo's working directory. v1 ships as documentation only, scoped to the `cursor`, `claude`, `codex`, and `grok` workers — all four empirically or previously confirmed to read the relevant pointer file natively; `gemini`'s `GEMINI.md`-only default is a known, documented gap rather than a Flow-side code path. See `docs/plans/2026-07-06-domain-model-integration.md` for the full per-worker verification evidence.
+
+## Unattended-Run Reliability (autonomy Phase 1)
+
+Phase 1 of `docs/architecture/autonomy-gap-analysis.md` hardened the platform so a no-TTY run either completes on its own branch, parks resumably awaiting approval, or fails with a resumable checkpoint — never an unrecoverable crash. Five seams, each offline-testable:
+
+- **Exception containment at the tool seam** (`tools/coder_tool.py`): adapter infrastructure exceptions (`WorkerTimeout`, `WorkerInvocationError`) are converted to failed `CoderResult`s inside `HeadlessCoderTool.run`, so every call site and every crew is covered at once and the Flow stays worker-ignorant. Per-stage `retry`/`fallback_worker` extras add bounded retries that fire only on infrastructure errors — semantic (non-zero-exit) failures still belong to the revise loop.
+- **Mergeback path sanitization** (`workspace_changes.apply_changed_files`): worker-reported `changed_files` are untrusted; absolute paths, `..` traversal, and symlink escapes are rejected before anything touches disk, and the parallel mergeback converts the rejection into an ordinary task failure.
+- **RunStore checkpoints + crash resume** (`run_store.py`, ADR-0004): `runs/<run_id>/state.json` + `debug_report.md` written atomically at every state mutation, piggybacked on `_refresh_debug_report`; `resume_headless_flow` accepts crashed (`status: "running"`) snapshots via `synthesize_crash_checkpoint`. CrewAI's `@persist` is deliberately not used.
+- **Escalation channel seam** (`escalation.py`, ADR-0005): `ask(request) -> str | None` replaces the blocking `input()`; `stdin`/`file`/`command` channels; `None` parks the run through the existing aborted-checkpoint machinery. Notification integrations live behind the `command` channel so the platform stays network-free.
+- **Flow-owned git delivery** (`delivery.py`, ADR-0006): opt-in commit of the flow's own files onto a fresh `flow/<run_id>` branch at the end of `finalize` (which now snapshot-diffs around its worker run so the ADR file reaches the commit). Commit-only until Phase 2's verification gate; adapters keep zero git responsibility.
+
+A note on retry semantics: a `WorkerTimeout` mid-edit can leave partial edits, and a retry re-runs on that dirty tree — the same semantics the revise loop already has for failed work, contained rather than hidden.
 
 ## CLI Automation Caveats
 
