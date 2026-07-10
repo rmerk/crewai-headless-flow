@@ -10,6 +10,7 @@ Primary responsibilities for Milestone 4:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -95,6 +96,17 @@ DEFAULT_ESCALATION: dict[str, Any] = {
     "timeout_seconds": 300,
     "on_timeout": "abort",
 }
+
+DEFAULT_DELIVER: dict[str, Any] = {
+    "enabled": False,
+    "branch_prefix": "flow/",
+    "commit": True,
+    "push": False,  # accepted but not implemented until Phase 2's verify gate
+    "pr": False,  # accepted but not implemented until Phase 2's verify gate
+    "protected_branches": ["main", "master"],
+}
+_DELIVER_BOOLEAN_KEYS = ("enabled", "commit", "push", "pr")
+_BRANCH_PREFIX_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
 
 
 DEFAULT_HUMAN_FEEDBACK = {
@@ -403,6 +415,52 @@ def _validate_escalation(raw: Any) -> dict[str, Any]:
     return escalation
 
 
+def _validate_deliver(raw: Any) -> dict[str, Any]:
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        value_type = type(raw).__name__
+        raise ValueError(f"deliver must be a mapping, got {value_type}")
+    unknown = sorted(set(raw) - set(DEFAULT_DELIVER))
+    if unknown:
+        supported = ", ".join(sorted(DEFAULT_DELIVER))
+        unknown_text = ", ".join(unknown)
+        raise ValueError(
+            f"deliver contains unsupported keys: {unknown_text}. "
+            f"Supported keys: {supported}"
+        )
+
+    deliver = {**DEFAULT_DELIVER, **raw}
+
+    for key in _DELIVER_BOOLEAN_KEYS:
+        if not isinstance(deliver[key], bool):
+            value_type = type(deliver[key]).__name__
+            raise ValueError(f"deliver.{key} must be a boolean, got {value_type}")
+
+    branch_prefix = deliver["branch_prefix"]
+    if (
+        not isinstance(branch_prefix, str)
+        or not _BRANCH_PREFIX_PATTERN.match(branch_prefix)
+        or ".." in branch_prefix
+    ):
+        raise ValueError(
+            "deliver.branch_prefix must be a git-ref-safe string "
+            f"(letters, digits, ., _, /, -; no leading - or /, no ..), "
+            f"got {branch_prefix!r}"
+        )
+
+    protected = deliver["protected_branches"]
+    if not isinstance(protected, list) or not all(
+        isinstance(name, str) and name for name in protected
+    ):
+        raise ValueError(
+            "deliver.protected_branches must be a list of non-empty strings, "
+            f"got {protected!r}"
+        )
+
+    return deliver
+
+
 def _validate_action_allowlist(raw: Any) -> dict[str, list[str]]:
     if raw is None:
         return {}
@@ -681,11 +739,13 @@ class FlowConfig:
         workers: dict[str, dict],
         defaults: dict[str, Any],
         human_feedback: dict[str, Any] | None = None,
+        deliver: dict[str, Any] | None = None,
     ) -> None:
         self.skills = skills
         self.workers = workers
         self.defaults = defaults
         self.human_feedback = _validate_human_feedback(human_feedback)
+        self.deliver = _validate_deliver(deliver)
         self._stage_cache: dict[str, StageConfig] = {}
 
     def get_stage(self, stage: str) -> StageConfig:
@@ -790,12 +850,14 @@ def load_config(config_dir: Optional[Path] = None) -> FlowConfig:
     defaults = worker_raw.get("defaults", {})
     workers = worker_raw.get("stages", {})
     human_feedback = worker_raw.get("human_feedback", {"enabled": False})
+    deliver = worker_raw.get("deliver", {})
 
     return FlowConfig(
         skills=skills,
         workers=workers,
         defaults=defaults,
         human_feedback=human_feedback,
+        deliver=deliver,
     )
 
 

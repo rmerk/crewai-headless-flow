@@ -673,6 +673,92 @@ def test_escalation_dotted_override_is_revalidated(sample_config_dir: Path):
         )
 
 
+def test_deliver_defaults_when_absent(sample_config_dir: Path):
+    cfg = load_config(sample_config_dir)
+
+    assert cfg.deliver == {
+        "enabled": False,
+        "branch_prefix": "flow/",
+        "commit": True,
+        "push": False,
+        "pr": False,
+        "protected_branches": ["main", "master"],
+    }
+
+
+def test_deliver_partial_override_merges_defaults(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["deliver"] = {"enabled": True, "branch_prefix": "bot/"}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    cfg = load_config(sample_config_dir)
+
+    assert cfg.deliver["enabled"] is True
+    assert cfg.deliver["branch_prefix"] == "bot/"
+    assert cfg.deliver["protected_branches"] == ["main", "master"]
+
+
+def test_deliver_unknown_key_rejected(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["deliver"] = {"enabld": True}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ValueError, match="deliver contains unsupported keys: enabld"):
+        load_config(sample_config_dir)
+
+
+def test_deliver_non_boolean_enabled_rejected(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["deliver"] = {"enabled": "yes"}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ValueError, match="deliver.enabled must be a boolean"):
+        load_config(sample_config_dir)
+
+
+def test_deliver_unsafe_branch_prefix_rejected(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["deliver"] = {"branch_prefix": "-oops/../"}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(
+        ValueError, match="deliver.branch_prefix must be a git-ref-safe string"
+    ):
+        load_config(sample_config_dir)
+
+
+def test_deliver_override_flips_enabled(sample_config_dir: Path):
+    cfg = load_runtime_config(
+        config_dir=sample_config_dir,
+        deliver_overrides=["enabled=true"],
+    )
+
+    assert cfg.deliver["enabled"] is True
+    assert cfg.deliver["branch_prefix"] == "flow/"
+
+
+def test_deliver_override_unknown_key_rejected(sample_config_dir: Path):
+    with pytest.raises(ValueError, match="Unknown deliver override 'branch'"):
+        load_runtime_config(
+            config_dir=sample_config_dir,
+            deliver_overrides=["branch=main"],
+        )
+
+
+def test_deliver_override_is_revalidated(sample_config_dir: Path):
+    with pytest.raises(
+        ValueError, match="deliver.branch_prefix must be a git-ref-safe string"
+    ):
+        load_runtime_config(
+            config_dir=sample_config_dir,
+            deliver_overrides=["branch_prefix=../evil"],
+        )
+
+
 def test_retry_and_fallback_worker_load_through_stage_extra(sample_config_dir: Path):
     worker_file = sample_config_dir / "worker.yaml"
     data = yaml.safe_load(worker_file.read_text())

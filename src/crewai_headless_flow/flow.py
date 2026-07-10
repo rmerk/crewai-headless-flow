@@ -47,6 +47,7 @@ from .hitl_policy import (
     describe_trigger_reason,
     should_prompt,
 )
+from .delivery import deliver
 from .do_work_crew import run_do_work_crew
 from .escalation import (
     EscalationHandler,
@@ -3495,6 +3496,7 @@ Execute the work. After you are done, summarize what changed and whether tests n
                     "Finalize skipped by human after review pass."
                 )
                 self.state.last_stage = "finalize"
+                self._maybe_deliver([])
                 self.state.status = "completed"
                 self._refresh_debug_report()
                 return self.state.final_artifact
@@ -3643,6 +3645,10 @@ Recent flow history:
 {self.state.debug_report or self._history_summary(limit=10)}
 """
 
+        # Snapshot around the finalize worker run: adapters under-report
+        # changed_files (grok always returns []), and the ADR/report file
+        # finalize writes must reach the delivery commit.
+        before_finalize = snapshot_workspace(Path(self.state.target_repo))
         result = worker_tool.run(
             task=prompt,
             cwd=self.state.target_repo,
@@ -3650,14 +3656,38 @@ Recent flow history:
             timeout=stage_cfg.timeout,
             model=stage_cfg.model,
         )
+        after_finalize = snapshot_workspace(Path(self.state.target_repo))
+        finalize_changed = sorted(
+            set(diff_workspace_snapshots(before_finalize, after_finalize))
+            | set(result.changed_files)
+        )
 
         self.state.final_artifact = result.summary or result.raw_output
         self.state.last_stage = "finalize"
+        self._maybe_deliver(finalize_changed)
         self.state.status = "completed"
         self._refresh_debug_report()
 
         print("[Flow] Flow completed successfully.")
         return self.state.final_artifact or "Flow completed"
+
+    def _maybe_deliver(self, extra_changed: list[str]) -> None:
+        deliver_cfg = self.config.deliver
+        if not deliver_cfg.get("enabled", False):
+            return
+        staged = list(dict.fromkeys([*self.state.changed_files, *extra_changed]))
+        report = deliver(
+            deliver_cfg,
+            target_repo=self.state.target_repo,
+            changed_files=staged,
+            run_id=self.state.run_id,
+            request=self.state.request,
+        )
+        self.state.delivery_report = report
+        if report.status == "failed":
+            # The work exists; delivery is packaging. Record the failure but
+            # keep the run completed.
+            self.state.errors.append(f"Delivery failed: {report.message}")
 
     @listen("aborted")
     def aborted(self, _decision: str) -> str:

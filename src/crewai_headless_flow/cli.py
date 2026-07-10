@@ -96,6 +96,7 @@ def _handle_run(args: argparse.Namespace) -> int:
         stage_extra_overrides=args.override_stage_extra,
         human_feedback_overrides=args.override_human_feedback,
         human_feedback_action_overrides=args.override_human_feedback_action,
+        deliver_overrides=args.override_deliver,
     )
 
     preflight = run_preflight(target_repo, config_dir=config_dir)
@@ -149,6 +150,7 @@ def _handle_doctor(args: argparse.Namespace) -> int:
         stage_extra_overrides=args.override_stage_extra,
         human_feedback_overrides=args.override_human_feedback,
         human_feedback_action_overrides=args.override_human_feedback_action,
+        deliver_overrides=args.override_deliver,
     )
     _print_report(report, args.format)
     return 1 if report.status == "fail" else 0
@@ -232,6 +234,17 @@ def _print_run_state(data: dict, output_format: str) -> None:
         print(f"Tasks: {done}/{len(tasks)} done")
     changed_files = data.get("changed_files") or []
     print(f"Changed files tracked: {len(changed_files)}")
+    run_id = data.get("run_id")
+    if run_id:
+        print(f"Run: {run_id} ({data.get('run_dir', '?')})")
+    delivery = data.get("delivery_report")
+    if isinstance(delivery, dict):
+        summary = delivery.get("status", "unknown")
+        if delivery.get("branch"):
+            summary += f" on {delivery['branch']}"
+        if delivery.get("commit_sha"):
+            summary += f" @ {str(delivery['commit_sha'])[:12]}"
+        print(f"Delivery: {summary}")
     _print_aborted_checkpoint_summary(
         data.get("aborted_checkpoint"),
         latest_work_summary=data.get("latest_work_summary"),
@@ -484,6 +497,7 @@ def _add_runtime_override_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--override-stage-extra", action="append", default=[])
     parser.add_argument("--override-human-feedback", action="append", default=[])
     parser.add_argument("--override-human-feedback-action", action="append", default=[])
+    parser.add_argument("--override-deliver", action="append", default=[])
 
 
 def _build_help_parser() -> argparse.ArgumentParser:

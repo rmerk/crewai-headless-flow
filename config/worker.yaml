@@ -165,6 +165,37 @@ human_feedback:
   advanced_actions: false  # Optional stage shortcuts: do_work->review/replan/target-tasks, review->replan/rerun/force revise/pass/target-tasks, finalize->skip/rerun/reopen/target-tasks
   action_allowlist: {}     # Optional stage- or gate-scoped subset of advanced actions, e.g. {before_do_work: [target-tasks]}
   # Any of these can be overridden per run via --override-human-feedback KEY=VALUE
+  # (dotted paths work for nested trees, e.g. escalation.channel=file)
+
+  # How a fired gate reaches a human. "stdin" blocks on the terminal (the
+  # default, pre-Phase-1 behavior). "file" writes pending_approval.json into
+  # the run directory (--runs-dir) and parks the run resumably; answer by
+  # adding an "answer" field and re-running with --resume-state-file.
+  # "command" runs your hook with the request JSON on stdin and reads the
+  # answer from its stdout — the plug point for Slack/email/webhook
+  # notification.
+  escalation:
+    channel: stdin        # stdin | file | command
+    command: null         # argv list, required when channel: command
+    timeout_seconds: 300  # command channel: how long to wait for an answer
+    on_timeout: abort     # abort | proceed
+
+# =============================================================================
+# Git delivery (autonomy Phase 1 — commit-only mode)
+# =============================================================================
+# When enabled, a completed run commits the flow's own changed files onto a
+# fresh {branch_prefix}{run_id} branch instead of leaving a dirty tree.
+# Guardrails: never commits on the branch you were on, never `git add -A`
+# (pre-existing dirt stays out of the flow's commit), never force-pushes.
+# push/pr are accepted but not implemented until Phase 2's verification gate.
+# Override per run via --override-deliver KEY=VALUE (e.g. enabled=true).
+deliver:
+  enabled: false
+  branch_prefix: "flow/"
+  commit: true
+  push: false
+  pr: false
+  protected_branches: [main, master]
 
 # Stage extras like `plan.crew.*`, `do_work.crew.*`, `do_work.parallel.*`, or
 # `review.crew.*` can be overridden per run via

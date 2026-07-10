@@ -17,6 +17,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_serializer, model_validator
 
+from .delivery import DeliveryReport
 from .human_feedback_actions import StageName
 from .review_contract import ReviewTaskHint
 
@@ -220,6 +221,7 @@ class FlowState(BaseModel):
     # Final output
     final_artifact: str | None = None
     debug_report: str | None = None
+    delivery_report: DeliveryReport | None = None
 
     # Internal / diagnostics
     status: Literal["pending", "running", "completed", "aborted_by_human", "failed"] = (
