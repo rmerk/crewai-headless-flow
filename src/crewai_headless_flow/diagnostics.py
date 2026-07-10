@@ -427,6 +427,7 @@ def _validate_config_files(
 
         _check_conditional_human_feedback(report, cfg)
         _check_verify(report, cfg)
+        _check_deliver_pr_tooling(report, cfg)
 
         if ollama_required:
             _check_ollama(report)
@@ -685,6 +686,22 @@ def _check_verify(report: DiagnosticReport, cfg: FlowConfig) -> None:
         f"{len(commands)} command(s))",
         {"mode": verify.get("mode"), "commands": len(commands)},
     )
+
+
+def _check_deliver_pr_tooling(report: DiagnosticReport, cfg: FlowConfig) -> None:
+    """Detect-only: deliver.pr needs the `gh` CLI on PATH at delivery time."""
+
+    if not cfg.deliver.get("pr"):
+        return
+    if shutil.which("gh") is None:
+        report.add_check(
+            "cli.gh",
+            "warn",
+            "deliver.pr is enabled but the `gh` CLI was not found on PATH; "
+            "PR creation will fail at delivery time",
+        )
+        return
+    report.add_check("cli.gh", "pass", "`gh` CLI found for deliver.pr")
 
 
 def _check_ollama(report: DiagnosticReport) -> None:

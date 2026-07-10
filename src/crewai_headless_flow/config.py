@@ -101,12 +101,14 @@ DEFAULT_DELIVER: dict[str, Any] = {
     "enabled": False,
     "branch_prefix": "flow/",
     "commit": True,
-    "push": False,  # accepted but not implemented until Phase 2's verify gate
-    "pr": False,  # accepted but not implemented until Phase 2's verify gate
+    "push": False,  # ships the branch; requires the latest verification to pass
+    "pr": False,  # opens a PR via `gh` after a successful push
+    "remote": "origin",
     "protected_branches": ["main", "master"],
 }
 _DELIVER_BOOLEAN_KEYS = ("enabled", "commit", "push", "pr")
 _BRANCH_PREFIX_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
+_REMOTE_PATTERN = re.compile(r"^[^\s-][^\s]*$")
 
 VERIFY_MODES = ("gate", "advisory")
 DEFAULT_VERIFY: dict[str, Any] = {
@@ -463,6 +465,23 @@ def _validate_deliver(raw: Any) -> dict[str, Any]:
         raise ValueError(
             "deliver.protected_branches must be a list of non-empty strings, "
             f"got {protected!r}"
+        )
+
+    remote = deliver["remote"]
+    if not isinstance(remote, str) or not _REMOTE_PATTERN.match(remote):
+        raise ValueError(
+            "deliver.remote must be a non-empty string without whitespace "
+            f"(no leading -), got {remote!r}"
+        )
+
+    if deliver["pr"] and not deliver["push"]:
+        raise ValueError(
+            "deliver.pr: true requires deliver.push: true (a PR needs a pushed branch)"
+        )
+    if deliver["push"] and not deliver["commit"]:
+        raise ValueError(
+            "deliver.push: true requires deliver.commit: true (there is "
+            "nothing to push without a commit)"
         )
 
     return deliver

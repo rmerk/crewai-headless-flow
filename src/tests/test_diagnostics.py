@@ -698,3 +698,43 @@ def test_doctor_passes_verify_unconfigured_without_shipping(
     assert check is not None
     assert check.status == "pass"
     assert "No verification commands" in check.message
+
+
+def test_doctor_warns_when_pr_enabled_without_gh(config_dir: Path, monkeypatch):
+    report = _run_doctor_with_blocks(
+        config_dir,
+        monkeypatch,
+        deliver={"enabled": True, "push": True, "pr": True},
+    )
+    # _run_doctor_with_blocks fakes shutil.which to find everything; re-run
+    # with gh explicitly missing.
+    from crewai_headless_flow.diagnostics import run_doctor
+
+    monkeypatch.setattr(
+        "crewai_headless_flow.diagnostics.shutil.which",
+        lambda name: None if name == "gh" else f"/bin/{name}",
+    )
+    report = run_doctor(config_dir=config_dir)
+
+    check = next((c for c in report.checks if c.name == "cli.gh"), None)
+    assert check is not None
+    assert check.status == "warn"
+    assert "gh" in check.message
+
+
+def test_doctor_passes_gh_check_when_present(config_dir: Path, monkeypatch):
+    report = _run_doctor_with_blocks(
+        config_dir,
+        monkeypatch,
+        deliver={"enabled": True, "push": True, "pr": True},
+    )
+
+    check = next((c for c in report.checks if c.name == "cli.gh"), None)
+    assert check is not None
+    assert check.status == "pass"
+
+
+def test_doctor_adds_no_gh_check_when_pr_disabled(config_dir: Path, monkeypatch):
+    report = _run_doctor_with_blocks(config_dir, monkeypatch)
+
+    assert not any(c.name == "cli.gh" for c in report.checks)

@@ -3771,23 +3771,58 @@ Recent flow history:
         print("[Flow] Flow completed successfully.")
         return self.state.final_artifact or "Flow completed"
 
+    def _delivery_verification_ok(self) -> bool:
+        """Whether push/pr may ship: the latest verification round passed.
+
+        Mode-independent on purpose: ``advisory`` only controls whether a
+        failure short-circuits the LLM review — shipping unverified work is
+        never OK while commands are configured. Empty ``verify.commands``
+        means the operator opted out of verification and owns the risk.
+        A human force-pass does not override this predicate either.
+        """
+
+        if not self.config.verify.get("commands"):
+            return True
+        runs = self.state.verification_runs
+        if not runs:
+            return False
+        last = runs[-1]
+        if isinstance(last, VerificationReport):
+            return last.passed
+        return bool(last.get("passed"))
+
+    def _delivery_verification_note(self, verification_ok: bool) -> str:
+        commands = self.config.verify.get("commands") or []
+        if not commands:
+            return "Verification: not configured."
+        if verification_ok:
+            return f"Verification: passed ({len(commands)} command(s))."
+        return "Verification: latest round did not pass."
+
     def _maybe_deliver(self, extra_changed: list[str]) -> None:
         deliver_cfg = self.config.deliver
         if not deliver_cfg.get("enabled", False):
             return
         staged = list(dict.fromkeys([*self.state.changed_files, *extra_changed]))
+        verification_ok = self._delivery_verification_ok()
         report = deliver(
             deliver_cfg,
             target_repo=self.state.target_repo,
             changed_files=staged,
             run_id=self.state.run_id,
             request=self.state.request,
+            verification_ok=verification_ok,
+            verification_note=self._delivery_verification_note(verification_ok),
         )
         self.state.delivery_report = report
         if report.status == "failed":
             # The work exists; delivery is packaging. Record the failure but
             # keep the run completed.
             self.state.errors.append(f"Delivery failed: {report.message}")
+        if report.push == "failed":
+            self.state.errors.append(f"Delivery push failed: {report.message}")
+        if report.pr == "failed":
+            self.state.errors.append(f"Delivery PR failed: {report.message}")
 
     @listen("aborted")
     def aborted(self, _decision: str) -> str:

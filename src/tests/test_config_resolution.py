@@ -682,6 +682,7 @@ def test_deliver_defaults_when_absent(sample_config_dir: Path):
         "commit": True,
         "push": False,
         "pr": False,
+        "remote": "origin",
         "protected_branches": ["main", "master"],
     }
 
@@ -757,6 +758,49 @@ def test_deliver_override_is_revalidated(sample_config_dir: Path):
             config_dir=sample_config_dir,
             deliver_overrides=["branch_prefix=../evil"],
         )
+
+
+def test_deliver_pr_without_push_rejected(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["deliver"] = {"pr": True}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(
+        ValueError, match="deliver.pr: true requires deliver.push: true"
+    ):
+        load_config(sample_config_dir)
+
+
+def test_deliver_push_without_commit_rejected(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["deliver"] = {"push": True, "commit": False}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(
+        ValueError, match="deliver.push: true requires deliver.commit: true"
+    ):
+        load_config(sample_config_dir)
+
+
+def test_deliver_bad_remote_rejected(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["deliver"] = {"remote": "-oops"}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ValueError, match="deliver.remote must be a non-empty string"):
+        load_config(sample_config_dir)
+
+
+def test_deliver_override_sets_remote(sample_config_dir: Path):
+    cfg = load_runtime_config(
+        config_dir=sample_config_dir,
+        deliver_overrides=["remote=upstream"],
+    )
+
+    assert cfg.deliver["remote"] == "upstream"
 
 
 def test_retry_and_fallback_worker_load_through_stage_extra(sample_config_dir: Path):

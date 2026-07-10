@@ -181,13 +181,17 @@ human_feedback:
     on_timeout: abort     # abort | proceed
 
 # =============================================================================
-# Git delivery (autonomy Phase 1 — commit-only mode)
+# Git delivery (autonomy Gap 2 — commit, then push/PR behind the verify gate)
 # =============================================================================
 # When enabled, a completed run commits the flow's own changed files onto a
 # fresh {branch_prefix}{run_id} branch instead of leaving a dirty tree.
 # Guardrails: never commits on the branch you were on, never `git add -A`
 # (pre-existing dirt stays out of the flow's commit), never force-pushes.
-# push/pr are accepted but not implemented until Phase 2's verification gate.
+# push ships the branch to `remote`; pr opens a PR via the `gh` CLI after a
+# successful push (pr requires push, push requires commit). Whenever
+# verify.commands is configured, push/pr require the latest verification
+# round to have passed — otherwise they report blocked_unverified. A push/PR
+# failure never demotes a successful local commit.
 # Override per run via --override-deliver KEY=VALUE (e.g. enabled=true).
 deliver:
   enabled: false
@@ -195,6 +199,7 @@ deliver:
   commit: true
   push: false
   pr: false
+  remote: origin
   protected_branches: [main, master]
 
 # =============================================================================
