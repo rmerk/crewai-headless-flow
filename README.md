@@ -1060,9 +1060,9 @@ This is the same flag used for human-aborted runs; crashed runs (`status: "runni
 
 One-run override: `--override-human-feedback escalation.channel=file`.
 
-### Git delivery (commit-only)
+### Git delivery
 
-With `deliver.enabled: true` (or `--override-deliver enabled=true`), a completed run commits the flow's own changed files onto a fresh `flow/<run_id>` branch instead of leaving a dirty tree. Guardrails: never commits on the branch you were on, refuses `protected_branches`, stages only the flow's files per-path (pre-existing dirt stays yours, uncommitted), and never force-pushes. `push`/`pr` are accepted config keys but deliberately inert until the Phase 2 verification gate; a delivery failure records an error but does not fail the run. Note a delivered run ends checked out on the `flow/<run_id>` branch.
+With `deliver.enabled: true` (or `--override-deliver enabled=true`), a completed run commits the flow's own changed files onto a fresh `flow/<run_id>` branch instead of leaving a dirty tree. Guardrails: never commits on the branch you were on, refuses `protected_branches`, stages only the flow's files per-path (pre-existing dirt stays yours, uncommitted), and never force-pushes. With `deliver.push: true` the branch is pushed to `deliver.remote` (default `origin`), and `deliver.pr: true` opens a PR via the `gh` CLI after a successful push — both require the latest verification round to have passed whenever `verify.commands` is configured (see below). A delivery/push/PR failure records an error but does not fail the run or demote the local commit. Note a delivered run ends checked out on the `flow/<run_id>` branch.
 
 ### Worker retry & fallback
 
@@ -1076,6 +1076,51 @@ stages:
 ```
 
 One-run override: `--override-stage-extra do_work.retry.max_attempts=2`.
+
+## Verification & Observability (autonomy Phase 2)
+
+Phase 2 of `docs/architecture/autonomy-gap-analysis.md` makes "completed" mean something objective and every run diagnosable after the fact.
+
+### Objective verification gate
+
+Declare the commands that must pass before review can (`verify:` in `worker.yaml`):
+
+```yaml
+verify:
+  commands: ["uv run pytest -q", "uv run ruff check ."]
+  mode: gate      # gate | advisory
+  timeout: 600    # per command, seconds
+```
+
+The Flow runs them in the target repo at the top of **every** review round (fail-fast, argv with no shell — wrap pipes in a script). Under `mode: gate` a failure skips the LLM review entirely and feeds the command output tails into the revise loop as concrete issues; `mode: advisory` appends the results to the review prompt as evidence instead. Either way, `deliver.push`/`deliver.pr` only ship when the latest verification round passed (empty `commands` = you opted out and own the risk; `doctor` warns if push/pr is enabled unverified). Results are recorded on `state.verification_runs` and in the debug report's `## Verification` section. One-run override: `--override-verify 'commands=["uv run pytest -q"]'`.
+
+### JSONL event log
+
+Alongside `state.json`/`debug_report.md`, every run with a run dir appends structured events to `runs/<run_id>/events.jsonl` — one JSON object per line with `{ts, run_id, revision, kind, ...}`. Kinds cover stage starts, task completion/failure, review decisions, replans, human feedback/aborts, verification, delivery, and run completion/failure. A resumed run continues the same file. Diagnostic narration also goes through Python `logging` (`crewai_headless_flow` logger) instead of bare prints, so library users can route or silence it.
+
+### Deny paths & serial isolation
+
+Keep workers out of files they must never touch (`paths:` in `worker.yaml`):
+
+```yaml
+paths:
+  deny: ["*.env", ".github/workflows/*", "secrets/*"]
+```
+
+Globs are matched against every changed file at the Flow's merge/diff boundaries (`*` crosses `/` — broad by design). Denied changes never merge out of isolated workspaces (the task fails closed); in-place edits get post-hoc restore (tracked files via `git checkout --`, run-created files deleted; pre-existing untracked files are reported unrestorable — deliberately never deleted). Denied paths are always excluded from delivery. Deny config is file-only: no CLI flag can weaken it.
+
+For full serial containment, `do_work.isolation: copy` (or `--override-stage-extra do_work.isolation=copy`) runs single-task and direct edits in a disposable workspace copy — a failed or denied edit leaves the target repo pristine.
+
+### Configurable worker binaries
+
+Point any worker at a specific executable (`workers:` in `worker.yaml`):
+
+```yaml
+workers:
+  codex: {binary: "/opt/bin/codex-nightly"}
+```
+
+`doctor` probes the configured binary too. One-run override: `--override-worker-binary codex=/opt/bin/codex-nightly`.
 
 ## Domain Model Integration (OpenWiki pass-through)
 

@@ -250,6 +250,16 @@ Phase 1 of `docs/architecture/autonomy-gap-analysis.md` hardened the platform so
 
 A note on retry semantics: a `WorkerTimeout` mid-edit can leave partial edits, and a retry re-runs on that dirty tree — the same semantics the revise loop already has for failed work, contained rather than hidden.
 
+## Verification & Observability (autonomy Phase 2)
+
+Phase 2 makes `status == "completed"` mean the operator's verify commands passed on the delivered branch, and makes every run diagnosable from `runs/<run_id>/` without opt-in flags:
+
+- **Objective verification gate** (`verification.py`, ADR-0007): operator-declared commands run in the target repo at the top of every review round via a Flow-owned, injectable subprocess boundary — never through a worker adapter. `mode: gate` failures skip the LLM review and synthesize a `revise` decision from the command output tails; `mode: advisory` feeds the results into the review prompt. Results persist on `state.verification_runs`.
+- **Push/PR behind the gate** (`delivery.py`, ADR-0007): `deliver.push` ships the delivery branch to `deliver.remote`, `deliver.pr` opens a PR via an injectable `gh` runner — both only when the latest verification passed (mode-independent; a human force-pass does not unlock shipping). A push/PR failure never demotes the local commit.
+- **JSONL event log + logging policy** (`run_store.append_event`, ADR-0008): every run appends `{ts, run_id, revision, kind, ...}` events to `events.jsonl` from the existing history/lifecycle seams; diagnostic narration uses per-module `logging` while interactive HITL prompts and CLI rendering stay `print`.
+- **Deny paths + serial isolation** (`paths_policy.py`, ADR-0009): `paths.deny` globs are enforced at all four Flow-owned merge/diff boundaries with fail-closed semantics and honest restore limits; `do_work.isolation: copy` gives serial and direct edits the parallel path's workspace-copy containment.
+- **WorkerSpec registration table** (`workers/__init__.py`): one frozen `WorkerSpec` per worker (`adapter_cls`, default `binary`, doctor `help_command`, `required_flags`); the Flow's `WORKER_ADAPTERS` and doctor's `SUPPORTED_WORKERS`/`WORKER_BINARIES`/`WORKER_HELP_COMMANDS`/`WORKER_REQUIRED_FLAGS` are all derived from it, so they cannot drift. The top-level `workers:` config block (`FlowConfig.worker_settings`) makes binaries configurable per worker, honored by both `_setup_workers` and doctor probes. Adding a worker = adapter file + one spec entry.
+
 ## CLI Automation Caveats
 
 This project deliberately uses **subprocess + CLI automation**, not native SDKs. This has consequences:

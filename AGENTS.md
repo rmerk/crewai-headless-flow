@@ -115,7 +115,9 @@ The old `main.py` is a legacy M0 spike and is not the primary entrypoint.
   - Cursor: the adapter creates a disposable copy and runs with `--plan`.
 - Edit stages (`do_work`, and potentially others) run non-interactively in the real target repository using each adapter's edit-mode approval flags: Codex `--dangerously-bypass-approvals-and-sandbox`, Grok `--always-approve`, Claude `--permission-mode bypassPermissions`, Gemini `--approval-mode yolo`, and Cursor `--force --trust`.
 - Worker-reported changed-file paths are untrusted input: `workspace_changes.apply_changed_files` rejects absolute paths, `..` traversal, and symlink escapes before touching disk. Keep any new mergeback/staging code behind the same guard.
-- Git writes live in exactly one module: `delivery.py` (opt-in, commit-only, fresh `flow/<run_id>` branch, per-path staging, no `--force`/`reset`/`add -A`). Adapters and the Flow's stage logic must stay git-write-free.
+- Operator-declared deny globs (`paths.deny` in `worker.yaml`) are enforced at every Flow-owned merge/diff boundary: parallel/isolated mergeback fails a denied task closed (nothing leaves the workspace copy), in-place edits get post-hoc restore, and delivery filters denied paths from the staged set. Deny config is deliberately file-only — never add a CLI flag that can weaken it. `do_work.isolation: copy` is the full-containment option for serial edits. See `docs/adr/0009-deny-paths-and-serial-isolation.md`.
+- Git writes live in exactly two scoped places: `delivery.py` (opt-in branch/commit, and push/PR gated on the verification predicate; per-path staging, no `--force`/`reset`/`add -A`) and `paths_policy.restore_denied_paths` (scoped to `git checkout -- <denied paths>`). Adapters and the Flow's stage logic must stay git-write-free.
+- Verification (`verify.commands`) and delivery are Flow-owned subprocesses — never route them through a worker adapter, and never let `mode: advisory` or a human force-pass weaken the "push/pr require the latest verification to have passed" predicate. See `docs/adr/0007-objective-verification-gate.md`.
 - Never bypass the adapter layer to call the raw CLIs in new code.
 - Auth (API keys, `gh` auth, etc.) is the user's responsibility via `.env` / keychain. Do not hardcode secrets.
 
@@ -136,8 +138,9 @@ Key responsibilities of an adapter:
 - Handle sandbox/approval differences correctly.
 - Provide structured output when the underlying CLI supports it; all workers should still participate in the shared validation/repair loop so review decisions stay consistent.
 - Never mutate the caller's repository during inspect mode.
+- Accept a `binary=` kwarg (default = the CLI's name) so operators can point the worker at a specific executable via the `workers:` config block.
 
-After adding a worker, update `config.py` resolution, the worker factory in `flow.py`, and add appropriate offline tests.
+Registration is one entry: add a `WorkerSpec` (adapter class, default binary, doctor help command, required flags) to `WORKER_SPECS` in `workers/__init__.py` and export the adapter in `__all__`. The Flow's `WORKER_ADAPTERS` and all of doctor's worker dicts are derived from that table. Then add appropriate offline tests.
 
 ## Repository State & Hygiene (as of 2026-06-01)
 
