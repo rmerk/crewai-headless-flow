@@ -8,8 +8,10 @@ from typing import Callable
 import yaml
 
 from .config import (
+    DEFAULT_DELIVER,
     HUMAN_FEEDBACK_BOOLEAN_KEYS,
     FlowConfig,
+    _validate_deliver,
     _validate_human_feedback,
     _validate_value_against_schema,
     get_stage_extra_schema,
@@ -35,6 +37,7 @@ def load_runtime_config(
     stage_extra_overrides: list[str] | None = None,
     human_feedback_overrides: list[str] | None = None,
     human_feedback_action_overrides: list[str] | None = None,
+    deliver_overrides: list[str] | None = None,
 ) -> FlowConfig:
     config = load_config(config_dir)
     apply_skill_overrides(config, skill_overrides)
@@ -57,6 +60,7 @@ def load_runtime_config(
     apply_stage_extra_overrides(config, stage_extra_overrides)
     apply_human_feedback_overrides(config, human_feedback_overrides)
     apply_human_feedback_action_overrides(config, human_feedback_action_overrides)
+    apply_deliver_overrides(config, deliver_overrides)
     return config
 
 
@@ -135,8 +139,9 @@ def apply_default_overrides(
 
 
 # Top-level human_feedback keys whose value is a nested tree, reachable via a
-# dotted override path (e.g. conditional.triggers.repeated_task_failure.min_attempts).
-_HUMAN_FEEDBACK_NESTED_ROOTS = {"conditional"}
+# dotted override path (e.g. conditional.triggers.repeated_task_failure.min_attempts,
+# escalation.channel).
+_HUMAN_FEEDBACK_NESTED_ROOTS = {"conditional", "escalation"}
 
 
 def _set_nested_human_feedback_override(
@@ -203,6 +208,37 @@ def apply_human_feedback_overrides(
     # stray keys) are schema-checked exactly as file-loaded config would be.
     if applied:
         config.human_feedback = _validate_human_feedback(config.human_feedback)
+
+
+def apply_deliver_overrides(
+    config: FlowConfig,
+    overrides: list[str] | None,
+) -> None:
+    applied = False
+    for raw in overrides or []:
+        if "=" not in raw:
+            raise ValueError(
+                f"Invalid override '{raw}'. Expected KEY=VALUE for deliver."
+            )
+        key, value = raw.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key or not value:
+            raise ValueError(
+                f"Invalid override '{raw}'. Expected KEY=VALUE for deliver."
+            )
+        if key not in DEFAULT_DELIVER:
+            known = ", ".join(sorted(DEFAULT_DELIVER))
+            raise ValueError(
+                f"Unknown deliver override '{key}'. Supported keys: {known}"
+            )
+        config.deliver[key] = parse_override_value(value)
+        applied = True
+
+    # Re-validate so overridden values are schema-checked exactly as
+    # file-loaded config would be.
+    if applied:
+        config.deliver = _validate_deliver(config.deliver)
 
 
 def apply_human_feedback_action_overrides(

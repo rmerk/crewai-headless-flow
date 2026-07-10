@@ -563,6 +563,263 @@ def test_default_do_work_replan_is_configured_but_disabled():
     assert replan_cfg["max_execution_replans"] == 1
 
 
+def test_escalation_defaults_merge_when_absent(sample_config_dir: Path):
+    cfg = load_config(sample_config_dir)
+
+    assert cfg.human_feedback["escalation"] == {
+        "channel": "stdin",
+        "command": None,
+        "timeout_seconds": 300,
+        "on_timeout": "abort",
+    }
+
+
+def test_escalation_partial_override_merges_defaults(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["human_feedback"] = {"enabled": True, "escalation": {"channel": "file"}}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    cfg = load_config(sample_config_dir)
+
+    escalation = cfg.human_feedback["escalation"]
+    assert escalation["channel"] == "file"
+    assert escalation["timeout_seconds"] == 300
+    assert escalation["on_timeout"] == "abort"
+
+
+def test_escalation_invalid_channel_rejected(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["human_feedback"] = {"escalation": {"channel": "carrier-pigeon"}}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(
+        ValueError,
+        match="human_feedback.escalation.channel must be one of stdin, file, command",
+    ):
+        load_config(sample_config_dir)
+
+
+def test_escalation_command_channel_requires_argv(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["human_feedback"] = {"escalation": {"channel": "command"}}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(
+        ValueError, match="human_feedback.escalation.command is required"
+    ):
+        load_config(sample_config_dir)
+
+
+def test_escalation_command_must_be_string_list(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["human_feedback"] = {
+        "escalation": {"channel": "command", "command": "notify-hook"}
+    }
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(
+        ValueError,
+        match="human_feedback.escalation.command must be a list of non-empty strings",
+    ):
+        load_config(sample_config_dir)
+
+
+def test_escalation_unknown_key_rejected(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["human_feedback"] = {"escalation": {"chanel": "file"}}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ValueError, match="unsupported keys: chanel"):
+        load_config(sample_config_dir)
+
+
+def test_escalation_invalid_on_timeout_rejected(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["human_feedback"] = {"escalation": {"on_timeout": "retry"}}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(
+        ValueError,
+        match="human_feedback.escalation.on_timeout must be one of abort, proceed",
+    ):
+        load_config(sample_config_dir)
+
+
+def test_escalation_dotted_override_via_human_feedback(sample_config_dir: Path):
+    cfg = load_runtime_config(
+        config_dir=sample_config_dir,
+        human_feedback_overrides=["escalation.channel=file"],
+    )
+
+    assert cfg.human_feedback["escalation"]["channel"] == "file"
+    # Defaults survive the override merge + re-validation.
+    assert cfg.human_feedback["escalation"]["timeout_seconds"] == 300
+
+
+def test_escalation_dotted_override_is_revalidated(sample_config_dir: Path):
+    with pytest.raises(
+        ValueError,
+        match="human_feedback.escalation.channel must be one of",
+    ):
+        load_runtime_config(
+            config_dir=sample_config_dir,
+            human_feedback_overrides=["escalation.channel=smoke-signal"],
+        )
+
+
+def test_deliver_defaults_when_absent(sample_config_dir: Path):
+    cfg = load_config(sample_config_dir)
+
+    assert cfg.deliver == {
+        "enabled": False,
+        "branch_prefix": "flow/",
+        "commit": True,
+        "push": False,
+        "pr": False,
+        "protected_branches": ["main", "master"],
+    }
+
+
+def test_deliver_partial_override_merges_defaults(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["deliver"] = {"enabled": True, "branch_prefix": "bot/"}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    cfg = load_config(sample_config_dir)
+
+    assert cfg.deliver["enabled"] is True
+    assert cfg.deliver["branch_prefix"] == "bot/"
+    assert cfg.deliver["protected_branches"] == ["main", "master"]
+
+
+def test_deliver_unknown_key_rejected(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["deliver"] = {"enabld": True}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ValueError, match="deliver contains unsupported keys: enabld"):
+        load_config(sample_config_dir)
+
+
+def test_deliver_non_boolean_enabled_rejected(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["deliver"] = {"enabled": "yes"}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ValueError, match="deliver.enabled must be a boolean"):
+        load_config(sample_config_dir)
+
+
+def test_deliver_unsafe_branch_prefix_rejected(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["deliver"] = {"branch_prefix": "-oops/../"}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(
+        ValueError, match="deliver.branch_prefix must be a git-ref-safe string"
+    ):
+        load_config(sample_config_dir)
+
+
+def test_deliver_override_flips_enabled(sample_config_dir: Path):
+    cfg = load_runtime_config(
+        config_dir=sample_config_dir,
+        deliver_overrides=["enabled=true"],
+    )
+
+    assert cfg.deliver["enabled"] is True
+    assert cfg.deliver["branch_prefix"] == "flow/"
+
+
+def test_deliver_override_unknown_key_rejected(sample_config_dir: Path):
+    with pytest.raises(ValueError, match="Unknown deliver override 'branch'"):
+        load_runtime_config(
+            config_dir=sample_config_dir,
+            deliver_overrides=["branch=main"],
+        )
+
+
+def test_deliver_override_is_revalidated(sample_config_dir: Path):
+    with pytest.raises(
+        ValueError, match="deliver.branch_prefix must be a git-ref-safe string"
+    ):
+        load_runtime_config(
+            config_dir=sample_config_dir,
+            deliver_overrides=["branch_prefix=../evil"],
+        )
+
+
+def test_retry_and_fallback_worker_load_through_stage_extra(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["stages"]["do_work"]["retry"] = {"max_attempts": 2, "backoff_seconds": 1.5}
+    data["stages"]["do_work"]["fallback_worker"] = "claude"
+    worker_file.write_text(yaml.safe_dump(data))
+
+    cfg = load_config(sample_config_dir)
+
+    extra = cfg.get_stage("do_work").extra
+    assert extra["retry"] == {"max_attempts": 2, "backoff_seconds": 1.5}
+    assert extra["fallback_worker"] == "claude"
+
+
+def test_retry_max_attempts_zero_fails_closed(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["stages"]["do_work"]["retry"] = {"max_attempts": 0}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(
+        ValueError,
+        match=r"worker\.yaml stages\.do_work\.retry\.max_attempts must be "
+        r"a positive integer",
+    ):
+        load_config(sample_config_dir)
+
+
+def test_retry_negative_backoff_fails_closed(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["stages"]["review"]["retry"] = {"backoff_seconds": -1}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(
+        ValueError,
+        match=r"worker\.yaml stages\.review\.retry\.backoff_seconds must be "
+        r"a non-negative number",
+    ):
+        load_config(sample_config_dir)
+
+
+def test_retry_unknown_key_fails_closed(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["stages"]["finalize"]["retry"] = {"max_atempts": 2}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ValueError, match="unsupported keys: max_atempts"):
+        load_config(sample_config_dir)
+
+
+def test_retry_override_via_stage_extra_dotted_path(sample_config_dir: Path):
+    cfg = load_runtime_config(
+        config_dir=sample_config_dir,
+        stage_extra_overrides=["do_work.retry.max_attempts=2"],
+    )
+
+    assert cfg.get_stage("do_work").extra["retry"]["max_attempts"] == 2
+
+
 def test_valid_boolean_human_feedback_loads(sample_config_dir: Path):
     worker_file = sample_config_dir / "worker.yaml"
     data = yaml.safe_load(worker_file.read_text())

@@ -41,7 +41,11 @@ pytestmark = pytest.mark.offline
 
 def test_codex_inspect_mode_uses_read_only_sandbox():
     adapter = CodexAdapter(binary="codex")
-    with patch("subprocess.run") as mock_run:
+    with (
+        patch("subprocess.run") as mock_run,
+        patch.object(adapter, "_create_disposable_copy") as mock_copy,
+    ):
+        mock_copy.return_value = Path("/tmp/codex-inspect-xyz/testrepo")
         mock_run.return_value.stdout = "ok"
         mock_run.return_value.stderr = ""
         mock_run.return_value.returncode = 0
@@ -54,6 +58,86 @@ def test_codex_inspect_mode_uses_read_only_sandbox():
         assert "--sandbox" in args
         assert "read-only" in args
         assert "--dangerously-bypass-approvals-and-sandbox" not in args
+
+
+def test_codex_inspect_runs_on_disposable_tree_not_original():
+    adapter = CodexAdapter(binary="codex")
+    original = Path("/tmp/original-repo")
+
+    with (
+        patch("subprocess.run") as mock_run,
+        patch.object(adapter, "_create_disposable_copy") as mock_copy,
+    ):
+        mock_copy.return_value = Path("/tmp/codex-inspect-xyz/original-repo")
+        mock_run.return_value.stdout = "ok"
+        mock_run.return_value.stderr = ""
+        mock_run.return_value.returncode = 0
+
+        adapter.run("review", cwd=original, mode="inspect")
+
+        mock_copy.assert_called_once()
+        args = mock_run.call_args[0][0]
+        cd_idx = args.index("--cd")
+        assert "codex-inspect-" in args[cd_idx + 1]
+        assert str(original) not in args
+
+
+def test_codex_edit_mode_uses_unique_last_message_path():
+    adapter = CodexAdapter(binary="codex")
+    paths: list[str] = []
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value.stdout = "ok"
+        mock_run.return_value.stderr = ""
+        mock_run.return_value.returncode = 0
+
+        for _ in range(2):
+            adapter.run("do something", cwd="/tmp/testrepo", mode="edit")
+            args = mock_run.call_args[0][0]
+            idx = args.index("--output-last-message")
+            paths.append(args[idx + 1])
+
+    assert "/tmp/codex_last_message.txt" not in paths
+    assert paths[0] != paths[1]
+    # The per-invocation files are unlinked after the run.
+    assert not Path(paths[0]).exists()
+    assert not Path(paths[1]).exists()
+
+
+def test_codex_reads_back_last_message_file_as_summary_fallback():
+    adapter = CodexAdapter(binary="codex")
+
+    def fake_run(cmd, **kwargs):
+        idx = cmd.index("--output-last-message")
+        Path(cmd[idx + 1]).write_text("clean final message\n")
+        return type(
+            "P", (), {"stdout": '{"type":"noise"}', "stderr": "", "returncode": 0}
+        )()
+
+    with patch("subprocess.run", side_effect=fake_run):
+        result = adapter.run("do something", cwd="/tmp/testrepo", mode="edit")
+
+    assert result.summary == "clean final message"
+
+
+def test_codex_disposable_copy_does_not_preserve_absolute_symlink(tmp_path):
+    adapter = CodexAdapter(binary="codex")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("original")
+
+    src = tmp_path / "source-repo"
+    src.mkdir()
+    (src / "absolute-link.txt").symlink_to(outside)
+    (src / "real.txt").write_text("real")
+
+    disposable = adapter._create_disposable_copy(src)
+
+    assert not (disposable / "absolute-link.txt").exists()
+    assert (disposable / "real.txt").read_text() == "real"
+    assert "codex-inspect-" in str(disposable.parent)
+
+    adapter._cleanup_disposable(disposable)
+    assert not disposable.exists()
 
 
 def test_codex_edit_mode_uses_workspace_write_and_bypass():

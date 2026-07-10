@@ -1034,6 +1034,49 @@ human_feedback:
 
 When a trigger fires, its reason is appended to the checkpoint message and persisted as a structured `trigger_reason` on the audit entry, so the log distinguishes "static gate fired" from exactly which trigger fired.
 
+## Unattended Runs (autonomy Phase 1)
+
+Phase 1 of `docs/architecture/autonomy-gap-analysis.md` makes a no-TTY run safe: it either completes on its own branch, parks resumably awaiting approval, or fails with a resumable checkpoint — it never crashes unrecoverably. The pieces:
+
+### Run directories & crash resume
+
+Every run gets an identity and a durable home under `--runs-dir` (default `./runs`; pass `--runs-dir none` to disable): `runs/<run_id>/state.json` and `debug_report.md` are checkpointed **at every state mutation** with atomic writes. A crashed run (killed process, machine reboot) resumes from its last checkpoint:
+
+```bash
+uv run crewai-headless-flow run --resume-state-file runs/<run_id>/state.json
+```
+
+This is the same flag used for human-aborted runs; crashed runs (`status: "running"` in the snapshot) are now accepted too. Interrupted `in_progress` tasks are reset to `pending`; completed tasks stay done. `--state-file`/`--debug-report-file` remain as optional extra copies.
+
+### Escalation channels (HITL without a terminal)
+
+`human_feedback.escalation.channel` decides how a fired gate reaches a human:
+
+| Channel | Behavior |
+|---|---|
+| `stdin` (default) | Blocking terminal prompt — the pre-Phase-1 behavior. |
+| `file` | Writes `pending_approval.json` into the run dir and **parks the run resumably**. Answer by adding an `"answer"` field (e.g. `"y"`) to the file and re-running with `--resume-state-file`; the replayed gate consumes the answer. |
+| `command` | Runs your hook (`command: [argv...]`) with the request JSON on stdin and reads the answer from its stdout, honoring `timeout_seconds` and `on_timeout: abort\|proceed`. Plug Slack/email/webhook notification in here — the platform itself stays network-free. |
+
+One-run override: `--override-human-feedback escalation.channel=file`.
+
+### Git delivery (commit-only)
+
+With `deliver.enabled: true` (or `--override-deliver enabled=true`), a completed run commits the flow's own changed files onto a fresh `flow/<run_id>` branch instead of leaving a dirty tree. Guardrails: never commits on the branch you were on, refuses `protected_branches`, stages only the flow's files per-path (pre-existing dirt stays yours, uncommitted), and never force-pushes. `push`/`pr` are accepted config keys but deliberately inert until the Phase 2 verification gate; a delivery failure records an error but does not fail the run. Note a delivered run ends checked out on the `flow/<run_id>` branch.
+
+### Worker retry & fallback
+
+Adapter infrastructure failures (`WorkerTimeout`, a CLI that fails to launch) no longer crash the process — they become ordinary task failures routed into the revise loop. Per stage you can add bounded retries and a fallback worker (fires **only** on infrastructure errors, never on a worker's non-zero exit):
+
+```yaml
+stages:
+  do_work:
+    retry: {max_attempts: 2, backoff_seconds: 5}
+    fallback_worker: "claude"
+```
+
+One-run override: `--override-stage-extra do_work.retry.max_attempts=2`.
+
 ## Domain Model Integration (OpenWiki pass-through)
 
 If your target repository already uses [OpenWiki](https://github.com/langchain-ai/openwiki) to generate and maintain its own domain documentation, **the `cursor`, `claude`, `codex`, and `grok` workers pick up that context automatically — no `crewai-headless-flow` configuration needed.** OpenWiki self-registers by appending a pointer into the target repo's `AGENTS.md`/`CLAUDE.md`, and all four workers already read those files natively when invoked in that repo's working directory.

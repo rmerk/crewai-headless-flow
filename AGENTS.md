@@ -108,12 +108,14 @@ The old `main.py` is a legacy M0 spike and is not the primary entrypoint.
 ## Safety & Sandbox Rules
 
 - Inspect and review stages **must never** be allowed to mutate the target repository.
-  - Codex: the adapter enforces `sandbox: read-only`.
+  - Codex: the adapter creates a disposable copy under `/tmp/codex-inspect-*` and additionally enforces `sandbox: read-only` inside it (defense in depth).
   - Grok: the adapter creates a disposable copy under `/tmp/grok-inspect-*` and deletes it afterward.
   - Claude: the adapter creates a disposable copy and runs with `--permission-mode dontAsk`.
   - Gemini: the adapter creates a disposable copy and runs with `--approval-mode plan`.
   - Cursor: the adapter creates a disposable copy and runs with `--plan`.
 - Edit stages (`do_work`, and potentially others) run non-interactively in the real target repository using each adapter's edit-mode approval flags: Codex `--dangerously-bypass-approvals-and-sandbox`, Grok `--always-approve`, Claude `--permission-mode bypassPermissions`, Gemini `--approval-mode yolo`, and Cursor `--force --trust`.
+- Worker-reported changed-file paths are untrusted input: `workspace_changes.apply_changed_files` rejects absolute paths, `..` traversal, and symlink escapes before touching disk. Keep any new mergeback/staging code behind the same guard.
+- Git writes live in exactly one module: `delivery.py` (opt-in, commit-only, fresh `flow/<run_id>` branch, per-path staging, no `--force`/`reset`/`add -A`). Adapters and the Flow's stage logic must stay git-write-free.
 - Never bypass the adapter layer to call the raw CLIs in new code.
 - Auth (API keys, `gh` auth, etc.) is the user's responsibility via `.env` / keychain. Do not hardcode secrets.
 
@@ -191,6 +193,7 @@ When picking the next piece of work, deeper HITL/runtime controls and stronger e
 - `DESIGN.md` — Deep architectural rationale, adapter normalizations, and future directions.
 - `CONTEXT.md` — Project glossary / ubiquitous language (domain terms like Gate, Trigger, Domain Model Integration).
 - `docs/adr/` — Architecture Decision Records (numbered, append-only).
+- `docs/architecture/` — Standing architecture analyses (e.g. `autonomy-gap-analysis.md`, the Phase 1–3 autonomy roadmap).
 - `docs/plans/` — Design/implementation plans for in-flight and shipped features.
 - `NOTICE` — Attribution for vendored agent-skills.
 

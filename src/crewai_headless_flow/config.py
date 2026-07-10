@@ -10,6 +10,7 @@ Primary responsibilities for Milestone 4:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -87,6 +88,27 @@ def _default_conditional() -> dict[str, Any]:
     }
 
 
+ESCALATION_CHANNELS = ("stdin", "file", "command")
+ESCALATION_ON_TIMEOUT = ("abort", "proceed")
+DEFAULT_ESCALATION: dict[str, Any] = {
+    "channel": "stdin",
+    "command": None,
+    "timeout_seconds": 300,
+    "on_timeout": "abort",
+}
+
+DEFAULT_DELIVER: dict[str, Any] = {
+    "enabled": False,
+    "branch_prefix": "flow/",
+    "commit": True,
+    "push": False,  # accepted but not implemented until Phase 2's verify gate
+    "pr": False,  # accepted but not implemented until Phase 2's verify gate
+    "protected_branches": ["main", "master"],
+}
+_DELIVER_BOOLEAN_KEYS = ("enabled", "commit", "push", "pr")
+_BRANCH_PREFIX_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
+
+
 DEFAULT_HUMAN_FEEDBACK = {
     "enabled": False,
     "mode": "static",
@@ -95,6 +117,7 @@ DEFAULT_HUMAN_FEEDBACK = {
     "advanced_actions": False,
     "action_allowlist": {},
     "conditional": _default_conditional(),
+    "escalation": dict(DEFAULT_ESCALATION),
 }
 HUMAN_FEEDBACK_BOOLEAN_KEYS = {
     "enabled",
@@ -175,6 +198,20 @@ def _crew_schema() -> dict[str, Any]:
     }
 
 
+def _is_non_negative_number(value: Any) -> bool:
+    return _is_number(value) and value >= 0
+
+
+def _retry_schema() -> dict[str, Any]:
+    # Retries apply only to worker infrastructure failures (timeouts, launch
+    # errors) contained at the HeadlessCoderTool seam — never to non-zero
+    # exits, which belong to the revise loop.
+    return {
+        "max_attempts": _is_positive_int,
+        "backoff_seconds": _is_non_negative_number,
+    }
+
+
 def _do_work_crew_schema() -> dict[str, Any]:
     schema = _crew_schema()
     schema.update(
@@ -192,6 +229,8 @@ def _do_work_crew_schema() -> dict[str, Any]:
 STAGE_EXTRA_SCHEMAS: dict[str, dict[str, Any]] = {
     "plan": {
         "crew": _crew_schema(),
+        "retry": _retry_schema(),
+        "fallback_worker": _is_string,
     },
     "do_work": {
         "always_approve": _is_true,
@@ -210,12 +249,19 @@ STAGE_EXTRA_SCHEMAS: dict[str, dict[str, Any]] = {
             "on_ambiguous_success": _is_bool,
             "max_execution_replans": _is_int,
         },
+        "retry": _retry_schema(),
+        "fallback_worker": _is_string,
     },
     "review": {
         "sandbox": _is_read_only_sandbox,
         "crew": _crew_schema(),
+        "retry": _retry_schema(),
+        "fallback_worker": _is_string,
     },
-    "finalize": {},
+    "finalize": {
+        "retry": _retry_schema(),
+        "fallback_worker": _is_string,
+    },
 }
 ENFORCED_STAGE_EXTRA_PATHS: dict[str, tuple[tuple[str, ...], ...]] = {
     "plan": (("crew", "process"),),
@@ -300,10 +346,119 @@ def _validate_human_feedback(raw: dict[str, Any] | None) -> dict[str, Any]:
     human_feedback["conditional"] = _validate_conditional(
         human_feedback.get("conditional")
     )
+    human_feedback["escalation"] = _validate_escalation(
+        human_feedback.get("escalation")
+    )
     human_feedback["action_allowlist"] = _validate_action_allowlist(
         human_feedback.get("action_allowlist")
     )
     return human_feedback
+
+
+def _validate_escalation(raw: Any) -> dict[str, Any]:
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        value_type = type(raw).__name__
+        raise ValueError(
+            f"human_feedback.escalation must be a mapping, got {value_type}"
+        )
+    unknown = sorted(set(raw) - set(DEFAULT_ESCALATION))
+    if unknown:
+        supported = ", ".join(sorted(DEFAULT_ESCALATION))
+        unknown_text = ", ".join(unknown)
+        raise ValueError(
+            f"human_feedback.escalation contains unsupported keys: {unknown_text}. "
+            f"Supported keys: {supported}"
+        )
+
+    escalation = {**DEFAULT_ESCALATION, **raw}
+
+    channel = escalation["channel"]
+    if channel not in ESCALATION_CHANNELS:
+        supported = ", ".join(ESCALATION_CHANNELS)
+        raise ValueError(
+            f"human_feedback.escalation.channel must be one of {supported}, "
+            f"got {channel!r}"
+        )
+
+    command = escalation["command"]
+    if command is not None:
+        if not isinstance(command, list) or not all(
+            isinstance(part, str) and part for part in command
+        ):
+            raise ValueError(
+                "human_feedback.escalation.command must be a list of non-empty "
+                f"strings, got {command!r}"
+            )
+    if channel == "command" and not command:
+        raise ValueError(
+            "human_feedback.escalation.command is required (a non-empty argv "
+            "list) when channel is 'command'"
+        )
+
+    if not _is_positive_int(escalation["timeout_seconds"]):
+        value_type = type(escalation["timeout_seconds"]).__name__
+        raise ValueError(
+            "human_feedback.escalation.timeout_seconds must be a positive "
+            f"integer (>= 1), got {value_type}"
+        )
+
+    on_timeout = escalation["on_timeout"]
+    if on_timeout not in ESCALATION_ON_TIMEOUT:
+        supported = ", ".join(ESCALATION_ON_TIMEOUT)
+        raise ValueError(
+            f"human_feedback.escalation.on_timeout must be one of {supported}, "
+            f"got {on_timeout!r}"
+        )
+
+    return escalation
+
+
+def _validate_deliver(raw: Any) -> dict[str, Any]:
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        value_type = type(raw).__name__
+        raise ValueError(f"deliver must be a mapping, got {value_type}")
+    unknown = sorted(set(raw) - set(DEFAULT_DELIVER))
+    if unknown:
+        supported = ", ".join(sorted(DEFAULT_DELIVER))
+        unknown_text = ", ".join(unknown)
+        raise ValueError(
+            f"deliver contains unsupported keys: {unknown_text}. "
+            f"Supported keys: {supported}"
+        )
+
+    deliver = {**DEFAULT_DELIVER, **raw}
+
+    for key in _DELIVER_BOOLEAN_KEYS:
+        if not isinstance(deliver[key], bool):
+            value_type = type(deliver[key]).__name__
+            raise ValueError(f"deliver.{key} must be a boolean, got {value_type}")
+
+    branch_prefix = deliver["branch_prefix"]
+    if (
+        not isinstance(branch_prefix, str)
+        or not _BRANCH_PREFIX_PATTERN.match(branch_prefix)
+        or ".." in branch_prefix
+    ):
+        raise ValueError(
+            "deliver.branch_prefix must be a git-ref-safe string "
+            f"(letters, digits, ., _, /, -; no leading - or /, no ..), "
+            f"got {branch_prefix!r}"
+        )
+
+    protected = deliver["protected_branches"]
+    if not isinstance(protected, list) or not all(
+        isinstance(name, str) and name for name in protected
+    ):
+        raise ValueError(
+            "deliver.protected_branches must be a list of non-empty strings, "
+            f"got {protected!r}"
+        )
+
+    return deliver
 
 
 def _validate_action_allowlist(raw: Any) -> dict[str, list[str]]:
@@ -358,6 +513,8 @@ def _validator_description(validator: Any) -> str:
         return "a positive integer (>= 1)"
     if validator is _is_number:
         return "number"
+    if validator is _is_non_negative_number:
+        return "a non-negative number (>= 0)"
     if validator is _is_string:
         return "string"
     if validator is _is_string_or_none:
@@ -582,11 +739,13 @@ class FlowConfig:
         workers: dict[str, dict],
         defaults: dict[str, Any],
         human_feedback: dict[str, Any] | None = None,
+        deliver: dict[str, Any] | None = None,
     ) -> None:
         self.skills = skills
         self.workers = workers
         self.defaults = defaults
         self.human_feedback = _validate_human_feedback(human_feedback)
+        self.deliver = _validate_deliver(deliver)
         self._stage_cache: dict[str, StageConfig] = {}
 
     def get_stage(self, stage: str) -> StageConfig:
@@ -691,12 +850,14 @@ def load_config(config_dir: Optional[Path] = None) -> FlowConfig:
     defaults = worker_raw.get("defaults", {})
     workers = worker_raw.get("stages", {})
     human_feedback = worker_raw.get("human_feedback", {"enabled": False})
+    deliver = worker_raw.get("deliver", {})
 
     return FlowConfig(
         skills=skills,
         workers=workers,
         defaults=defaults,
         human_feedback=human_feedback,
+        deliver=deliver,
     )
 
 

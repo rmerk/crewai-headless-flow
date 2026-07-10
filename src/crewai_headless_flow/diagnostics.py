@@ -166,6 +166,7 @@ def run_doctor(
     stage_extra_overrides: list[str] | None = None,
     human_feedback_overrides: list[str] | None = None,
     human_feedback_action_overrides: list[str] | None = None,
+    deliver_overrides: list[str] | None = None,
 ) -> DiagnosticReport:
     config_path = normalize_path(config_dir or _default_config_dir())
     report = DiagnosticReport(config_dir=str(config_path))
@@ -190,6 +191,7 @@ def run_doctor(
             stage_extra_overrides=stage_extra_overrides,
             human_feedback_overrides=human_feedback_overrides,
             human_feedback_action_overrides=human_feedback_action_overrides,
+            deliver_overrides=deliver_overrides,
         )
         required_workers = _validate_config_files(
             report=report,
@@ -470,6 +472,7 @@ def _resolve_runtime_config_for_doctor(
     stage_extra_overrides: list[str] | None,
     human_feedback_overrides: list[str] | None,
     human_feedback_action_overrides: list[str] | None,
+    deliver_overrides: list[str] | None,
 ) -> FlowConfig | None:
     override_sets = (
         skill_overrides,
@@ -482,6 +485,7 @@ def _resolve_runtime_config_for_doctor(
         stage_extra_overrides,
         human_feedback_overrides,
         human_feedback_action_overrides,
+        deliver_overrides,
     )
     if not any(override_sets):
         return None
@@ -499,6 +503,7 @@ def _resolve_runtime_config_for_doctor(
             stage_extra_overrides=stage_extra_overrides,
             human_feedback_overrides=human_feedback_overrides,
             human_feedback_action_overrides=human_feedback_action_overrides,
+            deliver_overrides=deliver_overrides,
         )
     except Exception as exc:
         report.add_check(
