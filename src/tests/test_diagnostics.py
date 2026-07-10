@@ -738,3 +738,39 @@ def test_doctor_adds_no_gh_check_when_pr_disabled(config_dir: Path, monkeypatch)
     report = _run_doctor_with_blocks(config_dir, monkeypatch)
 
     assert not any(c.name == "cli.gh" for c in report.checks)
+
+
+def test_doctor_warns_deny_paths_with_serial_in_place(config_dir: Path, monkeypatch):
+    report = _run_doctor_with_blocks(
+        config_dir,
+        monkeypatch,
+        paths={"deny": ["*.env"]},
+    )
+
+    check = next((c for c in report.checks if c.name == "config.paths"), None)
+    assert check is not None
+    assert check.status == "warn"
+    assert "post-hoc" in check.message
+
+
+def test_doctor_passes_deny_paths_with_isolation_copy(config_dir: Path, monkeypatch):
+    worker_data = yaml.safe_load((config_dir / "worker.yaml").read_text())
+    stages = worker_data.setdefault("stages", {})
+    stages.setdefault("do_work", {})["isolation"] = "copy"
+    (config_dir / "worker.yaml").write_text(yaml.safe_dump(worker_data))
+
+    report = _run_doctor_with_blocks(
+        config_dir,
+        monkeypatch,
+        paths={"deny": ["*.env"]},
+    )
+
+    check = next((c for c in report.checks if c.name == "config.paths"), None)
+    assert check is not None
+    assert check.status == "pass"
+
+
+def test_doctor_adds_no_paths_check_when_deny_empty(config_dir: Path, monkeypatch):
+    report = _run_doctor_with_blocks(config_dir, monkeypatch)
+
+    assert not any(c.name == "config.paths" for c in report.checks)

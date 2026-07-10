@@ -117,6 +117,18 @@ DEFAULT_VERIFY: dict[str, Any] = {
     "timeout": 600,
 }
 
+# Deny-path safety config. Deliberately file-only: there is no CLI override,
+# because a per-run flag that can weaken a deny list undermines the control.
+DEFAULT_PATHS: dict[str, Any] = {
+    "deny": [],
+}
+
+ISOLATION_MODES = ("in_place", "copy")
+
+
+def _is_valid_isolation(value: Any) -> bool:
+    return value in ISOLATION_MODES
+
 
 DEFAULT_HUMAN_FEEDBACK = {
     "enabled": False,
@@ -258,6 +270,7 @@ STAGE_EXTRA_SCHEMAS: dict[str, dict[str, Any]] = {
             "on_ambiguous_success": _is_bool,
             "max_execution_replans": _is_int,
         },
+        "isolation": _is_valid_isolation,
         "retry": _retry_schema(),
         "fallback_worker": _is_string,
     },
@@ -534,6 +547,41 @@ def _validate_verify(raw: Any) -> dict[str, Any]:
         )
 
     return verify
+
+
+def _validate_paths(raw: Any) -> dict[str, Any]:
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        value_type = type(raw).__name__
+        raise ValueError(f"paths must be a mapping, got {value_type}")
+    unknown = sorted(set(raw) - set(DEFAULT_PATHS))
+    if unknown:
+        supported = ", ".join(sorted(DEFAULT_PATHS))
+        unknown_text = ", ".join(unknown)
+        raise ValueError(
+            f"paths contains unsupported keys: {unknown_text}. "
+            f"Supported keys: {supported}"
+        )
+
+    paths = {**DEFAULT_PATHS, **raw}
+
+    deny = paths["deny"]
+    if not isinstance(deny, list):
+        value_type = type(deny).__name__
+        raise ValueError(f"paths.deny must be a list, got {value_type}")
+    for pattern in deny:
+        if not isinstance(pattern, str) or not pattern.strip():
+            raise ValueError(
+                f"paths.deny entries must be non-empty strings, got {pattern!r}"
+            )
+        if pattern.startswith("/") or pattern.startswith("~"):
+            raise ValueError(
+                "paths.deny patterns must be relative globs (matched against "
+                f"repo-relative paths), got {pattern!r}"
+            )
+
+    return paths
 
 
 def _validate_action_allowlist(raw: Any) -> dict[str, list[str]]:
@@ -816,6 +864,7 @@ class FlowConfig:
         human_feedback: dict[str, Any] | None = None,
         deliver: dict[str, Any] | None = None,
         verify: dict[str, Any] | None = None,
+        paths: dict[str, Any] | None = None,
     ) -> None:
         self.skills = skills
         self.workers = workers
@@ -823,6 +872,7 @@ class FlowConfig:
         self.human_feedback = _validate_human_feedback(human_feedback)
         self.deliver = _validate_deliver(deliver)
         self.verify = _validate_verify(verify)
+        self.paths = _validate_paths(paths)
         self._stage_cache: dict[str, StageConfig] = {}
 
     def get_stage(self, stage: str) -> StageConfig:
@@ -929,6 +979,7 @@ def load_config(config_dir: Optional[Path] = None) -> FlowConfig:
     human_feedback = worker_raw.get("human_feedback", {"enabled": False})
     deliver = worker_raw.get("deliver", {})
     verify = worker_raw.get("verify", {})
+    paths = worker_raw.get("paths", {})
 
     return FlowConfig(
         skills=skills,
@@ -937,6 +988,7 @@ def load_config(config_dir: Optional[Path] = None) -> FlowConfig:
         human_feedback=human_feedback,
         deliver=deliver,
         verify=verify,
+        paths=paths,
     )
 
 

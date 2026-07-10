@@ -2399,3 +2399,72 @@ def test_verify_override_is_revalidated(sample_config_dir: Path):
             config_dir=sample_config_dir,
             verify_overrides=["mode=strict"],
         )
+
+
+# =============================================================================
+# paths: block + do_work.isolation (autonomy Gap 8b)
+# =============================================================================
+
+
+def test_paths_defaults_when_absent(sample_config_dir: Path):
+    cfg = load_config(sample_config_dir)
+
+    assert cfg.paths == {"deny": []}
+
+
+def test_paths_deny_loads_from_yaml(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["paths"] = {"deny": ["*.env", "secrets/*"]}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    cfg = load_config(sample_config_dir)
+
+    assert cfg.paths["deny"] == ["*.env", "secrets/*"]
+
+
+def test_paths_unknown_key_rejected(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["paths"] = {"allow": ["*"]}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ValueError, match="paths contains unsupported keys: allow"):
+        load_config(sample_config_dir)
+
+
+def test_paths_deny_non_list_rejected(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["paths"] = {"deny": "*.env"}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ValueError, match="paths.deny must be a list"):
+        load_config(sample_config_dir)
+
+
+def test_paths_deny_absolute_pattern_rejected(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["paths"] = {"deny": ["/etc/*"]}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ValueError, match="paths.deny patterns must be relative"):
+        load_config(sample_config_dir)
+
+
+def test_do_work_isolation_loads_and_overrides(sample_config_dir: Path):
+    cfg = load_runtime_config(
+        config_dir=sample_config_dir,
+        stage_extra_overrides=["do_work.isolation=copy"],
+    )
+
+    assert cfg.get_stage("do_work").extra["isolation"] == "copy"
+
+
+def test_do_work_isolation_invalid_value_rejected(sample_config_dir: Path):
+    with pytest.raises(ValueError):
+        load_runtime_config(
+            config_dir=sample_config_dir,
+            stage_extra_overrides=["do_work.isolation=sandbox"],
+        )

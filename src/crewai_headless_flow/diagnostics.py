@@ -428,6 +428,7 @@ def _validate_config_files(
         _check_conditional_human_feedback(report, cfg)
         _check_verify(report, cfg)
         _check_deliver_pr_tooling(report, cfg)
+        _check_deny_paths(report, cfg)
 
         if ollama_required:
             _check_ollama(report)
@@ -685,6 +686,41 @@ def _check_verify(report: DiagnosticReport, cfg: FlowConfig) -> None:
         f"Verification enabled (mode: {verify.get('mode')}, "
         f"{len(commands)} command(s))",
         {"mode": verify.get("mode"), "commands": len(commands)},
+    )
+
+
+def _check_deny_paths(report: DiagnosticReport, cfg: FlowConfig) -> None:
+    """Report deny-glob config; flag post-hoc-only serial enforcement."""
+
+    deny = cfg.paths.get("deny") or []
+    if not deny:
+        return
+
+    isolation = "in_place"
+    parallel_enabled = False
+    if "do_work" in cfg.skills:
+        do_work_extra = cfg.get_stage("do_work").extra
+        isolation = do_work_extra.get("isolation", "in_place")
+        parallel_enabled = bool(
+            (do_work_extra.get("parallel") or {}).get("enabled", False)
+        )
+
+    if isolation == "in_place" and not parallel_enabled:
+        report.add_check(
+            "config.paths",
+            "warn",
+            f"{len(deny)} deny glob(s) configured, but serial in-place "
+            "enforcement is post-hoc restore only (pre-existing untracked "
+            "files cannot be restored); consider do_work.isolation: copy",
+            {"deny": list(deny), "isolation": isolation},
+        )
+        return
+
+    report.add_check(
+        "config.paths",
+        "pass",
+        f"{len(deny)} deny glob(s) enforced at workspace mergeback",
+        {"deny": list(deny), "isolation": isolation},
     )
 
 

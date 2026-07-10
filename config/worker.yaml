@@ -52,6 +52,12 @@ stages:
     # Fixed safety declaration for Grok edit mode. The adapter already runs
     # edit mode non-interactively; unsupported values fail config validation.
     always_approve: true
+    # Optional `isolation` knob: where serial (single-task and direct) edits
+    # run. "in_place" (default when omitted) edits the target repo directly;
+    # "copy" runs each edit in a disposable workspace copy and merges only
+    # clean results back — a failed or deny-blocked edit leaves the target
+    # repo pristine. Parallel batches always use copies.
+    # Override: --override-stage-extra do_work.isolation=copy
     crew:
       # Optional richer multi-agent implementation. Disabled by default; when
       # combined with do_work.parallel.enabled, crew-backed tasks can still use
@@ -218,6 +224,21 @@ verify:
   commands: []
   mode: gate
   timeout: 600
+
+# =============================================================================
+# Deny paths (autonomy Phase 2 — Flow-owned write constraints)
+# =============================================================================
+# Relative globs matched against every changed file at the boundaries the
+# Flow owns: parallel/isolated mergeback (denied files never leave the
+# workspace copy; the task fails closed) and post-hoc snapshot diff for
+# in-place edits (denied files are restored: tracked -> git checkout --,
+# run-created -> deleted; pre-existing untracked files cannot be restored —
+# use do_work.isolation: copy for full containment). fnmatch semantics with
+# `*` crossing `/` — "*.env" also denies "sub/dir/x.env" (broad by design).
+# Deliberately file-only: no CLI override can weaken this list.
+# Example: deny: ["*.env", ".github/workflows/*", "secrets/*"]
+paths:
+  deny: []
 
 # Stage extras like `plan.crew.*`, `do_work.crew.*`, `do_work.parallel.*`, or
 # `review.crew.*` can be overridden per run via

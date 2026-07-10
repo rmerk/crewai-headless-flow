@@ -91,6 +91,7 @@ from .task_batches import (
     ready_execution_tasks,
     select_execution_batch,
 )
+from .paths_policy import match_denied, restore_denied_paths
 from .tools.coder_tool import HeadlessCoderTool
 from .verification import VerificationReport, VerifyRunner, run_verification
 from .workers import (
@@ -1778,6 +1779,7 @@ After you are done, summarize what changed and whether task verification now pas
         after = snapshot_workspace(Path(cwd))
         detected = diff_workspace_snapshots(before, after)
         changed_files = sorted(set(result.changed_files) | set(detected))
+        created_files = sorted(set(after) - set(before))
         self._record_task_execution(
             task=task,
             stage_cfg=stage_cfg,
@@ -1787,7 +1789,189 @@ After you are done, summarize what changed and whether task verification now pas
             crew_rounds=crew_rounds,
             parallel_batch_id=parallel_batch_id,
         )
-        return result, changed_files
+        return result, changed_files, created_files
+
+    def _deny_patterns(self) -> list[str]:
+        return list(self.config.paths.get("deny") or [])
+
+    def _denied_failure_result(
+        self, denied: dict[str, str], unrestorable: list[str]
+    ) -> CoderResult:
+        details = ", ".join(
+            f"{path} (matched {pattern!r})" for path, pattern in sorted(denied.items())
+        )
+        error = f"Denied paths touched: {details}."
+        if unrestorable:
+            error += " Could not restore: " + ", ".join(sorted(unrestorable)) + "."
+        return CoderResult(summary="", raw_output="", exit_code=1, error=error)
+
+    def _run_serial_task(
+        self,
+        *,
+        worker_tool: HeadlessCoderTool,
+        task: TaskItem,
+        stage_cfg,
+        plan_output: str,
+        human_instructions: str | None,
+    ) -> tuple[CoderResult, list[str]]:
+        """Run one structured task serially, enforcing paths.deny.
+
+        ``do_work.isolation: copy`` runs the task in a disposable workspace
+        copy and merges only clean results back — denied or unsafe paths
+        never reach the real repo, and a failed task leaves it pristine.
+        The default ``in_place`` keeps today's behavior with post-hoc
+        restore of denied paths.
+        """
+        deny = self._deny_patterns()
+        isolation = stage_cfg.extra.get("isolation", "in_place")
+
+        if isolation != "copy":
+            result, changed_files, created_files = self._run_task_with_change_tracking(
+                worker_tool=worker_tool,
+                task=task,
+                cwd=self.state.target_repo,
+                stage_cfg=stage_cfg,
+                plan_output=plan_output,
+                human_instructions=human_instructions,
+                parallel_batch_id=None,
+            )
+            denied = match_denied(changed_files, deny)
+            if not denied:
+                return result, changed_files
+            unrestorable = restore_denied_paths(
+                self.state.target_repo,
+                sorted(denied),
+                created=created_files,
+            )
+            remaining = [
+                path
+                for path in changed_files
+                if path not in denied or path in unrestorable
+            ]
+            return self._denied_failure_result(denied, unrestorable), remaining
+
+        workspace = create_workspace_copy(
+            Path(self.state.target_repo),
+            prefix=f"flow-serial-task-{task.id}-",
+        )
+        try:
+            result, changed_files, _created = self._run_task_with_change_tracking(
+                worker_tool=worker_tool,
+                task=task,
+                cwd=str(workspace),
+                stage_cfg=stage_cfg,
+                plan_output=plan_output,
+                human_instructions=human_instructions,
+                parallel_batch_id=None,
+            )
+            if not result.success:
+                # Nothing merged: the target repo is untouched.
+                return result, []
+            denied = match_denied(changed_files, deny)
+            if denied:
+                return self._denied_failure_result(denied, []), []
+            try:
+                apply_changed_files(
+                    src_root=workspace,
+                    dest_root=Path(self.state.target_repo),
+                    changed_files=changed_files,
+                )
+            except ValueError as exc:
+                return (
+                    CoderResult(
+                        summary="",
+                        raw_output="",
+                        exit_code=1,
+                        error=f"Mergeback rejected unsafe path: {exc}",
+                    ),
+                    [],
+                )
+            return result, changed_files
+        finally:
+            cleanup_workspace_copy(workspace)
+
+    def _run_unstructured_edit(
+        self,
+        worker_tool: HeadlessCoderTool,
+        stage_cfg,
+        prompt: str,
+    ) -> tuple[CoderResult, list[str]]:
+        """Run the direct (task-less) edit, enforcing paths.deny.
+
+        Snapshot-brackets the run so change detection no longer relies on
+        the worker's self-report (mirrors finalize). Honors
+        ``do_work.isolation: copy`` like the structured serial path.
+        """
+        deny = self._deny_patterns()
+        isolation = stage_cfg.extra.get("isolation", "in_place")
+        target = Path(self.state.target_repo)
+
+        if isolation == "copy":
+            workspace = create_workspace_copy(target, prefix="flow-direct-edit-")
+            try:
+                before = snapshot_workspace(workspace)
+                result = worker_tool.run(
+                    task=prompt,
+                    cwd=str(workspace),
+                    mode="edit",
+                    timeout=stage_cfg.timeout,
+                    model=stage_cfg.model,
+                )
+                after = snapshot_workspace(workspace)
+                changed = sorted(
+                    set(result.changed_files)
+                    | set(diff_workspace_snapshots(before, after))
+                )
+                if not result.success:
+                    # Nothing merged: the target repo is untouched.
+                    return result, []
+                denied = match_denied(changed, deny)
+                if denied:
+                    failure = self._denied_failure_result(denied, [])
+                    self.state.errors.append(failure.error or "")
+                    return failure, []
+                try:
+                    apply_changed_files(
+                        src_root=workspace,
+                        dest_root=target,
+                        changed_files=changed,
+                    )
+                except ValueError as exc:
+                    error = f"Mergeback rejected unsafe path: {exc}"
+                    self.state.errors.append(error)
+                    return (
+                        CoderResult(
+                            summary="", raw_output="", exit_code=1, error=error
+                        ),
+                        [],
+                    )
+                return result, changed
+            finally:
+                cleanup_workspace_copy(workspace)
+
+        before = snapshot_workspace(target)
+        result = worker_tool.run(
+            task=prompt,
+            cwd=self.state.target_repo,
+            mode="edit",
+            timeout=stage_cfg.timeout,
+            model=stage_cfg.model,
+        )
+        after = snapshot_workspace(target)
+        changed = sorted(
+            set(result.changed_files) | set(diff_workspace_snapshots(before, after))
+        )
+        denied = match_denied(changed, deny)
+        if not denied:
+            return result, changed
+        created = sorted(set(after) - set(before))
+        unrestorable = restore_denied_paths(target, sorted(denied), created=created)
+        failure = self._denied_failure_result(denied, unrestorable)
+        self.state.errors.append(failure.error or "")
+        remaining = [
+            path for path in changed if path not in denied or path in unrestorable
+        ]
+        return failure, remaining
 
     def _mark_task_complete(
         self,
@@ -2815,14 +2999,12 @@ Rules:
 
             if len(batch) == 1:
                 task = batch[0]
-                result, changed_files = self._run_task_with_change_tracking(
+                result, changed_files = self._run_serial_task(
                     worker_tool=worker_tool,
                     task=task,
-                    cwd=self.state.target_repo,
                     stage_cfg=stage_cfg,
                     plan_output=plan_output,
                     human_instructions=human_instructions,
-                    parallel_batch_id=None,
                 )
                 if result.success:
                     self._mark_task_complete(
@@ -2904,7 +3086,7 @@ Rules:
                         task = future_map[future]
                         workspace = workspaces[task.id]
                         try:
-                            result, changed_files = future.result()
+                            result, changed_files, _created = future.result()
                         except Exception as exc:
                             outcomes.append(
                                 ParallelTaskOutcome(
@@ -2955,6 +3137,20 @@ Rules:
                                 outcome,
                                 outcome.error or "Task failed in parallel batch.",
                             )
+                        )
+                        continue
+
+                    denied = match_denied(outcome.changed_files, self._deny_patterns())
+                    if denied:
+                        # Fail closed: merging an allowed subset would mark
+                        # the task complete while silently dropping changes.
+                        # Nothing leaves the isolated copy.
+                        details = ", ".join(
+                            f"{path} (matched {pattern!r})"
+                            for path, pattern in sorted(denied.items())
+                        )
+                        failed_outcomes.append(
+                            (outcome, f"Denied paths touched: {details}.")
                         )
                         continue
 
@@ -3183,19 +3379,15 @@ Current revision count: {self.state.revisions}
 Execute the work. After you are done, summarize what changed and whether tests now pass.
 """
 
-        result = worker_tool.run(
-            task=prompt,
-            cwd=self.state.target_repo,
-            mode="edit",
-            timeout=stage_cfg.timeout,
-            model=stage_cfg.model,
+        result, changed_files = self._run_unstructured_edit(
+            worker_tool, stage_cfg, prompt
         )
 
-        if result.changed_files:
-            self.state.changed_files.extend(result.changed_files)
+        if changed_files:
+            self.state.changed_files.extend(changed_files)
 
         self.state.last_stage = "do_work"
-        return result.summary or result.raw_output
+        return result.summary or result.raw_output or result.error or ""
 
     # ------------------------------------------------------------------
     # Review router - uses configured worker in INSPECT (read-only) mode
@@ -3838,6 +4030,17 @@ Recent flow history:
             | set(result.changed_files)
         )
 
+        denied = match_denied(finalize_changed, self._deny_patterns())
+        if denied:
+            created = sorted(set(after_finalize) - set(before_finalize))
+            unrestorable = restore_denied_paths(
+                self.state.target_repo, sorted(denied), created=created
+            )
+            failure = self._denied_failure_result(denied, unrestorable)
+            self.state.errors.append(f"Finalize: {failure.error}")
+            # Denied paths never reach the delivery commit, restored or not.
+            finalize_changed = [path for path in finalize_changed if path not in denied]
+
         self.state.final_artifact = result.summary or result.raw_output
         self.state.last_stage = "finalize"
         self._maybe_deliver(finalize_changed)
@@ -3881,6 +4084,14 @@ Recent flow history:
         if not deliver_cfg.get("enabled", False):
             return
         staged = list(dict.fromkeys([*self.state.changed_files, *extra_changed]))
+        # Belt-and-braces: denied paths (e.g. unrestorable ones a failed task
+        # still tracked) must never be laundered into the delivery commit.
+        denied = match_denied(staged, self._deny_patterns())
+        if denied:
+            self.state.errors.append(
+                "Delivery excluded denied paths: " + ", ".join(sorted(denied))
+            )
+            staged = [path for path in staged if path not in denied]
         verification_ok = self._delivery_verification_ok()
         report = deliver(
             deliver_cfg,
