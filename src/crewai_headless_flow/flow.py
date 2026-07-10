@@ -2766,11 +2766,17 @@ Rules:
                         )
                         continue
 
-                    apply_changed_files(
-                        src_root=workspace,
-                        dest_root=target_repo,
-                        changed_files=outcome.changed_files,
-                    )
+                    try:
+                        apply_changed_files(
+                            src_root=workspace,
+                            dest_root=target_repo,
+                            changed_files=outcome.changed_files,
+                        )
+                    except ValueError as exc:
+                        failed_outcomes.append(
+                            (outcome, f"Mergeback rejected unsafe path: {exc}")
+                        )
+                        continue
                     self._mark_task_complete(
                         outcome.task,
                         summary=outcome.summary,

@@ -67,6 +67,11 @@ def apply_changed_files(
     dest_root: Path,
     changed_files: list[str],
 ) -> None:
+    # Validate the whole list before touching disk so a poisoned entry
+    # (worker-reported paths are untrusted) cannot leave a partial apply.
+    for rel_path in changed_files:
+        _reject_unsafe_rel_path(rel_path, dest_root)
+
     for rel_path in changed_files:
         src = src_root / rel_path
         dest = dest_root / rel_path
@@ -78,6 +83,19 @@ def apply_changed_files(
 
         if dest.exists():
             dest.unlink()
+
+
+def _reject_unsafe_rel_path(rel_path: str, dest_root: Path) -> None:
+    candidate = Path(rel_path)
+    if candidate.is_absolute() or ".." in candidate.parts:
+        raise ValueError(
+            f"Refusing to apply changed file outside workspace: {rel_path!r}"
+        )
+    resolved = (dest_root / candidate).resolve(strict=False)
+    if not resolved.is_relative_to(dest_root.resolve()):
+        raise ValueError(
+            f"Refusing to apply changed file outside workspace: {rel_path!r}"
+        )
 
 
 def _list_relevant_files(root: Path) -> list[str]:
