@@ -33,10 +33,13 @@ Channels:
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable, Mapping, Optional, Protocol
+
+logger = logging.getLogger(__name__)
 
 PENDING_APPROVAL_FILENAME = "pending_approval.json"
 ANSWERED_APPROVAL_FILENAME = "answered_approval.json"
@@ -89,7 +92,7 @@ class FileEscalationHandler:
 
     def ask(self, request: EscalationRequest) -> Optional[str]:
         if self.run_dir is None:
-            print(
+            logger.warning(
                 "[Escalation] file channel configured but no run directory is "
                 "available (--runs-dir disabled?); parking without an "
                 "approval file."
@@ -108,7 +111,9 @@ class FileEscalationHandler:
             f"{self.run_dir / 'state.json'}"
         )
         pending.write_text(json.dumps(payload, indent=2, sort_keys=True))
-        print(f"[Escalation] Approval request written to {pending}; parking run.")
+        logger.warning(
+            f"[Escalation] Approval request written to {pending}; parking run."
+        )
         return None
 
     def _consume_answer(self, pending: Path) -> Optional[str]:
@@ -122,7 +127,7 @@ class FileEscalationHandler:
         if not isinstance(answer, str) or not answer.strip():
             return None
         pending.replace(pending.parent / ANSWERED_APPROVAL_FILENAME)
-        print(f"[Escalation] Consumed operator answer from {pending.name}.")
+        logger.info(f"[Escalation] Consumed operator answer from {pending.name}.")
         return answer.strip()
 
 
@@ -156,17 +161,17 @@ class CommandEscalationHandler:
                 timeout=self.timeout_seconds,
             )
         except subprocess.TimeoutExpired:
-            print(
+            logger.warning(
                 f"[Escalation] Command timed out after {self.timeout_seconds}s; "
                 f"on_timeout={self.on_timeout}."
             )
             return "y" if self.on_timeout == "proceed" else None
         except Exception as exc:
-            print(f"[Escalation] Command failed to run: {exc}; parking run.")
+            logger.warning(f"[Escalation] Command failed to run: {exc}; parking run.")
             return None
 
         if proc.returncode != 0:
-            print(
+            logger.warning(
                 f"[Escalation] Command exited {proc.returncode}; parking run. "
                 f"stderr: {(proc.stderr or '')[:500]}"
             )

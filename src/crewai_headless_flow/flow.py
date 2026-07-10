@@ -12,6 +12,7 @@ Topology (as specified):
 from __future__ import annotations
 
 import json
+import logging
 import re
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -107,6 +108,9 @@ from .workspace_changes import (
     diff_workspace_snapshots,
     snapshot_workspace,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 WORKER_ADAPTERS: dict[str, type[HeadlessCoder]] = {
@@ -920,7 +924,7 @@ Use `task_hints` when you can map an issue to planned tasks or likely files. Use
             return None
 
         self.state.last_stage = "review"
-        print(
+        logger.info(
             f"[Flow] Running {len(verify_cfg['commands'])} verification "
             f"command(s) in {self.state.target_repo}..."
         )
@@ -932,7 +936,8 @@ Use `task_hints` when you can map an issue to planned tasks or likely files. Use
         report.revision = self.state.revisions
         self.state.verification_runs.append(report)
         outcome = "passed" if report.passed else "FAILED"
-        print(f"[Flow] Verification {outcome}: {report.message}")
+        log = logger.info if report.passed else logger.warning
+        log(f"[Flow] Verification {outcome}: {report.message}")
         self._log_event(
             "verification",
             passed=report.passed,
@@ -1110,7 +1115,7 @@ Use `task_hints` when you can map an issue to planned tasks or likely files. Use
         )
         if not after_review_decision.proceed:
             if after_review_decision.action == "force-revise":
-                print("[Flow] Human forced review revise after automated review.")
+                logger.info("[Flow] Human forced review revise after automated review.")
                 self.state.last_stage = "review"
                 self.state.review_status = "revise"
                 if automated_status == "revise":
@@ -1136,7 +1141,7 @@ Use `task_hints` when you can map an issue to planned tasks or likely files. Use
                 )
                 return "revise", None
             if after_review_decision.action == "replan":
-                print("[Flow] Human requested replanning after automated review.")
+                logger.info("[Flow] Human requested replanning after automated review.")
                 reason = self._set_pending_revision_replan(
                     after_review_decision.instructions
                 )
@@ -1158,7 +1163,7 @@ Use `task_hints` when you can map an issue to planned tasks or likely files. Use
                 )
                 return "revise", None
             if after_review_decision.action == "force-pass":
-                print("[Flow] Human forced review pass after automated review.")
+                logger.info("[Flow] Human forced review pass after automated review.")
                 self.state.last_stage = "review"
                 self.state.review_status = "pass"
                 self.state.issues = []
@@ -1171,7 +1176,7 @@ Use `task_hints` when you can map an issue to planned tasks or likely files. Use
                 )
                 return "pass", None
             if after_review_decision.action == "target-tasks":
-                print("[Flow] Human selected targeted revision tasks.")
+                logger.info("[Flow] Human selected targeted revision tasks.")
                 selected_ids = after_review_decision.task_ids or []
                 reason = (
                     after_review_decision.instructions
@@ -1203,7 +1208,7 @@ Use `task_hints` when you can map an issue to planned tasks or likely files. Use
                 )
                 return "revise", None
             if after_review_decision.action == "rerun-review":
-                print("[Flow] Human requested automated review rerun.")
+                logger.info("[Flow] Human requested automated review rerun.")
                 review_rerun_guidance = (
                     after_review_decision.instructions
                     or "Human requested automated review rerun."
@@ -1217,7 +1222,7 @@ Use `task_hints` when you can map an issue to planned tasks or likely files. Use
                     ],
                 )
                 return "rerun-review", review_rerun_guidance
-            print("[Flow] Human aborted after review decision.")
+            logger.info("[Flow] Human aborted after review decision.")
             self._mark_human_abort(
                 "review",
                 stage_input=work_summary,
@@ -1303,7 +1308,7 @@ Use `task_hints` when you can map an issue to planned tasks or likely files. Use
                 review_rerun_guidance=review_rerun_guidance,
             )
             automated_status = decision.status
-            print(
+            logger.info(
                 f"[Flow] Review decision: {automated_status} | Issues: {len(decision.issues)}"
             )
             after_review_message = self._after_review_message(decision)
@@ -1425,9 +1430,9 @@ Produce a single structured plan with:
         self.state.last_stage = "plan"
         self._refresh_debug_report()
 
-        print(
-            "\n[Flow] Planning complete.",
-            f"Spec length: {len(plan.spec)} | Tasks: {len(plan.tasks)}",
+        logger.info(
+            f"\n[Flow] Planning complete. "
+            f"Spec length: {len(plan.spec)} | Tasks: {len(plan.tasks)}"
         )
         return output
 
@@ -1445,7 +1450,7 @@ Produce a single structured plan with:
             human_gate_message,
         )
         if not decision.proceed:
-            print("[Flow] Human aborted before plan.")
+            logger.info("[Flow] Human aborted before plan.")
             self._mark_human_abort("plan", message=human_gate_message)
             return "aborted-by-human"
         return self._execute_plan_stage(human_instructions=decision.instructions)
@@ -1568,7 +1573,7 @@ Produce a single structured plan with:
             )
             self._run_store.save_debug_report(self.state.debug_report or "")
         except OSError as exc:
-            print(f"[RunStore] WARNING: checkpoint write failed: {exc}")
+            logger.warning(f"[RunStore] WARNING: checkpoint write failed: {exc}")
 
     def _log_event(self, kind: str, **fields: Any) -> None:
         """Append one structured event to runs/<run_id>/events.jsonl.
@@ -1589,7 +1594,7 @@ Produce a single structured plan with:
         try:
             self._run_store.append_event(json.dumps(event, sort_keys=True))
         except OSError as exc:
-            print(f"[RunStore] WARNING: event write failed: {exc}")
+            logger.warning(f"[RunStore] WARNING: event write failed: {exc}")
 
     def _build_task_execution_prompt(
         self,
@@ -3051,7 +3056,7 @@ Rules:
     @listen("plan")
     def do_work(self, plan_output: str) -> str:
         if self._is_terminal_status():
-            print(
+            logger.info(
                 f"[Flow] Skipping do_work because flow is terminal: {self.state.status}"
             )
             return self._terminal_result()
@@ -3070,7 +3075,9 @@ Rules:
             if decision.proceed:
                 break
             if decision.action == "skip-to-review":
-                print("[Flow] Human skipped do_work and routed directly to review.")
+                logger.info(
+                    "[Flow] Human skipped do_work and routed directly to review."
+                )
                 self.state.last_stage = "do_work"
                 self._refresh_debug_report()
                 return (
@@ -3078,7 +3085,7 @@ Rules:
                     "No automated edits were performed in this stage."
                 )
             if decision.action == "replan":
-                print("[Flow] Human requested replanning before do_work.")
+                logger.info("[Flow] Human requested replanning before do_work.")
                 self._record_history(
                     kind="human_replanning",
                     summary="Human requested a fresh plan before do_work.",
@@ -3130,9 +3137,9 @@ Rules:
                         reason,
                     ],
                 )
-                print("[Flow] Human narrowed do_work to targeted tasks.")
+                logger.info("[Flow] Human narrowed do_work to targeted tasks.")
                 break
-            print("[Flow] Human aborted before do_work.")
+            logger.info("[Flow] Human aborted before do_work.")
             self._mark_human_abort(
                 "do_work",
                 stage_input=plan_output,
@@ -3140,7 +3147,9 @@ Rules:
             )
             return "aborted-by-human"
 
-        print(f"\n[Flow] do_work using {stage_cfg.worker} (skill: {stage_cfg.skill})")
+        logger.info(
+            f"\n[Flow] do_work using {stage_cfg.worker} (skill: {stage_cfg.skill})"
+        )
 
         if self.state.tasks:
             self.state.last_stage = "do_work"
@@ -3194,7 +3203,7 @@ Execute the work. After you are done, summarize what changed and whether tests n
     @router("do_work")
     def review(self, work_summary: str) -> Literal["pass", "revise", "aborted"]:
         if self._is_terminal_status():
-            print(
+            logger.info(
                 f"[Flow] Skipping review because flow is terminal: {self.state.status}"
             )
             return "aborted"
@@ -3203,7 +3212,7 @@ Execute the work. After you are done, summarize what changed and whether tests n
         self.state.latest_work_summary = work_summary
         stage_cfg = self.config.get_stage("review")
 
-        print(
+        logger.info(
             f"\n[Flow] review using {stage_cfg.worker} in INSPECT mode (skill: {stage_cfg.skill})"
         )
         before_review_message = (
@@ -3216,7 +3225,9 @@ Execute the work. After you are done, summarize what changed and whether tests n
         )
         if not human_decision.proceed:
             if human_decision.action == "force-revise":
-                print("[Flow] Human forced review revise without inspect-mode worker.")
+                logger.info(
+                    "[Flow] Human forced review revise without inspect-mode worker."
+                )
                 reason = (
                     human_decision.instructions
                     or "Human requested revision before inspect-mode review."
@@ -3233,7 +3244,9 @@ Execute the work. After you are done, summarize what changed and whether tests n
                 )
                 return "revise"
             if human_decision.action == "replan":
-                print("[Flow] Human requested replanning without inspect-mode review.")
+                logger.info(
+                    "[Flow] Human requested replanning without inspect-mode review."
+                )
                 reason = self._set_pending_revision_replan(human_decision.instructions)
                 self.state.last_stage = "review"
                 self.state.review_status = "revise"
@@ -3247,7 +3260,9 @@ Execute the work. After you are done, summarize what changed and whether tests n
                 )
                 return "revise"
             if human_decision.action == "force-pass":
-                print("[Flow] Human forced review pass without inspect-mode worker.")
+                logger.info(
+                    "[Flow] Human forced review pass without inspect-mode worker."
+                )
                 self.state.last_stage = "review"
                 self.state.review_status = "pass"
                 self.state.issues = []
@@ -3260,7 +3275,7 @@ Execute the work. After you are done, summarize what changed and whether tests n
                 )
                 return "pass"
             if human_decision.action == "target-tasks":
-                print(
+                logger.info(
                     "[Flow] Human selected targeted revision tasks without inspect-mode worker."
                 )
                 selected_ids = human_decision.task_ids or []
@@ -3287,7 +3302,7 @@ Execute the work. After you are done, summarize what changed and whether tests n
                     details=["Skipped inspect-mode review worker.", reason],
                 )
                 return "revise"
-            print("[Flow] Human aborted before review.")
+            logger.info("[Flow] Human aborted before review.")
             self._mark_human_abort(
                 "review",
                 stage_input=work_summary,
@@ -3319,7 +3334,7 @@ Execute the work. After you are done, summarize what changed and whether tests n
                         verification
                     ),
                 )
-            print(
+            logger.info(
                 f"[Flow] Review decision: {decision.status} | Issues: {len(decision.issues)}"
             )
             result, review_rerun_guidance = self._handle_after_review_checkpoint(
@@ -3338,20 +3353,20 @@ Execute the work. After you are done, summarize what changed and whether tests n
     @listen("revise")
     def revise(self, decision: str) -> str:
         if self._is_terminal_status():
-            print(
+            logger.info(
                 f"[Flow] Skipping revise because flow is terminal: {self.state.status}"
             )
             return self._terminal_result()
         self._mark_running()
         self._log_event("stage_start", stage="revise")
         self.state.increment_revision()
-        print(
+        logger.info(
             f"\n[Flow] Revising (revision {self.state.revisions}/{self.state.max_revisions})"
         )
 
         if self.state.revisions >= self.state.max_revisions:
             message = "Max revisions reached before review could pass."
-            print("[Flow] Max revisions reached. Marking flow failed.")
+            logger.warning("[Flow] Max revisions reached. Marking flow failed.")
             self.state.last_stage = "revise"
             self.state.status = "failed"
             self.state.review_status = "revise"
@@ -3628,7 +3643,7 @@ Execute the work. After you are done, summarize what changed and whether tests n
     @listen("pass")
     def finalize(self, _decision: str) -> str:
         if self._is_terminal_status():
-            print(
+            logger.info(
                 f"[Flow] Skipping finalize because flow is terminal: {self.state.status}"
             )
             return self._terminal_result()
@@ -3643,7 +3658,7 @@ Execute the work. After you are done, summarize what changed and whether tests n
         )
         if not decision.proceed:
             if decision.action == "skip-finalize":
-                print(
+                logger.info(
                     "[Flow] Human skipped finalize. Marking flow complete without final docs."
                 )
                 self.state.final_artifact = (
@@ -3656,7 +3671,7 @@ Execute the work. After you are done, summarize what changed and whether tests n
                 self._refresh_debug_report()
                 return self.state.final_artifact
             if decision.action == "force-revise":
-                print("[Flow] Human reopened work before finalize.")
+                logger.info("[Flow] Human reopened work before finalize.")
                 reason = (
                     decision.instructions or "Human requested revision before finalize."
                 )
@@ -3675,7 +3690,7 @@ Execute the work. After you are done, summarize what changed and whether tests n
                 )
                 return "revise"
             if decision.action == "replan":
-                print("[Flow] Human requested replanning before finalize.")
+                logger.info("[Flow] Human requested replanning before finalize.")
                 reason = self._set_pending_revision_replan(decision.instructions)
                 self.state.last_stage = "finalize"
                 self.state.review_status = "revise"
@@ -3689,7 +3704,9 @@ Execute the work. After you are done, summarize what changed and whether tests n
                 )
                 return "revise"
             if decision.action == "rerun-review":
-                print("[Flow] Human requested automated review rerun before finalize.")
+                logger.info(
+                    "[Flow] Human requested automated review rerun before finalize."
+                )
                 work_summary = self.state.latest_work_summary
                 if not work_summary:
                     reason = (
@@ -3732,7 +3749,7 @@ Execute the work. After you are done, summarize what changed and whether tests n
                     human_guidance=human_guidance,
                     review_rerun_guidance=review_rerun_guidance,
                 )
-                print(
+                logger.info(
                     "[Flow] Review decision: "
                     f"{review_decision.status} | Issues: {len(review_decision.issues)}"
                 )
@@ -3741,7 +3758,9 @@ Execute the work. After you are done, summarize what changed and whether tests n
                 direct_flow = cast(Any, self)
                 return direct_flow.finalize("pass")
             if decision.action == "target-tasks":
-                print("[Flow] Human selected targeted revision tasks before finalize.")
+                logger.info(
+                    "[Flow] Human selected targeted revision tasks before finalize."
+                )
                 selected_ids = decision.task_ids or []
                 reason = (
                     decision.instructions
@@ -3767,7 +3786,7 @@ Execute the work. After you are done, summarize what changed and whether tests n
                     details=[reason, "Skipped finalize stage."],
                 )
                 return "revise"
-            print("[Flow] Human aborted before finalize.")
+            logger.info("[Flow] Human aborted before finalize.")
             self._mark_human_abort(
                 "finalize",
                 stage_input=_decision,
@@ -3778,7 +3797,9 @@ Execute the work. After you are done, summarize what changed and whether tests n
         worker_tool = self._get_worker("finalize")
         stage_cfg = self.config.get_stage("finalize")
 
-        print(f"\n[Flow] finalize using {stage_cfg.worker} (skill: {stage_cfg.skill})")
+        logger.info(
+            f"\n[Flow] finalize using {stage_cfg.worker} (skill: {stage_cfg.skill})"
+        )
 
         human_guidance = (
             f"\nHuman approval instructions:\n- {decision.instructions}\n"
@@ -3824,7 +3845,7 @@ Recent flow history:
         self._log_event("run_completed")
         self._refresh_debug_report()
 
-        print("[Flow] Flow completed successfully.")
+        logger.info("[Flow] Flow completed successfully.")
         return self.state.final_artifact or "Flow completed"
 
     def _delivery_verification_ok(self) -> bool:
@@ -3890,12 +3911,12 @@ Recent flow history:
 
     @listen("aborted")
     def aborted(self, _decision: str) -> str:
-        print(f"[Flow] Flow stopped at terminal status: {self.state.status}")
+        logger.info(f"[Flow] Flow stopped at terminal status: {self.state.status}")
         return self._terminal_result()
 
     @listen("failed")
     def failed(self, _decision: str) -> str:
-        print(f"[Flow] Flow stopped at terminal status: {self.state.status}")
+        logger.info(f"[Flow] Flow stopped at terminal status: {self.state.status}")
         return self._terminal_result()
 
 

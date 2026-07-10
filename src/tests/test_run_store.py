@@ -6,6 +6,7 @@ per-run artifacts (runs/<run_id>/state.json + debug_report.md).
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
@@ -128,7 +129,12 @@ def test_flow_checkpoints_state_at_every_refresh(tmp_path: Path):
     assert store.debug_report_path.exists()
 
 
-def test_checkpoint_write_failure_never_kills_the_run(tmp_path: Path, capsys):
+def test_checkpoint_write_failure_never_kills_the_run(
+    tmp_path: Path, caplog, monkeypatch: pytest.MonkeyPatch
+):
+    # A prior CLI test may have configured the package logger with
+    # propagate=False; caplog listens on the root logger.
+    monkeypatch.setattr(logging.getLogger("crewai_headless_flow"), "propagate", True)
     store = RunStore.allocate(tmp_path / "runs", "doomed writes", now=FIXED_NOW)
     cfg = FlowConfig(
         skills={"do_work": "incremental-implementation"},
@@ -144,9 +150,10 @@ def test_checkpoint_write_failure_never_kills_the_run(tmp_path: Path, capsys):
 
     store.save_state = boom  # type: ignore[method-assign]
 
-    flow._refresh_debug_report()
+    with caplog.at_level("WARNING", logger="crewai_headless_flow.flow"):
+        flow._refresh_debug_report()
 
-    assert "checkpoint write failed" in capsys.readouterr().out
+    assert "checkpoint write failed" in caplog.text
 
 
 def test_run_headless_flow_stamps_run_identity_before_kickoff(
@@ -308,7 +315,10 @@ def test_flow_without_run_store_emits_no_events_and_never_fails(tmp_path: Path):
     assert not list(tmp_path.glob("**/events.jsonl"))
 
 
-def test_event_write_failure_never_kills_the_run(tmp_path: Path, capsys):
+def test_event_write_failure_never_kills_the_run(
+    tmp_path: Path, caplog, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(logging.getLogger("crewai_headless_flow"), "propagate", True)
     store = RunStore.allocate(tmp_path / "runs", "doomed events", now=FIXED_NOW)
     cfg = FlowConfig(
         skills={"do_work": "incremental-implementation"},
@@ -323,9 +333,10 @@ def test_event_write_failure_never_kills_the_run(tmp_path: Path, capsys):
 
     store.append_event = boom  # type: ignore[method-assign]
 
-    flow._log_event("stage_start", stage="plan")
+    with caplog.at_level("WARNING", logger="crewai_headless_flow.flow"):
+        flow._log_event("stage_start", stage="plan")
 
-    assert "event write failed" in capsys.readouterr().out
+    assert "event write failed" in caplog.text
 
 
 def test_resumed_flow_appends_to_same_events_file(tmp_path: Path):

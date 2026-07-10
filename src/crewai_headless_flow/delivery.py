@@ -28,11 +28,14 @@ this module is the only git writer in the platform.
 
 from __future__ import annotations
 
+import logging
 import subprocess
 from pathlib import Path
 from typing import Any, Callable, Literal, Mapping
 
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
 
 GitRunner = Callable[[list[str], Path], "subprocess.CompletedProcess[str]"]
 
@@ -140,7 +143,7 @@ def _deliver_enabled(
     gh: GitRunner,
 ) -> DeliveryReport:
     def fail(message: str) -> DeliveryReport:
-        print(f"[Delivery] {message}")
+        logger.warning(f"[Delivery] {message}")
         return DeliveryReport(status="failed", message=message)
 
     probe = git(["rev-parse", "--is-inside-work-tree"], target)
@@ -154,7 +157,7 @@ def _deliver_enabled(
 
     safe_files, skipped_files = _partition_safe_paths(changed_files, target)
     for skipped in skipped_files:
-        print(f"[Delivery] Skipping unsafe changed-file path: {skipped!r}")
+        logger.warning(f"[Delivery] Skipping unsafe changed-file path: {skipped!r}")
     if not safe_files:
         return DeliveryReport(
             status="nothing_to_commit",
@@ -221,7 +224,7 @@ def _deliver_enabled(
     sha = git(["rev-parse", "HEAD"], target)
     commit_sha = sha.stdout.strip() if sha.returncode == 0 else None
 
-    print(
+    logger.info(
         f"[Delivery] Committed {len(staged_files)} file(s) on {branch}"
         f"{f' @ {commit_sha[:12]}' if commit_sha else ''}{identity_note}"
     )
@@ -284,7 +287,7 @@ def _ship(
             "push/pr blocked: the latest objective verification did not pass "
             "(see verify: config)."
         )
-        print(f"[Delivery] {note}")
+        logger.warning(f"[Delivery] {note}")
         return (
             "blocked_unverified",
             "blocked_unverified" if pr_requested else "off",
@@ -297,13 +300,13 @@ def _ship(
         pushed = git(["push", "-u", remote, branch], target)
     except Exception as exc:
         note = f"git push failed: {type(exc).__name__}: {exc}"
-        print(f"[Delivery] {note}")
+        logger.warning(f"[Delivery] {note}")
         return "failed", "skipped_no_push" if pr_requested else "off", None, [note]
     if pushed.returncode != 0:
         note = f"git push failed: {(pushed.stderr or '').strip()[:300]}"
-        print(f"[Delivery] {note}")
+        logger.warning(f"[Delivery] {note}")
         return "failed", "skipped_no_push" if pr_requested else "off", None, [note]
-    print(f"[Delivery] Pushed {branch} to {remote}.")
+    logger.info(f"[Delivery] Pushed {branch} to {remote}.")
 
     if not pr_requested:
         return "pushed", "off", None, []
@@ -319,15 +322,15 @@ def _ship(
         )
     except Exception as exc:
         note = f"gh pr create failed: {type(exc).__name__}: {exc}"
-        print(f"[Delivery] {note}")
+        logger.warning(f"[Delivery] {note}")
         return "pushed", "failed", None, [note]
     if created.returncode != 0:
         note = f"gh pr create failed: {(created.stderr or '').strip()[:300]}"
-        print(f"[Delivery] {note}")
+        logger.warning(f"[Delivery] {note}")
         return "pushed", "failed", None, [note]
 
     pr_url = _extract_pr_url(created.stdout or "")
-    print(f"[Delivery] Opened PR: {pr_url or '(url not reported)'}")
+    logger.info(f"[Delivery] Opened PR: {pr_url or '(url not reported)'}")
     return "pushed", "created", pr_url, []
 
 

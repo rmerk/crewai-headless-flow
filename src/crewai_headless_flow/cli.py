@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from pathlib import Path
 from typing import Sequence
@@ -31,7 +32,27 @@ def resume_headless_flow(**kwargs):
     return backend(**kwargs)
 
 
+def _configure_logging() -> None:
+    """Route the package's diagnostic narration to stdout for CLI runs.
+
+    Deliberately not ``logging.basicConfig``: crewai/litellm configure the
+    root logger themselves and would fight it. Only the package logger is
+    configured (plain messages, INFO, no propagation), and only once —
+    library users who configure ``crewai_headless_flow`` themselves are
+    left alone.
+    """
+    package_logger = logging.getLogger("crewai_headless_flow")
+    if package_logger.handlers:
+        return
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    package_logger.addHandler(handler)
+    package_logger.setLevel(logging.INFO)
+    package_logger.propagate = False
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    _configure_logging()
     args = list(sys.argv[1:] if argv is None else argv)
     parser = _build_help_parser()
 
