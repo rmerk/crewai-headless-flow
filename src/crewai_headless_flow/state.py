@@ -1,7 +1,13 @@
 """
 Pydantic state for the main CrewAI Headless Flow.
 
-This state is persisted with @persist (SQLite by default in CrewAI Flows).
+Persistence: when a run directory is configured (``--runs-dir``), the Flow
+checkpoints this state as JSON into ``runs/<run_id>/state.json`` at every
+state mutation via ``run_store.RunStore`` — CrewAI's ``@persist`` decorator is
+deliberately NOT used, because the bespoke resume path replays stage methods
+against a rehydrated state and a second persistence source of truth would
+compete with it. State also round-trips through the CLI's optional
+``--state-file`` / ``--resume-state-file`` flags.
 """
 
 from __future__ import annotations
@@ -180,6 +186,11 @@ class FlowState(BaseModel):
     """
     Structured state for the entire reusable headless coding flow.
     """
+
+    # Run identity (populated when a run directory is configured)
+    run_id: str | None = None
+    run_dir: str | None = None
+    created_at: str | None = None
 
     # Inputs
     request: str = ""

@@ -106,9 +106,11 @@ def _handle_run(args: argparse.Namespace) -> int:
         )
         return 1
 
+    runs_dir = _resolve_runs_dir(getattr(args, "runs_dir", None))
+
     if state is not None:
         state.target_repo = str(target_repo)
-        resumed = resume_headless_flow(state=state, config=config)
+        resumed = resume_headless_flow(state=state, config=config, runs_dir=runs_dir)
         data = _state_to_dict(resumed)
         result_state = resumed
     else:
@@ -117,6 +119,7 @@ def _handle_run(args: argparse.Namespace) -> int:
             target_repo=str(target_repo),
             max_revisions=max_revisions or 2,
             config=config,
+            runs_dir=runs_dir,
         )
 
     data = _state_to_dict(result_state)
@@ -177,6 +180,12 @@ def _state_to_dict(state) -> dict:
 def _load_state_file(path: str) -> FlowState:
     data = json.loads(Path(path).read_text())
     return FlowState.model_validate(data)
+
+
+def _resolve_runs_dir(raw: str | None) -> Path | None:
+    if raw is None or raw.strip().lower() in {"", "none"}:
+        return None
+    return normalize_path(raw)
 
 
 def _resolve_run_config_dir(
@@ -452,6 +461,15 @@ def _add_run_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--debug-report-file")
     parser.add_argument("--state-file")
     parser.add_argument("--resume-state-file")
+    parser.add_argument(
+        "--runs-dir",
+        default="./runs",
+        help=(
+            "Base directory for per-run artifact directories "
+            "(runs/<run_id>/state.json + debug_report.md, checkpointed at "
+            "every state mutation). Pass 'none' to disable."
+        ),
+    )
     _add_runtime_override_args(parser)
 
 

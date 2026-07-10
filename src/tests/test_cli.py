@@ -76,8 +76,75 @@ def test_legacy_run_invocation_routes_to_flow_backend(
             "target_repo": str(tmp_path.resolve()),
             "max_revisions": 2,
             "config": calls[0]["config"],
+            "runs_dir": Path("./runs").resolve(),
         }
     ]
+
+
+def test_run_forwards_runs_dir_to_backend(
+    tmp_path: Path, config_dir: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from crewai_headless_flow import cli
+
+    calls: list[dict] = []
+
+    def fake_run_headless_flow(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            status="completed", model_dump=lambda: {"status": "completed"}
+        )
+
+    monkeypatch.setattr(cli, "run_headless_flow", fake_run_headless_flow)
+
+    rc = cli.main(
+        [
+            "run",
+            "--request",
+            "add tests",
+            "--target-repo",
+            str(tmp_path),
+            "--config-dir",
+            str(config_dir),
+            "--runs-dir",
+            str(tmp_path / "my-runs"),
+        ]
+    )
+
+    assert rc == 0
+    assert calls[0]["runs_dir"] == (tmp_path / "my-runs").resolve()
+
+
+def test_run_runs_dir_none_disables_run_store(
+    tmp_path: Path, config_dir: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from crewai_headless_flow import cli
+
+    calls: list[dict] = []
+
+    def fake_run_headless_flow(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            status="completed", model_dump=lambda: {"status": "completed"}
+        )
+
+    monkeypatch.setattr(cli, "run_headless_flow", fake_run_headless_flow)
+
+    rc = cli.main(
+        [
+            "run",
+            "--request",
+            "add tests",
+            "--target-repo",
+            str(tmp_path),
+            "--config-dir",
+            str(config_dir),
+            "--runs-dir",
+            "none",
+        ]
+    )
+
+    assert rc == 0
+    assert calls[0]["runs_dir"] is None
 
 
 def test_legacy_request_value_can_equal_subcommand_name(

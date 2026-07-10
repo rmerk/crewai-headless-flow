@@ -1,0 +1,218 @@
+"""
+Gap 3 (autonomy Phase 1): RunStore — run identity and durable, atomic
+per-run artifacts (runs/<run_id>/state.json + debug_report.md).
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import datetime
+from pathlib import Path
+
+import pytest
+
+from crewai_headless_flow.config import FlowConfig
+from crewai_headless_flow.flow import CrewAIHeadlessFlow
+from crewai_headless_flow.run_store import (
+    RunStore,
+    generate_run_id,
+    slugify_request,
+)
+from crewai_headless_flow.state import FlowState, TaskItem
+from crewai_headless_flow.workers.base import CoderResult
+
+
+pytestmark = pytest.mark.offline
+
+
+FIXED_NOW = datetime(2026, 7, 10, 15, 30, 0)
+
+
+def test_generate_run_id_is_sortable_and_scannable():
+    run_id = generate_run_id(
+        "Add a resume feature!", now=FIXED_NOW, uuid_hex="3fa2b1cd99"
+    )
+
+    assert run_id == "20260710-153000-add-a-resume-feature-3fa2b1cd"
+
+
+def test_generate_run_id_unique_without_injected_uuid():
+    ids = {generate_run_id("same request", now=FIXED_NOW) for _ in range(20)}
+
+    assert len(ids) == 20
+
+
+def test_slugify_request_edge_cases():
+    assert slugify_request("") == "run"
+    assert slugify_request("///???") == "run"
+    assert slugify_request("Fix the CSV Export, please") == "fix-the-csv-export-pleas"
+    assert len(slugify_request("x" * 100)) <= 24
+    assert not slugify_request("add feature ").endswith("-")
+
+
+def test_allocate_creates_run_dir(tmp_path: Path):
+    store = RunStore.allocate(tmp_path, "add feature", now=FIXED_NOW)
+
+    assert store.run_dir.is_dir()
+    assert store.run_dir.parent == tmp_path
+    assert store.run_id == store.run_dir.name
+
+
+def test_attach_requires_existing_dir(tmp_path: Path):
+    with pytest.raises(FileNotFoundError):
+        RunStore.attach(tmp_path / "missing")
+
+    (tmp_path / "existing").mkdir()
+    store = RunStore.attach(tmp_path / "existing")
+    assert store.run_id == "existing"
+
+
+def test_save_state_is_atomic_and_leaves_no_temp_files(tmp_path: Path):
+    store = RunStore.allocate(tmp_path, "add feature", now=FIXED_NOW)
+
+    store.save_state(json.dumps({"status": "running"}))
+    store.save_state(json.dumps({"status": "completed"}))
+
+    assert json.loads(store.state_path.read_text()) == {"status": "completed"}
+    leftovers = [p for p in store.run_dir.iterdir() if p.suffix == ".tmp"]
+    assert leftovers == []
+
+
+def test_save_debug_report(tmp_path: Path):
+    store = RunStore.allocate(tmp_path, "add feature", now=FIXED_NOW)
+
+    store.save_debug_report("# Report\n")
+
+    assert store.debug_report_path.read_text() == "# Report\n"
+
+
+class CheckpointStubWorker:
+    def run(self, **kwargs) -> CoderResult:
+        if kwargs.get("mode") == "inspect":
+            return CoderResult(
+                summary="review complete",
+                raw_output='{"status": "pass", "issues": [], "summary": "ok"}',
+                exit_code=0,
+            )
+        return CoderResult(summary="work done", raw_output="work done", exit_code=0)
+
+
+def test_flow_checkpoints_state_at_every_refresh(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    store = RunStore.allocate(tmp_path / "runs", "checkpoint test", now=FIXED_NOW)
+    cfg = FlowConfig(
+        skills={"do_work": "incremental-implementation"},
+        workers={"do_work": {"worker": "claude"}},
+        defaults={"worker": "codex", "timeout": 300},
+    )
+    flow = CrewAIHeadlessFlow(config=cfg, run_store=store)
+    flow._state = FlowState(  # type: ignore[attr-defined]
+        request="checkpoint test",
+        target_repo=str(repo),
+        run_id=store.run_id,
+        run_dir=str(store.run_dir),
+    )
+    flow.state.tasks = [
+        TaskItem(id=1, title="one", description="task one", files=["src/a.py"])
+    ]
+    flow._workers["do_work"] = CheckpointStubWorker()  # type: ignore
+
+    flow.do_work("plan output")
+
+    saved = json.loads(store.state_path.read_text())
+    assert saved["run_id"] == store.run_id
+    assert saved["last_stage"] == "do_work"
+    assert saved["tasks"][0]["status"] == "done"
+    assert store.debug_report_path.exists()
+
+
+def test_checkpoint_write_failure_never_kills_the_run(tmp_path: Path, capsys):
+    store = RunStore.allocate(tmp_path / "runs", "doomed writes", now=FIXED_NOW)
+    cfg = FlowConfig(
+        skills={"do_work": "incremental-implementation"},
+        workers={"do_work": {"worker": "claude"}},
+        defaults={"worker": "codex", "timeout": 300},
+    )
+    flow = CrewAIHeadlessFlow(config=cfg, run_store=store)
+    flow._state = FlowState(request="doomed writes", target_repo="/tmp/fake")  # type: ignore[attr-defined]
+
+    # Simulate a dead disk / removed run dir.
+    def boom(_content: str) -> None:
+        raise OSError("disk gone")
+
+    store.save_state = boom  # type: ignore[method-assign]
+
+    flow._refresh_debug_report()
+
+    assert "checkpoint write failed" in capsys.readouterr().out
+
+
+def test_run_headless_flow_stamps_run_identity_before_kickoff(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from crewai_headless_flow import flow as flow_module
+
+    captured: dict = {}
+
+    class FakeFlow:
+        def __init__(self, config=None, run_store=None):
+            self.config = config
+            self.run_store = run_store
+            self._state = FlowState()
+
+        @property
+        def state(self):
+            return self._state
+
+        def kickoff(self, inputs):
+            captured["inputs"] = inputs
+            captured["run_store"] = self.run_store
+            self._state = FlowState.model_validate(inputs)
+
+    monkeypatch.setattr(flow_module, "CrewAIHeadlessFlow", FakeFlow)
+
+    result = flow_module.run_headless_flow(
+        request="stamp identity",
+        target_repo=str(tmp_path / "repo"),
+        runs_dir=tmp_path / "runs",
+    )
+
+    run_id = captured["inputs"]["run_id"]
+    assert run_id is not None
+    assert "stamp-identity" in run_id
+    assert captured["inputs"]["run_dir"] == str(tmp_path / "runs" / run_id)
+    assert captured["inputs"]["created_at"] is not None
+    assert captured["run_store"].run_id == run_id
+    assert (tmp_path / "runs" / run_id).is_dir()
+    # Identity rides through kickoff's state rehydration.
+    assert result.run_id == run_id
+
+
+def test_run_headless_flow_without_runs_dir_has_no_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from crewai_headless_flow import flow as flow_module
+
+    class FakeFlow:
+        def __init__(self, config=None, run_store=None):
+            self.run_store = run_store
+            self._state = FlowState()
+
+        @property
+        def state(self):
+            return self._state
+
+        def kickoff(self, inputs):
+            self._state = FlowState.model_validate(inputs)
+            assert self.run_store is None
+
+    monkeypatch.setattr(flow_module, "CrewAIHeadlessFlow", FakeFlow)
+
+    result = flow_module.run_headless_flow(
+        request="no identity",
+        target_repo=str(tmp_path / "repo"),
+    )
+
+    assert result.run_id is None
+    assert result.run_dir is None

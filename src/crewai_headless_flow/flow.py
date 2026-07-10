@@ -11,9 +11,11 @@ Topology (as specified):
 
 from __future__ import annotations
 
+import json
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -63,8 +65,10 @@ from .review_contract import (
 )
 from .review_crew import ReviewCrewDecision, run_review_crew
 from .reporting import render_execution_report
+from .run_store import RunStore
 from .skills.loader import get_default_loader
 from .state import (
+    AbortedCheckpoint,
     CrewRoundEntry,
     FlowHistoryEntry,
     FlowState,
@@ -140,10 +144,15 @@ class CrewAIHeadlessFlow(Flow[FlowState]):
     headless coders (Codex, Grok, or Claude).
     """
 
-    def __init__(self, config: FlowConfig | None = None):
+    def __init__(
+        self,
+        config: FlowConfig | None = None,
+        run_store: RunStore | None = None,
+    ):
         super().__init__()
         self.config = config or get_default_config()
         self.loader = get_default_loader()
+        self._run_store = run_store
         self._workers: dict[str, HeadlessCoderTool] = {}
         self._setup_workers()
 
@@ -1403,6 +1412,23 @@ Produce a single structured plan with:
     def _refresh_debug_report(self) -> None:
         self._sync_runtime_snapshot()
         self.state.debug_report = render_execution_report(self.state)
+        self._persist_checkpoint()
+
+    def _persist_checkpoint(self) -> None:
+        # Piggybacks on _refresh_debug_report, which is already called at
+        # every stage tail, review decision, task completion/failure, human
+        # feedback record, and abort — so checkpoint coverage stays in sync
+        # with report coverage by construction. A checkpoint write failure
+        # must never kill the run.
+        if self._run_store is None:
+            return
+        try:
+            self._run_store.save_state(
+                json.dumps(self.state.model_dump(), indent=2, sort_keys=True)
+            )
+            self._run_store.save_debug_report(self.state.debug_report or "")
+        except OSError as exc:
+            print(f"[RunStore] WARNING: checkpoint write failed: {exc}")
 
     def _build_task_execution_prompt(
         self,
@@ -3624,6 +3650,7 @@ def run_headless_flow(
     target_repo: str,
     max_revisions: int = 2,
     config: FlowConfig | None = None,
+    runs_dir: str | Path | None = None,
 ) -> FlowState:
     """
     High-level entry point for running the full flow.
@@ -3634,22 +3661,94 @@ def run_headless_flow(
         max_revisions=max_revisions,
     )
 
-    flow = CrewAIHeadlessFlow(config=config)
+    run_store: RunStore | None = None
+    if runs_dir is not None:
+        run_store = RunStore.allocate(Path(runs_dir), request)
+        state.run_id = run_store.run_id
+        state.run_dir = str(run_store.run_dir)
+        state.created_at = datetime.now().isoformat(timespec="seconds")
+
+    flow = CrewAIHeadlessFlow(config=config, run_store=run_store)
     flow.kickoff(inputs=state.model_dump())
 
     return flow.state
 
 
+def synthesize_crash_checkpoint(state: FlowState) -> AbortedCheckpoint:
+    """
+    Map a crashed run (status still "running" on disk) onto a resumable
+    checkpoint.
+
+    ``last_stage`` is not "last completed stage": structured do_work and
+    review both set it *before* their worker calls. The mapping therefore
+    re-runs the named stage rather than advancing past it — replay is safe
+    because done tasks stay done and review is read-only.
+    """
+    last_stage = state.last_stage
+    if last_stage is None:
+        return AbortedCheckpoint(stage="plan")
+    if last_stage == "plan":
+        # Plan committed its output; continue with do_work (plan_output is
+        # rebuilt from state.spec/state.tasks by the resume machinery).
+        return AbortedCheckpoint(stage="do_work")
+    if last_stage == "do_work":
+        return AbortedCheckpoint(stage="do_work")
+    if last_stage == "review":
+        if state.latest_work_summary:
+            return AbortedCheckpoint(
+                stage="review", stage_input=state.latest_work_summary
+            )
+        return AbortedCheckpoint(stage="do_work")
+    if last_stage == "finalize":
+        return AbortedCheckpoint(stage="finalize", stage_input="pass")
+    raise ValueError(
+        f"Cannot resume crashed run from last_stage={last_stage!r}. "
+        "Recoverable stages: plan, do_work, review, finalize (or none)"
+    )
+
+
+def _resolve_resume_run_store(
+    state: FlowState, runs_dir: str | Path | None
+) -> RunStore | None:
+    if state.run_dir and Path(state.run_dir).is_dir():
+        return RunStore.attach(state.run_dir)
+    if runs_dir is None:
+        return None
+    if state.run_id:
+        run_dir = Path(runs_dir) / state.run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        run_store = RunStore(run_dir)
+    else:
+        run_store = RunStore.allocate(Path(runs_dir), state.request)
+        state.run_id = run_store.run_id
+    state.run_dir = str(run_store.run_dir)
+    return run_store
+
+
 def resume_headless_flow(
     state: FlowState,
     config: FlowConfig | None = None,
+    runs_dir: str | Path | None = None,
 ) -> FlowState:
     """
-    Resume a previously aborted flow from the last human gate.
+    Resume a previously aborted flow from the last human gate, or a crashed
+    run (status still "running") from its last checkpoint.
     """
-    if state.status != "aborted_by_human":
-        raise ValueError("Can only resume a flow with status 'aborted_by_human'")
-    checkpoint = state.aborted_checkpoint
+    crashed = state.status == "running"
+    if state.status not in {"aborted_by_human", "running"}:
+        raise ValueError(
+            "Can only resume a flow with status 'aborted_by_human' (human "
+            "gate) or 'running' (crashed run)"
+        )
+
+    if crashed:
+        checkpoint = synthesize_crash_checkpoint(state)
+        # Attempts interrupted mid-flight are unfinished, not done.
+        for task in state.tasks:
+            if task.status == "in_progress":
+                task.status = "pending"
+    else:
+        checkpoint = state.aborted_checkpoint
     if checkpoint is None or checkpoint.stage not in {
         "plan",
         "do_work",
@@ -3665,7 +3764,7 @@ def resume_headless_flow(
     resume_message = checkpoint.message
     resume_before_review_instructions = checkpoint.before_review_instructions
     resume_input = checkpoint.stage_input
-    if resume_gate is None and resume_stage == "review":
+    if not crashed and resume_gate is None and resume_stage == "review":
         for entry in reversed(state.human_feedback_log):
             feedback = (
                 entry
@@ -3676,7 +3775,9 @@ def resume_headless_flow(
                 resume_gate = feedback.gate
                 break
 
+    run_store = _resolve_resume_run_store(state, runs_dir)
     flow = CrewAIHeadlessFlow(config=config)
+    flow._run_store = run_store  # type: ignore[attr-defined]
     flow._state = state  # type: ignore[attr-defined]
     flow.state.status = "running"
     flow.state.clear_aborted_checkpoint()
@@ -3703,6 +3804,11 @@ def resume_headless_flow(
             direct_flow.finalize(current_decision)
 
         return flow.state
+
+    if crashed and resume_stage == "finalize" and state.review_status == "revise":
+        # Force-revise-then-crash window: the human already reopened the work
+        # before finalize; continue the revise loop instead of re-finalizing.
+        return continue_from_review_decision("revise")
 
     if resume_stage == "finalize":
         return continue_from_review_decision(
