@@ -2468,3 +2468,72 @@ def test_do_work_isolation_invalid_value_rejected(sample_config_dir: Path):
             config_dir=sample_config_dir,
             stage_extra_overrides=["do_work.isolation=sandbox"],
         )
+
+
+# =============================================================================
+# workers: block (autonomy Gap 10 — configurable binaries)
+# =============================================================================
+
+
+def test_workers_block_defaults_empty(sample_config_dir: Path):
+    cfg = load_config(sample_config_dir)
+
+    assert cfg.worker_settings == {}
+
+
+def test_workers_block_loads_binary(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["workers"] = {"codex": {"binary": "/opt/bin/codex"}}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    cfg = load_config(sample_config_dir)
+
+    assert cfg.worker_settings == {"codex": {"binary": "/opt/bin/codex"}}
+
+
+def test_workers_block_unknown_worker_rejected(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["workers"] = {"copilot": {"binary": "copilot"}}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ValueError, match="workers contains unknown worker names"):
+        load_config(sample_config_dir)
+
+
+def test_workers_block_unknown_key_rejected(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["workers"] = {"codex": {"path": "/opt/bin/codex"}}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ValueError, match="workers.codex contains unsupported keys"):
+        load_config(sample_config_dir)
+
+
+def test_workers_block_empty_binary_rejected(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["workers"] = {"codex": {"binary": "  "}}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ValueError, match="workers.codex.binary must be a non-empty"):
+        load_config(sample_config_dir)
+
+
+def test_worker_binary_override_sets_binary(sample_config_dir: Path):
+    cfg = load_runtime_config(
+        config_dir=sample_config_dir,
+        worker_binary_overrides=["grok=/usr/local/bin/grok-nightly"],
+    )
+
+    assert cfg.worker_settings["grok"]["binary"] == "/usr/local/bin/grok-nightly"
+
+
+def test_worker_binary_override_unknown_worker_rejected(sample_config_dir: Path):
+    with pytest.raises(ValueError, match="workers contains unknown worker names"):
+        load_runtime_config(
+            config_dir=sample_config_dir,
+            worker_binary_overrides=["copilot=/bin/copilot"],
+        )

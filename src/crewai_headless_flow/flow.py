@@ -94,13 +94,7 @@ from .task_batches import (
 from .paths_policy import match_denied, restore_denied_paths
 from .tools.coder_tool import HeadlessCoderTool
 from .verification import VerificationReport, VerifyRunner, run_verification
-from .workers import (
-    ClaudeAdapter,
-    CodexAdapter,
-    CursorAdapter,
-    GeminiAdapter,
-    GrokAdapter,
-)
+from .workers import WORKER_SPECS
 from .workers.base import CoderResult, HeadlessCoder
 from .workspace_changes import (
     apply_changed_files,
@@ -114,12 +108,10 @@ from .workspace_changes import (
 logger = logging.getLogger(__name__)
 
 
+# The Flow's only knowledge of concrete workers (AGENTS.md invariant home),
+# derived from the single WORKER_SPECS registration table.
 WORKER_ADAPTERS: dict[str, type[HeadlessCoder]] = {
-    "codex": CodexAdapter,
-    "grok": GrokAdapter,
-    "claude": ClaudeAdapter,
-    "gemini": GeminiAdapter,
-    "cursor": CursorAdapter,
+    name: spec.adapter_cls for name, spec in WORKER_SPECS.items()
 }
 
 
@@ -192,7 +184,7 @@ class CrewAIHeadlessFlow(Flow[FlowState]):
                     f"Unsupported worker '{stage_cfg.worker}' configured for stage "
                     f"'{stage}'. Supported workers: {supported}"
                 )
-            base_worker = adapter_cls()
+            base_worker = self._instantiate_worker(adapter_cls, stage_cfg.worker)
 
             fallback_worker = self._resolve_fallback_worker(stage, stage_cfg)
             retry_cfg = stage_cfg.extra.get("retry") or {}
@@ -224,7 +216,21 @@ class CrewAIHeadlessFlow(Flow[FlowState]):
                 f"Unsupported fallback worker '{fallback_name}' configured for "
                 f"stage '{stage}'. Supported workers: {supported}"
             )
-        return fallback_cls()
+        return self._instantiate_worker(fallback_cls, fallback_name)
+
+    def _instantiate_worker(
+        self, adapter_cls: type[HeadlessCoder], worker_name: str
+    ) -> HeadlessCoder:
+        """Build an adapter, honoring a configured binary override.
+
+        Every adapter accepts ``binary=``; the zero-arg call keeps their
+        defaults when no override is configured.
+        """
+        settings = getattr(self.config, "worker_settings", {}) or {}
+        binary = (settings.get(worker_name) or {}).get("binary")
+        if binary:
+            return adapter_cls(binary=binary)  # type: ignore[call-arg]
+        return adapter_cls()
 
     def _get_worker(self, stage: str) -> HeadlessCoderTool:
         if stage not in self._workers:

@@ -3347,3 +3347,76 @@ def test_human_force_pass_skips_verification_round():
     assert runner.calls == []  # human override is sovereign at review time
     assert worker.calls == []
     assert flow.state.verification_runs == []
+
+
+# =============================================================================
+# WorkerSpec / configurable binaries (autonomy Gap 10)
+# =============================================================================
+
+
+def test_setup_workers_passes_configured_binary(monkeypatch):
+    captured: list[dict] = []
+
+    class SpyAdapter:
+        def __init__(self, binary: str = "default-bin"):
+            captured.append({"binary": binary})
+
+        def run(self, **kwargs):
+            raise AssertionError("not used")
+
+    monkeypatch.setitem(flow_module.WORKER_ADAPTERS, "claude", SpyAdapter)
+
+    cfg = FlowConfig(
+        skills={"do_work": "incremental-implementation"},
+        workers={"do_work": {"worker": "claude"}},
+        defaults={"worker": "claude", "timeout": 300},
+        worker_settings={"claude": {"binary": "/opt/bin/claude-nightly"}},
+    )
+    CrewAIHeadlessFlow(config=cfg)
+
+    assert {"binary": "/opt/bin/claude-nightly"} in captured
+
+
+def test_setup_workers_uses_adapter_default_without_override(monkeypatch):
+    captured: list[dict] = []
+
+    class SpyAdapter:
+        def __init__(self, binary: str = "default-bin"):
+            captured.append({"binary": binary})
+
+        def run(self, **kwargs):
+            raise AssertionError("not used")
+
+    monkeypatch.setitem(flow_module.WORKER_ADAPTERS, "claude", SpyAdapter)
+
+    cfg = FlowConfig(
+        skills={"do_work": "incremental-implementation"},
+        workers={"do_work": {"worker": "claude"}},
+        defaults={"worker": "claude", "timeout": 300},
+    )
+    CrewAIHeadlessFlow(config=cfg)
+
+    assert {"binary": "default-bin"} in captured
+
+
+def test_fallback_worker_honors_configured_binary(monkeypatch):
+    captured: list[dict] = []
+
+    class SpyAdapter:
+        def __init__(self, binary: str = "default-bin"):
+            captured.append({"binary": binary})
+
+        def run(self, **kwargs):
+            raise AssertionError("not used")
+
+    monkeypatch.setitem(flow_module.WORKER_ADAPTERS, "gemini", SpyAdapter)
+
+    cfg = FlowConfig(
+        skills={"do_work": "incremental-implementation"},
+        workers={"do_work": {"worker": "claude", "fallback_worker": "gemini"}},
+        defaults={"worker": "claude", "timeout": 300},
+        worker_settings={"gemini": {"binary": "/opt/bin/gemini-nightly"}},
+    )
+    CrewAIHeadlessFlow(config=cfg)
+
+    assert {"binary": "/opt/bin/gemini-nightly"} in captured

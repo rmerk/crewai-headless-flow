@@ -24,6 +24,7 @@ from .human_feedback_actions import (
     supported_human_feedback_action_targets,
     supported_human_feedback_actions,
 )
+from .workers import WORKER_SPECS
 
 SOURCE_TREE_CONFIG_DIR = Path(__file__).resolve().parents[2] / "config"
 BUNDLED_CONFIG_DIR = Path(__file__).resolve().parent / "_bundled" / "config"
@@ -549,6 +550,48 @@ def _validate_verify(raw: Any) -> dict[str, Any]:
     return verify
 
 
+_WORKER_SETTINGS_KEYS = {"binary"}
+
+
+def _validate_workers_block(raw: Any) -> dict[str, Any]:
+    """Validate the top-level ``workers:`` block (per-worker settings)."""
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        value_type = type(raw).__name__
+        raise ValueError(f"workers must be a mapping, got {value_type}")
+
+    unknown_workers = sorted(set(raw) - set(WORKER_SPECS))
+    if unknown_workers:
+        supported = ", ".join(sorted(WORKER_SPECS))
+        unknown_text = ", ".join(unknown_workers)
+        raise ValueError(
+            f"workers contains unknown worker names: {unknown_text}. "
+            f"Supported workers: {supported}"
+        )
+
+    settings: dict[str, Any] = {}
+    for name, entry in raw.items():
+        if not isinstance(entry, dict):
+            value_type = type(entry).__name__
+            raise ValueError(f"workers.{name} must be a mapping, got {value_type}")
+        unknown_keys = sorted(set(entry) - _WORKER_SETTINGS_KEYS)
+        if unknown_keys:
+            supported = ", ".join(sorted(_WORKER_SETTINGS_KEYS))
+            unknown_text = ", ".join(unknown_keys)
+            raise ValueError(
+                f"workers.{name} contains unsupported keys: {unknown_text}. "
+                f"Supported keys: {supported}"
+            )
+        binary = entry.get("binary")
+        if binary is not None and (not isinstance(binary, str) or not binary.strip()):
+            raise ValueError(
+                f"workers.{name}.binary must be a non-empty string, got {binary!r}"
+            )
+        settings[name] = dict(entry)
+    return settings
+
+
 def _validate_paths(raw: Any) -> dict[str, Any]:
     if raw is None:
         raw = {}
@@ -865,14 +908,19 @@ class FlowConfig:
         deliver: dict[str, Any] | None = None,
         verify: dict[str, Any] | None = None,
         paths: dict[str, Any] | None = None,
+        worker_settings: dict[str, Any] | None = None,
     ) -> None:
         self.skills = skills
+        # NOTE: ``workers`` is the legacy per-stage mapping (worker.yaml's
+        # ``stages:``); per-worker settings from the top-level ``workers:``
+        # YAML block live on ``worker_settings``.
         self.workers = workers
         self.defaults = defaults
         self.human_feedback = _validate_human_feedback(human_feedback)
         self.deliver = _validate_deliver(deliver)
         self.verify = _validate_verify(verify)
         self.paths = _validate_paths(paths)
+        self.worker_settings = _validate_workers_block(worker_settings)
         self._stage_cache: dict[str, StageConfig] = {}
 
     def get_stage(self, stage: str) -> StageConfig:
@@ -980,6 +1028,7 @@ def load_config(config_dir: Optional[Path] = None) -> FlowConfig:
     deliver = worker_raw.get("deliver", {})
     verify = worker_raw.get("verify", {})
     paths = worker_raw.get("paths", {})
+    worker_settings = worker_raw.get("workers", {})
 
     return FlowConfig(
         skills=skills,
@@ -989,6 +1038,7 @@ def load_config(config_dir: Optional[Path] = None) -> FlowConfig:
         deliver=deliver,
         verify=verify,
         paths=paths,
+        worker_settings=worker_settings,
     )
 
 

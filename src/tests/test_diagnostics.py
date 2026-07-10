@@ -774,3 +774,60 @@ def test_doctor_adds_no_paths_check_when_deny_empty(config_dir: Path, monkeypatc
     report = _run_doctor_with_blocks(config_dir, monkeypatch)
 
     assert not any(c.name == "config.paths" for c in report.checks)
+
+
+# =============================================================================
+# WorkerSpec derivations + configured-binary probing (autonomy Gap 10)
+# =============================================================================
+
+
+def test_worker_dicts_are_derived_from_worker_specs():
+    from crewai_headless_flow.diagnostics import (
+        SUPPORTED_WORKERS,
+        WORKER_BINARIES,
+        WORKER_HELP_COMMANDS,
+        WORKER_REQUIRED_FLAGS,
+    )
+    from crewai_headless_flow.flow import WORKER_ADAPTERS
+    from crewai_headless_flow.workers import WORKER_SPECS
+
+    assert set(WORKER_ADAPTERS) == set(WORKER_SPECS)
+    assert SUPPORTED_WORKERS == set(WORKER_SPECS)
+    assert set(WORKER_BINARIES) == set(WORKER_SPECS)
+    assert set(WORKER_HELP_COMMANDS) == set(WORKER_SPECS)
+    assert set(WORKER_REQUIRED_FLAGS) == set(WORKER_SPECS)
+    for name, spec in WORKER_SPECS.items():
+        assert WORKER_ADAPTERS[name] is spec.adapter_cls
+        assert WORKER_BINARIES[name] == spec.binary
+        assert WORKER_HELP_COMMANDS[name] == spec.help_command
+        assert WORKER_REQUIRED_FLAGS[name] == spec.required_flags
+        assert spec.help_command[0] == spec.binary
+
+
+def test_doctor_probes_configured_worker_binary(config_dir: Path, monkeypatch):
+    from crewai_headless_flow.diagnostics import run_doctor
+
+    worker_data = yaml.safe_load((config_dir / "worker.yaml").read_text())
+    worker_data["workers"] = {"codex": {"binary": "/opt/bin/codex-nightly"}}
+    (config_dir / "worker.yaml").write_text(yaml.safe_dump(worker_data))
+
+    which_calls: list[str] = []
+
+    def fake_which(name: str):
+        which_calls.append(name)
+        return f"/bin/{name}"
+
+    probe_calls: list[tuple[str, ...]] = []
+
+    def fake_probe(command):
+        probe_calls.append(tuple(command))
+        return _codex_probe(command)
+
+    monkeypatch.setattr("crewai_headless_flow.diagnostics.shutil.which", fake_which)
+    monkeypatch.setattr("crewai_headless_flow.diagnostics._run_probe", fake_probe)
+
+    run_doctor(config_dir=config_dir)
+
+    assert "/opt/bin/codex-nightly" in which_calls
+    assert ("/opt/bin/codex-nightly", "exec", "--help") in probe_calls
+    assert ("/opt/bin/codex-nightly", "--version") in probe_calls

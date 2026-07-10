@@ -13,44 +13,24 @@ import yaml
 
 from .config import (
     FlowConfig,
+    _validate_workers_block,
     classify_stage_extra,
     crew_llm_requires_ollama,
     load_config,
 )
 from .runtime_overrides import load_runtime_config
+from .workers import WORKER_SPECS
 
 
 Status = Literal["pass", "warn", "fail"]
 REQUIRED_STAGES = ("plan", "do_work", "review", "finalize")
-SUPPORTED_WORKERS = {"codex", "grok", "claude", "gemini", "cursor"}
-WORKER_BINARIES = {
-    "codex": "codex",
-    "grok": "grok",
-    "claude": "claude",
-    "gemini": "gemini",
-    "cursor": "cursor",
-}
-WORKER_HELP_COMMANDS = {
-    "codex": ("codex", "exec", "--help"),
-    "grok": ("grok", "--help"),
-    "claude": ("claude", "--help"),
-    "gemini": ("gemini", "--help"),
-    "cursor": ("cursor", "agent", "--help"),
-}
+# All derived from the single WORKER_SPECS registration table — in sync with
+# the Flow's WORKER_ADAPTERS by construction.
+SUPPORTED_WORKERS = set(WORKER_SPECS)
+WORKER_BINARIES = {name: spec.binary for name, spec in WORKER_SPECS.items()}
+WORKER_HELP_COMMANDS = {name: spec.help_command for name, spec in WORKER_SPECS.items()}
 WORKER_REQUIRED_FLAGS = {
-    "codex": ("--sandbox", "--output-schema"),
-    "grok": ("--always-approve", "--output-format"),
-    "claude": ("--permission-mode", "--json-schema"),
-    "gemini": ("--prompt", "--approval-mode", "--output-format"),
-    "cursor": (
-        "--print",
-        "--output-format",
-        "--plan",
-        "--force",
-        "--trust",
-        "--workspace",
-        "--model",
-    ),
+    name: spec.required_flags for name, spec in WORKER_SPECS.items()
 }
 TOOLING_FILES = (
     "pyproject.toml",
@@ -168,6 +148,7 @@ def run_doctor(
     human_feedback_action_overrides: list[str] | None = None,
     deliver_overrides: list[str] | None = None,
     verify_overrides: list[str] | None = None,
+    worker_binary_overrides: list[str] | None = None,
 ) -> DiagnosticReport:
     config_path = normalize_path(config_dir or _default_config_dir())
     report = DiagnosticReport(config_dir=str(config_path))
@@ -178,6 +159,7 @@ def run_doctor(
     worker_raw = _read_yaml_mapping(worker_path, report, "worker.yaml")
 
     required_workers: set[str] = set()
+    runtime_config: FlowConfig | None = None
     if skills_raw is not None and worker_raw is not None:
         runtime_config = _resolve_runtime_config_for_doctor(
             report=report,
@@ -194,6 +176,7 @@ def run_doctor(
             human_feedback_action_overrides=human_feedback_action_overrides,
             deliver_overrides=deliver_overrides,
             verify_overrides=verify_overrides,
+            worker_binary_overrides=worker_binary_overrides,
         )
         required_workers = _validate_config_files(
             report=report,
@@ -206,8 +189,10 @@ def run_doctor(
             runtime_config=runtime_config,
         )
 
+    worker_settings = _resolve_worker_settings_for_doctor(runtime_config, worker_raw)
     for worker in sorted(required_workers):
-        _check_worker_cli(report, worker)
+        binary_override = (worker_settings.get(worker) or {}).get("binary")
+        _check_worker_cli(report, worker, binary_override)
 
     _check_cursor_auth(report, required_workers)
 
@@ -215,6 +200,21 @@ def run_doctor(
         report.merge(run_preflight(target_repo))
 
     return report
+
+
+def _resolve_worker_settings_for_doctor(
+    runtime_config: FlowConfig | None,
+    worker_raw: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Binary overrides for CLI probes: resolved config first, raw fallback."""
+    if runtime_config is not None:
+        return runtime_config.worker_settings
+    try:
+        return _validate_workers_block((worker_raw or {}).get("workers"))
+    except ValueError:
+        # Invalid block is already reported by config-file validation;
+        # probe with defaults.
+        return {}
 
 
 def run_preflight(
@@ -479,6 +479,7 @@ def _resolve_runtime_config_for_doctor(
     human_feedback_action_overrides: list[str] | None,
     deliver_overrides: list[str] | None,
     verify_overrides: list[str] | None = None,
+    worker_binary_overrides: list[str] | None = None,
 ) -> FlowConfig | None:
     override_sets = (
         skill_overrides,
@@ -493,6 +494,7 @@ def _resolve_runtime_config_for_doctor(
         human_feedback_action_overrides,
         deliver_overrides,
         verify_overrides,
+        worker_binary_overrides,
     )
     if not any(override_sets):
         return None
@@ -512,6 +514,7 @@ def _resolve_runtime_config_for_doctor(
             human_feedback_action_overrides=human_feedback_action_overrides,
             deliver_overrides=deliver_overrides,
             verify_overrides=verify_overrides,
+            worker_binary_overrides=worker_binary_overrides,
         )
     except Exception as exc:
         report.add_check(
@@ -542,14 +545,19 @@ def _read_yaml_mapping(
     return raw
 
 
-def _check_worker_cli(report: DiagnosticReport, worker: str) -> None:
-    binary = WORKER_BINARIES[worker]
+def _check_worker_cli(
+    report: DiagnosticReport, worker: str, binary_override: str | None = None
+) -> None:
+    binary = binary_override or WORKER_BINARIES[worker]
     if shutil.which(binary) is None:
         report.add_check(f"cli.{worker}", "fail", f"CLI not found: {binary}")
         return
 
+    help_command = WORKER_HELP_COMMANDS[worker]
+    if binary_override:
+        help_command = (binary_override, *help_command[1:])
     version = _run_probe((binary, "--version"))
-    help_result = _run_probe(WORKER_HELP_COMMANDS[worker])
+    help_result = _run_probe(help_command)
     help_text = _bounded_output(help_result.stdout + "\n" + help_result.stderr)
     if version.returncode != 0 and help_result.returncode != 0:
         report.add_check(
