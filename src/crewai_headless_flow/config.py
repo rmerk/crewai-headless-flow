@@ -87,6 +87,16 @@ def _default_conditional() -> dict[str, Any]:
     }
 
 
+ESCALATION_CHANNELS = ("stdin", "file", "command")
+ESCALATION_ON_TIMEOUT = ("abort", "proceed")
+DEFAULT_ESCALATION: dict[str, Any] = {
+    "channel": "stdin",
+    "command": None,
+    "timeout_seconds": 300,
+    "on_timeout": "abort",
+}
+
+
 DEFAULT_HUMAN_FEEDBACK = {
     "enabled": False,
     "mode": "static",
@@ -95,6 +105,7 @@ DEFAULT_HUMAN_FEEDBACK = {
     "advanced_actions": False,
     "action_allowlist": {},
     "conditional": _default_conditional(),
+    "escalation": dict(DEFAULT_ESCALATION),
 }
 HUMAN_FEEDBACK_BOOLEAN_KEYS = {
     "enabled",
@@ -323,10 +334,73 @@ def _validate_human_feedback(raw: dict[str, Any] | None) -> dict[str, Any]:
     human_feedback["conditional"] = _validate_conditional(
         human_feedback.get("conditional")
     )
+    human_feedback["escalation"] = _validate_escalation(
+        human_feedback.get("escalation")
+    )
     human_feedback["action_allowlist"] = _validate_action_allowlist(
         human_feedback.get("action_allowlist")
     )
     return human_feedback
+
+
+def _validate_escalation(raw: Any) -> dict[str, Any]:
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        value_type = type(raw).__name__
+        raise ValueError(
+            f"human_feedback.escalation must be a mapping, got {value_type}"
+        )
+    unknown = sorted(set(raw) - set(DEFAULT_ESCALATION))
+    if unknown:
+        supported = ", ".join(sorted(DEFAULT_ESCALATION))
+        unknown_text = ", ".join(unknown)
+        raise ValueError(
+            f"human_feedback.escalation contains unsupported keys: {unknown_text}. "
+            f"Supported keys: {supported}"
+        )
+
+    escalation = {**DEFAULT_ESCALATION, **raw}
+
+    channel = escalation["channel"]
+    if channel not in ESCALATION_CHANNELS:
+        supported = ", ".join(ESCALATION_CHANNELS)
+        raise ValueError(
+            f"human_feedback.escalation.channel must be one of {supported}, "
+            f"got {channel!r}"
+        )
+
+    command = escalation["command"]
+    if command is not None:
+        if not isinstance(command, list) or not all(
+            isinstance(part, str) and part for part in command
+        ):
+            raise ValueError(
+                "human_feedback.escalation.command must be a list of non-empty "
+                f"strings, got {command!r}"
+            )
+    if channel == "command" and not command:
+        raise ValueError(
+            "human_feedback.escalation.command is required (a non-empty argv "
+            "list) when channel is 'command'"
+        )
+
+    if not _is_positive_int(escalation["timeout_seconds"]):
+        value_type = type(escalation["timeout_seconds"]).__name__
+        raise ValueError(
+            "human_feedback.escalation.timeout_seconds must be a positive "
+            f"integer (>= 1), got {value_type}"
+        )
+
+    on_timeout = escalation["on_timeout"]
+    if on_timeout not in ESCALATION_ON_TIMEOUT:
+        supported = ", ".join(ESCALATION_ON_TIMEOUT)
+        raise ValueError(
+            f"human_feedback.escalation.on_timeout must be one of {supported}, "
+            f"got {on_timeout!r}"
+        )
+
+    return escalation
 
 
 def _validate_action_allowlist(raw: Any) -> dict[str, list[str]]:

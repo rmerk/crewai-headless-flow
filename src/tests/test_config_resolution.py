@@ -563,6 +563,116 @@ def test_default_do_work_replan_is_configured_but_disabled():
     assert replan_cfg["max_execution_replans"] == 1
 
 
+def test_escalation_defaults_merge_when_absent(sample_config_dir: Path):
+    cfg = load_config(sample_config_dir)
+
+    assert cfg.human_feedback["escalation"] == {
+        "channel": "stdin",
+        "command": None,
+        "timeout_seconds": 300,
+        "on_timeout": "abort",
+    }
+
+
+def test_escalation_partial_override_merges_defaults(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["human_feedback"] = {"enabled": True, "escalation": {"channel": "file"}}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    cfg = load_config(sample_config_dir)
+
+    escalation = cfg.human_feedback["escalation"]
+    assert escalation["channel"] == "file"
+    assert escalation["timeout_seconds"] == 300
+    assert escalation["on_timeout"] == "abort"
+
+
+def test_escalation_invalid_channel_rejected(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["human_feedback"] = {"escalation": {"channel": "carrier-pigeon"}}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(
+        ValueError,
+        match="human_feedback.escalation.channel must be one of stdin, file, command",
+    ):
+        load_config(sample_config_dir)
+
+
+def test_escalation_command_channel_requires_argv(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["human_feedback"] = {"escalation": {"channel": "command"}}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(
+        ValueError, match="human_feedback.escalation.command is required"
+    ):
+        load_config(sample_config_dir)
+
+
+def test_escalation_command_must_be_string_list(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["human_feedback"] = {
+        "escalation": {"channel": "command", "command": "notify-hook"}
+    }
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(
+        ValueError,
+        match="human_feedback.escalation.command must be a list of non-empty strings",
+    ):
+        load_config(sample_config_dir)
+
+
+def test_escalation_unknown_key_rejected(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["human_feedback"] = {"escalation": {"chanel": "file"}}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ValueError, match="unsupported keys: chanel"):
+        load_config(sample_config_dir)
+
+
+def test_escalation_invalid_on_timeout_rejected(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["human_feedback"] = {"escalation": {"on_timeout": "retry"}}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(
+        ValueError,
+        match="human_feedback.escalation.on_timeout must be one of abort, proceed",
+    ):
+        load_config(sample_config_dir)
+
+
+def test_escalation_dotted_override_via_human_feedback(sample_config_dir: Path):
+    cfg = load_runtime_config(
+        config_dir=sample_config_dir,
+        human_feedback_overrides=["escalation.channel=file"],
+    )
+
+    assert cfg.human_feedback["escalation"]["channel"] == "file"
+    # Defaults survive the override merge + re-validation.
+    assert cfg.human_feedback["escalation"]["timeout_seconds"] == 300
+
+
+def test_escalation_dotted_override_is_revalidated(sample_config_dir: Path):
+    with pytest.raises(
+        ValueError,
+        match="human_feedback.escalation.channel must be one of",
+    ):
+        load_runtime_config(
+            config_dir=sample_config_dir,
+            human_feedback_overrides=["escalation.channel=smoke-signal"],
+        )
+
+
 def test_retry_and_fallback_worker_load_through_stage_extra(sample_config_dir: Path):
     worker_file = sample_config_dir / "worker.yaml"
     data = yaml.safe_load(worker_file.read_text())

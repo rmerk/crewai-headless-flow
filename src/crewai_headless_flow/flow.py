@@ -48,6 +48,11 @@ from .hitl_policy import (
     should_prompt,
 )
 from .do_work_crew import run_do_work_crew
+from .escalation import (
+    EscalationHandler,
+    EscalationRequest,
+    get_handler as get_escalation_handler,
+)
 from .plan_contract import (
     PlanOutput,
     normalize_plan_output,
@@ -153,6 +158,10 @@ class CrewAIHeadlessFlow(Flow[FlowState]):
         self.config = config or get_default_config()
         self.loader = get_default_loader()
         self._run_store = run_store
+        # Test/injection seam; when None the handler is resolved from config
+        # at ask time (so a run_store attached after construction — the
+        # resume path — still reaches the file channel).
+        self._escalation: EscalationHandler | None = None
         self._workers: dict[str, HeadlessCoderTool] = {}
         self._setup_workers()
 
@@ -650,6 +659,13 @@ Optional instructions after approval: {"enabled" if capture_instructions else "d
         )
         return GateContext(tasks=tasks)
 
+    def _ask_escalation(self, request: EscalationRequest) -> str | None:
+        handler = self._escalation or get_escalation_handler(
+            self.config.human_feedback,
+            run_dir=self._run_store.run_dir if self._run_store else None,
+        )
+        return handler.ask(request)
+
     def _maybe_ask_human(
         self,
         stage: StageName,
@@ -691,10 +707,20 @@ Optional instructions after approval: {"enabled" if capture_instructions else "d
                 f"{message}\n\nTrigger: {describe_trigger_reason(trigger_reason)}"
             )
 
-        print(f"\n{self._human_feedback_prompt(stage, prompt_message, gate)}")
-        try:
-            raw_answer = input("Proceed? [y/N]: ").strip()
-        except (EOFError, KeyboardInterrupt):
+        rendered_prompt = self._human_feedback_prompt(stage, prompt_message, gate)
+        print(f"\n{rendered_prompt}")
+        raw_answer = self._ask_escalation(
+            EscalationRequest(
+                stage=stage,
+                gate=gate,
+                prompt=rendered_prompt,
+                run_id=self.state.run_id,
+                run_dir=self.state.run_dir,
+                target_repo=self.state.target_repo,
+                revisions=self.state.revisions,
+            )
+        )
+        if raw_answer is None:
             print("\n[Human Feedback] No input received. Aborting this step.")
             self._record_human_feedback(
                 stage=stage,
@@ -713,7 +739,7 @@ Optional instructions after approval: {"enabled" if capture_instructions else "d
                 response="no-input",
             )
 
-        answer = raw_answer.lower()
+        answer = raw_answer.strip().lower()
         action, proceed = self._parse_human_feedback_action(stage, answer, gate)
         approved = action != "abort"
         instructions: str | None = None

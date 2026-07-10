@@ -135,8 +135,9 @@ def apply_default_overrides(
 
 
 # Top-level human_feedback keys whose value is a nested tree, reachable via a
-# dotted override path (e.g. conditional.triggers.repeated_task_failure.min_attempts).
-_HUMAN_FEEDBACK_NESTED_ROOTS = {"conditional"}
+# dotted override path (e.g. conditional.triggers.repeated_task_failure.min_attempts,
+# escalation.channel).
+_HUMAN_FEEDBACK_NESTED_ROOTS = {"conditional", "escalation"}
 
 
 def _set_nested_human_feedback_override(
