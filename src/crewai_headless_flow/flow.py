@@ -19,7 +19,12 @@ from typing import Any, Literal, cast
 
 from crewai.flow.flow import Flow, listen, router, start
 
-from .config import FlowConfig, classify_stage_extra, get_default_config
+from .config import (
+    FlowConfig,
+    StageConfig,
+    classify_stage_extra,
+    get_default_config,
+)
 from .do_work_batch_contract import (
     DO_WORK_BATCH_PLAN_SCHEMA,
     normalize_do_work_batch_plan,
@@ -157,11 +162,37 @@ class CrewAIHeadlessFlow(Flow[FlowState]):
                 )
             base_worker = adapter_cls()
 
+            fallback_worker = self._resolve_fallback_worker(stage, stage_cfg)
+            retry_cfg = stage_cfg.extra.get("retry") or {}
+
             tool = HeadlessCoderTool(
                 worker=base_worker,
                 skill_name=skill_name,
+                fallback_worker=fallback_worker,
+                max_attempts=int(retry_cfg.get("max_attempts", 1)),
+                backoff_seconds=float(retry_cfg.get("backoff_seconds", 0.0)),
             )
             self._workers[stage] = tool
+
+    def _resolve_fallback_worker(
+        self, stage: str, stage_cfg: StageConfig
+    ) -> HeadlessCoder | None:
+        fallback_name = stage_cfg.extra.get("fallback_worker")
+        if not fallback_name:
+            return None
+        if fallback_name == stage_cfg.worker:
+            raise ValueError(
+                f"fallback_worker for stage '{stage}' must differ from the "
+                f"stage worker '{stage_cfg.worker}'"
+            )
+        fallback_cls = WORKER_ADAPTERS.get(fallback_name)
+        if fallback_cls is None:
+            supported = ", ".join(sorted(WORKER_ADAPTERS))
+            raise ValueError(
+                f"Unsupported fallback worker '{fallback_name}' configured for "
+                f"stage '{stage}'. Supported workers: {supported}"
+            )
+        return fallback_cls()
 
     def _get_worker(self, stage: str) -> HeadlessCoderTool:
         if stage not in self._workers:

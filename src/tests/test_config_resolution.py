@@ -563,6 +563,67 @@ def test_default_do_work_replan_is_configured_but_disabled():
     assert replan_cfg["max_execution_replans"] == 1
 
 
+def test_retry_and_fallback_worker_load_through_stage_extra(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["stages"]["do_work"]["retry"] = {"max_attempts": 2, "backoff_seconds": 1.5}
+    data["stages"]["do_work"]["fallback_worker"] = "claude"
+    worker_file.write_text(yaml.safe_dump(data))
+
+    cfg = load_config(sample_config_dir)
+
+    extra = cfg.get_stage("do_work").extra
+    assert extra["retry"] == {"max_attempts": 2, "backoff_seconds": 1.5}
+    assert extra["fallback_worker"] == "claude"
+
+
+def test_retry_max_attempts_zero_fails_closed(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["stages"]["do_work"]["retry"] = {"max_attempts": 0}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(
+        ValueError,
+        match=r"worker\.yaml stages\.do_work\.retry\.max_attempts must be "
+        r"a positive integer",
+    ):
+        load_config(sample_config_dir)
+
+
+def test_retry_negative_backoff_fails_closed(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["stages"]["review"]["retry"] = {"backoff_seconds": -1}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(
+        ValueError,
+        match=r"worker\.yaml stages\.review\.retry\.backoff_seconds must be "
+        r"a non-negative number",
+    ):
+        load_config(sample_config_dir)
+
+
+def test_retry_unknown_key_fails_closed(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["stages"]["finalize"]["retry"] = {"max_atempts": 2}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ValueError, match="unsupported keys: max_atempts"):
+        load_config(sample_config_dir)
+
+
+def test_retry_override_via_stage_extra_dotted_path(sample_config_dir: Path):
+    cfg = load_runtime_config(
+        config_dir=sample_config_dir,
+        stage_extra_overrides=["do_work.retry.max_attempts=2"],
+    )
+
+    assert cfg.get_stage("do_work").extra["retry"]["max_attempts"] == 2
+
+
 def test_valid_boolean_human_feedback_loads(sample_config_dir: Path):
     worker_file = sample_config_dir / "worker.yaml"
     data = yaml.safe_load(worker_file.read_text())

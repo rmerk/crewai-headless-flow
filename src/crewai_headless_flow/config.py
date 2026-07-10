@@ -175,6 +175,20 @@ def _crew_schema() -> dict[str, Any]:
     }
 
 
+def _is_non_negative_number(value: Any) -> bool:
+    return _is_number(value) and value >= 0
+
+
+def _retry_schema() -> dict[str, Any]:
+    # Retries apply only to worker infrastructure failures (timeouts, launch
+    # errors) contained at the HeadlessCoderTool seam — never to non-zero
+    # exits, which belong to the revise loop.
+    return {
+        "max_attempts": _is_positive_int,
+        "backoff_seconds": _is_non_negative_number,
+    }
+
+
 def _do_work_crew_schema() -> dict[str, Any]:
     schema = _crew_schema()
     schema.update(
@@ -192,6 +206,8 @@ def _do_work_crew_schema() -> dict[str, Any]:
 STAGE_EXTRA_SCHEMAS: dict[str, dict[str, Any]] = {
     "plan": {
         "crew": _crew_schema(),
+        "retry": _retry_schema(),
+        "fallback_worker": _is_string,
     },
     "do_work": {
         "always_approve": _is_true,
@@ -210,12 +226,19 @@ STAGE_EXTRA_SCHEMAS: dict[str, dict[str, Any]] = {
             "on_ambiguous_success": _is_bool,
             "max_execution_replans": _is_int,
         },
+        "retry": _retry_schema(),
+        "fallback_worker": _is_string,
     },
     "review": {
         "sandbox": _is_read_only_sandbox,
         "crew": _crew_schema(),
+        "retry": _retry_schema(),
+        "fallback_worker": _is_string,
     },
-    "finalize": {},
+    "finalize": {
+        "retry": _retry_schema(),
+        "fallback_worker": _is_string,
+    },
 }
 ENFORCED_STAGE_EXTRA_PATHS: dict[str, tuple[tuple[str, ...], ...]] = {
     "plan": (("crew", "process"),),
@@ -358,6 +381,8 @@ def _validator_description(validator: Any) -> str:
         return "a positive integer (>= 1)"
     if validator is _is_number:
         return "number"
+    if validator is _is_non_negative_number:
+        return "a non-negative number (>= 0)"
     if validator is _is_string:
         return "string"
     if validator is _is_string_or_none:
