@@ -18,7 +18,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Callable, Literal, cast
 
 from crewai.flow.flow import Flow, listen, router, start
 
@@ -168,6 +168,9 @@ class CrewAIHeadlessFlow(Flow[FlowState]):
         # Test/injection seam for the Flow-owned verification subprocess
         # boundary (never routed through a worker adapter).
         self._verification_runner: VerifyRunner = subprocess.run
+        # Clock seam so event-log timestamps are deterministic in tests
+        # (same pattern as run_store.generate_run_id(now=...)).
+        self._now_fn: Callable[[], datetime] = datetime.now
         self._workers: dict[str, HeadlessCoderTool] = {}
         self._setup_workers()
 
@@ -621,6 +624,13 @@ Optional instructions after approval: {"enabled" if capture_instructions else "d
                 trigger_reason=trigger_reason,
             )
         )
+        self._log_event(
+            "human_feedback",
+            stage=stage,
+            gate=gate,
+            action=action,
+            approved=approved,
+        )
         self._refresh_debug_report()
 
     def _normalized_human_feedback_entries(self) -> list[HumanFeedbackEntry]:
@@ -807,6 +817,7 @@ Optional instructions after approval: {"enabled" if capture_instructions else "d
             self.state.errors.append(f"Aborted by human before {stage}")
         else:
             self.state.errors.append(f"Aborted by human at {gate}")
+        self._log_event("human_abort", stage=stage, gate=gate)
         self._refresh_debug_report()
 
     def _after_review_message(self, decision: ReviewCrewDecision) -> str:
@@ -922,6 +933,13 @@ Use `task_hints` when you can map an issue to planned tasks or likely files. Use
         self.state.verification_runs.append(report)
         outcome = "passed" if report.passed else "FAILED"
         print(f"[Flow] Verification {outcome}: {report.message}")
+        self._log_event(
+            "verification",
+            passed=report.passed,
+            mode=report.mode,
+            commands=len(report.results),
+            message=report.message,
+        )
         self._refresh_debug_report()
         return report
 
@@ -1416,6 +1434,7 @@ Produce a single structured plan with:
     @start()
     def plan(self) -> str:
         self._mark_running()
+        self._log_event("stage_start", stage="plan")
         self.config.print_mapping()  # Visibility into current wiring
         human_gate_message = (
             "About to run planning stage (plan). "
@@ -1470,6 +1489,15 @@ Produce a single structured plan with:
                 files=files or [],
                 details=details or [],
             )
+        )
+        # The single history funnel doubles as the event-log funnel: every
+        # FlowHistoryEntry kind is also a JSONL event kind.
+        self._log_event(
+            kind,
+            summary=summary,
+            task_ids=task_ids or [],
+            files=files or [],
+            details=details or [],
         )
         self._refresh_debug_report()
 
@@ -1541,6 +1569,27 @@ Produce a single structured plan with:
             self._run_store.save_debug_report(self.state.debug_report or "")
         except OSError as exc:
             print(f"[RunStore] WARNING: checkpoint write failed: {exc}")
+
+    def _log_event(self, kind: str, **fields: Any) -> None:
+        """Append one structured event to runs/<run_id>/events.jsonl.
+
+        Envelope: {ts, run_id, revision, kind, ...kind-specific fields}.
+        Same durability policy as _persist_checkpoint: no run dir means no
+        event log, and a write failure never kills the run.
+        """
+        if self._run_store is None:
+            return
+        event = {
+            "ts": self._now_fn().isoformat(timespec="seconds"),
+            "run_id": self.state.run_id,
+            "revision": self.state.revisions,
+            "kind": kind,
+            **fields,
+        }
+        try:
+            self._run_store.append_event(json.dumps(event, sort_keys=True))
+        except OSError as exc:
+            print(f"[RunStore] WARNING: event write failed: {exc}")
 
     def _build_task_execution_prompt(
         self,
@@ -3007,6 +3056,7 @@ Rules:
             )
             return self._terminal_result()
         self._mark_running()
+        self._log_event("stage_start", stage="do_work")
         worker_tool = self._get_worker("do_work")
         stage_cfg = self.config.get_stage("do_work")
         human_gate_message = (
@@ -3149,6 +3199,7 @@ Execute the work. After you are done, summarize what changed and whether tests n
             )
             return "aborted"
         self._mark_running()
+        self._log_event("stage_start", stage="review")
         self.state.latest_work_summary = work_summary
         stage_cfg = self.config.get_stage("review")
 
@@ -3292,6 +3343,7 @@ Execute the work. After you are done, summarize what changed and whether tests n
             )
             return self._terminal_result()
         self._mark_running()
+        self._log_event("stage_start", stage="revise")
         self.state.increment_revision()
         print(
             f"\n[Flow] Revising (revision {self.state.revisions}/{self.state.max_revisions})"
@@ -3305,6 +3357,7 @@ Execute the work. After you are done, summarize what changed and whether tests n
             self.state.review_status = "revise"
             self.state.issues = [*self.state.issues, message]
             self.state.errors.append(message)
+            self._log_event("run_failed", reason=message)
             self._refresh_debug_report()
             self._record_history(
                 kind="review_decision",
@@ -3580,6 +3633,7 @@ Execute the work. After you are done, summarize what changed and whether tests n
             )
             return self._terminal_result()
         self._mark_running()
+        self._log_event("stage_start", stage="finalize")
         human_gate_message = (
             "About to finalize and write documentation/ADR. This is the last step."
         )
@@ -3598,6 +3652,7 @@ Execute the work. After you are done, summarize what changed and whether tests n
                 self.state.last_stage = "finalize"
                 self._maybe_deliver([])
                 self.state.status = "completed"
+                self._log_event("run_completed", via="skip-finalize")
                 self._refresh_debug_report()
                 return self.state.final_artifact
             if decision.action == "force-revise":
@@ -3766,6 +3821,7 @@ Recent flow history:
         self.state.last_stage = "finalize"
         self._maybe_deliver(finalize_changed)
         self.state.status = "completed"
+        self._log_event("run_completed")
         self._refresh_debug_report()
 
         print("[Flow] Flow completed successfully.")
@@ -3815,6 +3871,14 @@ Recent flow history:
             verification_note=self._delivery_verification_note(verification_ok),
         )
         self.state.delivery_report = report
+        self._log_event(
+            "delivery",
+            status=report.status,
+            branch=report.branch,
+            push=report.push,
+            pr=report.pr,
+            pr_url=report.pr_url,
+        )
         if report.status == "failed":
             # The work exists; delivery is packaging. Record the failure but
             # keep the run completed.
