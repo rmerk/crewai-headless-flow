@@ -21,6 +21,7 @@ from .base import (
     Mode,
     WorkerInvocationError,
     WorkerTimeout,
+    ignore_uncopyable,
 )
 from .structured_output import build_repair_prompt, extract_validated_json
 
@@ -138,16 +139,13 @@ class ClaudeAdapter:
                 src,
                 dst,
                 symlinks=False,
-                ignore=self._ignore_symlinks,
+                ignore=ignore_uncopyable,
                 ignore_dangling_symlinks=True,
             )
         except Exception:
             shutil.rmtree(tmp_root, ignore_errors=True)
             raise
         return dst
-
-    def _ignore_symlinks(self, directory: str, names: list[str]) -> list[str]:
-        return [name for name in names if (Path(directory) / name).is_symlink()]
 
     def _normalize_cwd(self, cwd: str | Path) -> Path:
         path = Path(cwd).expanduser()

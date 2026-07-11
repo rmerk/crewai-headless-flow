@@ -101,3 +101,22 @@ class WorkerInvocationError(HeadlessCoderError):
 def sanitize_cwd(cwd: str | Path) -> Path:
     """Return an absolute, resolved Path for cwd."""
     return Path(cwd).resolve(strict=False)
+
+
+def ignore_uncopyable(directory: str, names: list[str]) -> list[str]:
+    """``shutil.copytree`` ignore hook: skip symlinks and special files.
+
+    Special files (sockets, fifos, devices) crash copytree — e.g. git's
+    fsmonitor daemon leaves a ``.git/fsmonitor--daemon.ipc`` socket in real
+    repos, which would kill every inspect-mode disposable copy. Shared by
+    all adapters and the workspace snapshot/merge helpers so no copy path
+    regresses to symlink-only filtering.
+    """
+    skipped: list[str] = []
+    for name in names:
+        candidate = Path(directory) / name
+        if candidate.is_symlink():
+            skipped.append(name)
+        elif not (candidate.is_file() or candidate.is_dir()):
+            skipped.append(name)
+    return skipped

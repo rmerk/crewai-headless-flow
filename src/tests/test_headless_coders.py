@@ -1055,3 +1055,41 @@ def test_grok_invocation_error_raises_worker_invocation_error():
     with patch("subprocess.run", side_effect=OSError("missing binary")):
         with pytest.raises(WorkerInvocationError, match="Failed to invoke Grok"):
             adapter.run("task", cwd="/tmp/r", mode="edit")
+
+
+# =============================================================================
+# Disposable-copy hardening: special files must not crash inspect copies
+# =============================================================================
+
+
+@pytest.mark.parametrize(
+    "make_adapter",
+    [
+        lambda: CodexAdapter(binary="codex"),
+        lambda: GrokAdapter(binary="grok"),
+        lambda: ClaudeAdapter(binary="claude"),
+        lambda: GeminiAdapter(binary="gemini"),
+        lambda: CursorAdapter(binary="cursor"),
+    ],
+    ids=["codex", "grok", "claude", "gemini", "cursor"],
+)
+def test_disposable_copy_skips_special_files(tmp_path: Path, make_adapter):
+    # Real repos contain special files — e.g. git's fsmonitor daemon leaves
+    # a .git/fsmonitor--daemon.ipc socket — which crash a naive copytree.
+    # Every adapter's inspect-mode copy must share the uncopyable filter.
+    import os
+    import shutil
+
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "src").mkdir()
+    (repo / "src" / "app.py").write_text("code\n")
+    os.mkfifo(repo / ".git" / "fsmonitor--daemon.ipc")
+
+    adapter = make_adapter()
+    copy = adapter._create_disposable_copy(repo)
+    try:
+        assert (copy / "src" / "app.py").exists()
+        assert not (copy / ".git" / "fsmonitor--daemon.ipc").exists()
+    finally:
+        shutil.rmtree(copy.parent, ignore_errors=True)

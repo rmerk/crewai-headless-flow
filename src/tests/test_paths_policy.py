@@ -135,6 +135,47 @@ def test_restore_tracked_deleted_file_is_recovered(tmp_path: Path):
     assert (repo / "keep.txt").read_text() == "content\n"
 
 
+def test_restore_glob_named_file_leaves_other_tracked_files_alone(tmp_path: Path):
+    # Pathspec injection regression: a worker can create a file literally
+    # named "*.env". Restoring it must not expand into a glob checkout that
+    # reverts the operator's own dirty tracked files.
+    repo = _git_repo(tmp_path, {"app.env": "original\n"})
+    (repo / "app.env").write_text("operator WIP\n")  # dirty tracked file
+    (repo / "*.env").write_text("SECRET=1\n")  # run-created, literal name
+
+    unrestorable = restore_denied_paths(repo, ["*.env"], created=["*.env"])
+
+    assert unrestorable == []
+    assert not (repo / "*.env").exists()  # the literal file was unlinked
+    assert (repo / "app.env").read_text() == "operator WIP\n"  # WIP untouched
+
+
+def test_restore_tracked_glob_named_file_reverts_only_itself(tmp_path: Path):
+    repo = _git_repo(
+        tmp_path, {"*.env": "literal original\n", "app.env": "app original\n"}
+    )
+    (repo / "*.env").write_text("tampered\n")
+    (repo / "app.env").write_text("operator WIP\n")
+
+    unrestorable = restore_denied_paths(repo, ["*.env"])
+
+    assert unrestorable == []
+    assert (repo / "*.env").read_text() == "literal original\n"
+    assert (repo / "app.env").read_text() == "operator WIP\n"
+
+
+def test_restore_refuses_pathspec_magic_and_escaping_paths(tmp_path: Path):
+    repo = _git_repo(tmp_path)
+    hostile = [":/README.md", "/etc/passwd", "../escape.txt"]
+
+    # Even when flagged as run-created, hostile shapes are refused — an
+    # absolute path in `created` must never reach unlink.
+    unrestorable = restore_denied_paths(repo, hostile, created=hostile)
+
+    assert unrestorable == hostile
+    assert (repo / "README.md").exists()
+
+
 # --- flow integration: worker doubles -------------------------------------------
 
 
@@ -295,6 +336,51 @@ def test_isolation_copy_deny_keeps_everything_out_of_target(tmp_path: Path):
     # Fail closed: nothing merged, not even the allowed file.
     assert (repo / "src/a.py").read_text() == "original\n"
     assert not (repo / "leak.env").exists()
+
+
+def test_isolation_copy_creation_failure_fails_task_not_run(
+    tmp_path: Path, monkeypatch
+):
+    repo = _git_repo(tmp_path, {"src/a.py": "original\n"})
+    flow = _structured_flow(repo, _do_work_config([], isolation="copy"), ["src/a.py"])
+    flow._workers["do_work"] = WritingWorker({"src/a.py": "changed\n"})  # type: ignore
+
+    def exploding_copy(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(
+        "crewai_headless_flow.flow.create_workspace_copy", exploding_copy
+    )
+
+    cast(Any, flow).do_work("plan output")
+
+    task = flow.state.tasks[0]
+    assert task.status == "failed"
+    assert "Could not create isolated workspace copy" in (task.last_error or "")
+    assert (repo / "src/a.py").read_text() == "original\n"
+
+
+def test_unstructured_isolation_copy_creation_failure_records_error(
+    tmp_path: Path, monkeypatch
+):
+    repo = _git_repo(tmp_path, {"src/a.py": "original\n"})
+    flow = CrewAIHeadlessFlow(config=_do_work_config([], isolation="copy"))
+    flow._state = FlowState(request="test", target_repo=str(repo))  # type: ignore[attr-defined]
+    flow._workers["do_work"] = WritingWorker({"src/a.py": "changed\n"})  # type: ignore
+
+    def exploding_copy(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(
+        "crewai_headless_flow.flow.create_workspace_copy", exploding_copy
+    )
+
+    cast(Any, flow).do_work("plan output")
+
+    assert (repo / "src/a.py").read_text() == "original\n"
+    assert any(
+        "Could not create isolated workspace copy" in err for err in flow.state.errors
+    )
 
 
 # --- boundary 3: parallel mergeback -------------------------------------------------

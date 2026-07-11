@@ -215,6 +215,80 @@ def test_unsafe_paths_are_skipped_not_fatal(tmp_path: Path):
     assert sorted(report.skipped_files) == ["../evil.py", "/etc/passwd"]
 
 
+def test_glob_named_changed_file_does_not_stage_operator_wip(tmp_path: Path):
+    # Pathspec injection regression: changed-file names are worker-reported
+    # and untrusted. A file literally named "*.py" must be staged as itself,
+    # not expanded as a glob that laundered the operator's dirty .py files
+    # into the flow's commit.
+    repo = _git_repo(tmp_path)
+    (repo / "operator_wip.py").write_text("committed\n")
+    _git(repo, "add", "operator_wip.py")
+    _git(repo, "commit", "-m", "operator file")
+    (repo / "operator_wip.py").write_text("operator's uncommitted WIP\n")
+    (repo / "*.py").write_text("flow-created file literally named star-dot-py\n")
+
+    report = deliver(
+        _cfg(),
+        target_repo=repo,
+        changed_files=["*.py"],
+        run_id=RUN_ID,
+        request="glob-shaped name",
+    )
+
+    assert report.status == "committed"
+    assert report.staged_files == ["*.py"]
+    committed = _git(repo, "show", "--name-only", "--format=", "HEAD").splitlines()
+    assert committed == ["*.py"]
+    # The operator's WIP stayed out of the commit and out of the index.
+    assert "operator_wip.py" in _git(repo, "status", "--porcelain")
+
+
+def test_leading_colon_changed_file_is_skipped(tmp_path: Path):
+    # ":" introduces git pathspec magic (":/", ":(glob)", ...) — a changed
+    # file with that shape is never a real flow-produced path.
+    repo = _git_repo(tmp_path)
+    (repo / "good.py").write_text("good\n")
+
+    report = deliver(
+        _cfg(),
+        target_repo=repo,
+        changed_files=["good.py", ":/README.md", ":(glob)**"],
+        run_id=RUN_ID,
+        request="pathspec magic",
+    )
+
+    assert report.status == "committed"
+    assert report.staged_files == ["good.py"]
+    assert sorted(report.skipped_files) == [":(glob)**", ":/README.md"]
+
+
+def test_ship_crash_never_demotes_committed_status(tmp_path: Path, monkeypatch):
+    import crewai_headless_flow.delivery as delivery_module
+
+    repo = _git_repo(tmp_path)
+    (repo / "new.py").write_text("x\n")
+
+    def exploding_ship(*args, **kwargs):
+        raise RuntimeError("ship stage bug")
+
+    monkeypatch.setattr(delivery_module, "_ship", exploding_ship)
+
+    report = deliver(
+        _cfg(push=True, pr=True),
+        target_repo=repo,
+        changed_files=["new.py"],
+        run_id=RUN_ID,
+        request="ship crash",
+    )
+
+    # The commit exists and is usable; only the ship flags report failure.
+    assert report.status == "committed"
+    assert report.commit_sha
+    assert report.push == "failed"
+    assert report.pr == "skipped_no_push"
+    assert "push/pr failed unexpectedly" in report.message
+
+
 def test_detached_head_is_supported(tmp_path: Path):
     repo = _git_repo(tmp_path)
     sha = _git(repo, "rev-parse", "HEAD")

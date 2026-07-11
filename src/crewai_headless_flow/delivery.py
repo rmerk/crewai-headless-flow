@@ -9,9 +9,13 @@ commit, under hard guardrails:
 
 - always a fresh branch — never a commit on the branch the operator was on;
 - refuse if the computed branch name is in ``protected_branches``;
-- stage only the flow's own changed files with per-path ``git add --`` —
-  never ``add -A``, because preflight tolerates pre-existing dirt with a
-  warning and delivery must not launder it into the flow's commit;
+- stage only the flow's own changed files with per-path
+  ``git add -- :(literal)<path>`` — never ``add -A``, because preflight
+  tolerates pre-existing dirt with a warning and delivery must not launder
+  it into the flow's commit. Paths are staged as ``:(literal)`` pathspecs
+  (and leading-``:`` paths rejected) because changed-file names are
+  worker-reported and untrusted: a name like ``*.py`` would otherwise be a
+  glob that stages the operator's WIP;
 - no destructive git anywhere (no ``--force``, no ``reset``, no branch
   deletion);
 - ``deliver()`` never raises — failures come back as a ``failed`` report.
@@ -186,7 +190,7 @@ def _deliver_enabled(
             message="Branch created; commit disabled by deliver.commit=false.",
         )
 
-    add = git(["add", "--", *safe_files], target)
+    add = git(["add", "--", *[f":(literal){path}" for path in safe_files]], target)
     if add.returncode != 0:
         return fail(f"git add failed: {(add.stderr or '').strip()[:300]}")
 
@@ -229,18 +233,28 @@ def _deliver_enabled(
         f"{f' @ {commit_sha[:12]}' if commit_sha else ''}{identity_note}"
     )
 
-    push_flag, pr_flag, pr_url, ship_notes = _ship(
-        cfg,
-        target=target,
-        branch=branch,
-        run_id=run_id,
-        request=request,
-        staged_files=staged_files,
-        verification_ok=verification_ok,
-        verification_note=verification_note,
-        git=git,
-        gh=gh,
-    )
+    try:
+        push_flag, pr_flag, pr_url, ship_notes = _ship(
+            cfg,
+            target=target,
+            branch=branch,
+            run_id=run_id,
+            request=request,
+            staged_files=staged_files,
+            verification_ok=verification_ok,
+            verification_note=verification_note,
+            git=git,
+            gh=gh,
+        )
+    except Exception as exc:
+        # A ship crash must never demote the commit to status="failed" via
+        # deliver()'s catch-all; the branch and commit exist and are usable.
+        note = f"push/pr failed unexpectedly: {type(exc).__name__}: {exc}"
+        logger.warning(f"[Delivery] {note}")
+        push_flag = "failed" if cfg.get("push") else "off"
+        pr_flag = "skipped_no_push" if cfg.get("pr") else "off"
+        pr_url = None
+        ship_notes = [note]
 
     message = f"Committed on fresh branch {branch}.{identity_note}"
     if ship_notes:
@@ -384,6 +398,12 @@ def _partition_safe_paths(
             continue
         seen.add(rel_path)
         candidate = Path(rel_path)
+        if rel_path.startswith(":"):
+            # ":" starts git pathspec magic; even though staging wraps paths
+            # in :(literal), a leading-":" name is never a real repo file the
+            # flow produced — reject rather than trust it.
+            skipped.append(rel_path)
+            continue
         if candidate.is_absolute() or ".." in candidate.parts:
             skipped.append(rel_path)
             continue

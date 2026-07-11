@@ -8,6 +8,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from .workers.base import ignore_uncopyable
+
 
 IGNORED_DIR_NAMES = {
     ".git",
@@ -25,7 +27,7 @@ def create_workspace_copy(src: Path, *, prefix: str = "flow-parallel-") -> Path:
         src,
         dst,
         symlinks=False,
-        ignore=_ignore_uncopyable,
+        ignore=ignore_uncopyable,
         ignore_dangling_symlinks=True,
     )
     return dst
@@ -153,19 +155,3 @@ def _hash_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(65536), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def _ignore_uncopyable(directory: str, names: list[str]) -> list[str]:
-    """Skip symlinks and special files (sockets, fifos, devices).
-
-    Special files break copytree — e.g. git's fsmonitor daemon leaves a
-    ``.git/fsmonitor--daemon.ipc`` socket in real repos.
-    """
-    skipped: list[str] = []
-    for name in names:
-        candidate = Path(directory) / name
-        if candidate.is_symlink():
-            skipped.append(name)
-        elif not (candidate.is_file() or candidate.is_dir()):
-            skipped.append(name)
-    return skipped

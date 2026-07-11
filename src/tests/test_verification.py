@@ -69,8 +69,13 @@ def test_fail_fast_stops_at_first_failure():
 
 
 def test_timeout_maps_to_exit_124():
+    # TimeoutExpired.stdout/.stderr are raw BYTES even when subprocess.run
+    # was invoked with text=True — the fake must match reality or _tail's
+    # decode path goes untested.
     def runner(argv, **kwargs):
-        raise subprocess.TimeoutExpired(argv, kwargs["timeout"], output="partial out")
+        raise subprocess.TimeoutExpired(
+            argv, kwargs["timeout"], output=b"partial out", stderr=b"late stderr"
+        )
 
     report = run_verification(
         _cfg(commands=["pytest -q"], timeout=5), cwd="/tmp/r", runner=runner
@@ -81,7 +86,23 @@ def test_timeout_maps_to_exit_124():
     assert result.exit_code == TIMEOUT_EXIT_CODE
     assert result.timed_out is True
     assert "partial out" in result.output_tail
+    assert "late stderr" in result.output_tail
     assert "(timed out)" in report.message
+
+
+def test_timeout_with_undecodable_bytes_never_raises():
+    def runner(argv, **kwargs):
+        raise subprocess.TimeoutExpired(
+            argv, kwargs["timeout"], output=b"partial \xff out"
+        )
+
+    report = run_verification(
+        _cfg(commands=["pytest -q"], timeout=5), cwd="/tmp/r", runner=runner
+    )
+
+    assert report.passed is False
+    assert "partial" in report.results[0].output_tail
+    assert "out" in report.results[0].output_tail
 
 
 def test_launch_failure_maps_to_exit_127_and_never_raises():
@@ -96,6 +117,20 @@ def test_launch_failure_maps_to_exit_127_and_never_raises():
     result = report.results[0]
     assert result.exit_code == LAUNCH_FAILURE_EXIT_CODE
     assert "Failed to launch" in result.output_tail
+
+
+def test_unparseable_string_command_maps_to_exit_127_and_never_raises():
+    runner = FakeRunner()
+    report = run_verification(
+        _cfg(commands=["pytest 'unclosed"]), cwd="/tmp/r", runner=runner
+    )
+
+    assert report.passed is False
+    assert runner.calls == []  # never launched
+    result = report.results[0]
+    assert result.exit_code == LAUNCH_FAILURE_EXIT_CODE
+    assert "Failed to parse command" in result.output_tail
+    assert f"exited {LAUNCH_FAILURE_EXIT_CODE}" in report.message
 
 
 def test_output_tail_is_truncated():

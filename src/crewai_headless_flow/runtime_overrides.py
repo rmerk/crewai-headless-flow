@@ -270,7 +270,17 @@ def apply_verify_overrides(
             raise ValueError(
                 f"Unknown verify override '{key}'. Supported keys: {known}"
             )
-        config.verify[key] = parse_override_value(value)
+        parsed = parse_override_value(value)
+        if key == "commands" and parsed == []:
+            # An empty override silently disables the verification gate for
+            # this run only — a bypass, not a configuration. Projects with
+            # genuinely no verification set verify.commands in worker.yaml.
+            raise ValueError(
+                "--override-verify commands=[] would disable the verification "
+                "gate for this run. Configure verify.commands in worker.yaml "
+                "instead if the project has no verification commands."
+            )
+        config.verify[key] = parsed
         applied = True
 
     # Re-validate so overridden values are schema-checked exactly as
