@@ -1092,7 +1092,7 @@ verify:
   timeout: 600    # per command, seconds
 ```
 
-The Flow runs them in the target repo at the top of **every** review round (fail-fast, argv with no shell — wrap pipes in a script). Under `mode: gate` a failure skips the LLM review entirely and feeds the command output tails into the revise loop as concrete issues; `mode: advisory` appends the results to the review prompt as evidence instead. Either way, `deliver.push`/`deliver.pr` only ship when the latest verification round passed (empty `commands` = you opted out and own the risk; `doctor` warns if push/pr is enabled unverified). Results are recorded on `state.verification_runs` and in the debug report's `## Verification` section. One-run override: `--override-verify 'commands=["uv run pytest -q"]'`.
+The Flow runs them in the target repo at the top of **every** review round (fail-fast, argv with no shell — wrap pipes in a script). Under `mode: gate` a failure skips the LLM review entirely and feeds the command output tails into the revise loop as concrete issues; `mode: advisory` appends the results to the review prompt as evidence instead. Either way, `deliver.push`/`deliver.pr` only ship when the latest verification round passed (empty `commands` = you opted out and own the risk; `doctor` warns if push/pr is enabled unverified). Results are recorded on `state.verification_runs` and in the debug report's `## Verification` section. One-run override: `--override-verify 'commands=["uv run pytest -q"]'` (`commands=[]` is refused — disabling the gate is a `worker.yaml` decision, not a per-run flag).
 
 ### JSONL event log
 

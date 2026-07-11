@@ -11,6 +11,7 @@ Primary responsibilities for Milestone 4:
 from __future__ import annotations
 
 import re
+import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -524,6 +525,18 @@ def _validate_verify(raw: Any) -> dict[str, Any]:
         raise ValueError(f"verify.commands must be a list, got {value_type}")
     for command in commands:
         if isinstance(command, str) and command.strip():
+            try:
+                argv = shlex.split(command)
+            except ValueError as exc:
+                raise ValueError(
+                    f"verify.commands entry {command!r} is not parseable as a "
+                    f"command line: {exc}. Fix the quoting or use the list form."
+                ) from exc
+            if not argv:
+                raise ValueError(
+                    f"verify.commands entry {command!r} parses to an empty "
+                    "command line."
+                )
             continue
         if (
             isinstance(command, list)

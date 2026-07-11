@@ -27,6 +27,7 @@ from .base import (
     Mode,
     WorkerInvocationError,
     WorkerTimeout,
+    ignore_uncopyable,
     sanitize_cwd,
 )
 from .structured_output import build_repair_prompt, extract_validated_json
@@ -168,13 +169,10 @@ class GrokAdapter:
             src,
             dst,
             symlinks=False,
-            ignore=self._ignore_symlinks,
+            ignore=ignore_uncopyable,
             ignore_dangling_symlinks=True,
         )
         return dst
-
-    def _ignore_symlinks(self, directory: str, names: list[str]) -> list[str]:
-        return [name for name in names if (Path(directory) / name).is_symlink()]
 
     def _cleanup_disposable(self, path: Path) -> None:
         if path.exists() and "grok-inspect-" in str(path.parent):

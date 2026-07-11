@@ -931,6 +931,11 @@ Use `task_hints` when you can map an issue to planned tasks or likely files. Use
             return None
 
         self.state.last_stage = "review"
+        # Verify commands are the longest-running Flow-owned subprocesses
+        # (test suites, builds) and the likeliest place for an operator
+        # Ctrl-C or machine crash; checkpoint first so a resume lands at
+        # the review stage instead of replaying completed work.
+        self._refresh_debug_report()
         logger.info(
             f"[Flow] Running {len(verify_cfg['commands'])} verification "
             f"command(s) in {self.state.target_repo}..."
@@ -1106,6 +1111,38 @@ Use `task_hints` when you can map an issue to planned tasks or likely files. Use
         decision = self._fail_closed_for_incomplete_structured_tasks(decision)
         self._record_review_decision_state(decision)
         return decision
+
+    def _run_verified_review_once(
+        self,
+        *,
+        work_summary: str,
+        human_guidance: str | None = None,
+        review_rerun_guidance: str | None = None,
+    ) -> ReviewDecision:
+        """One verification round paired with one automated review.
+
+        Every path that re-reviews the tree (the main review loop, a
+        rerun-review from the resume path, a rerun-review at the finalize
+        gate) must go through here so a review decision can never be
+        produced against an unverified tree. A gate-mode verification
+        failure skips the LLM entirely: the command output IS the review,
+        fed into the revise loop through the same funnel.
+        """
+        verification = self._run_verification_round()
+        if (
+            verification is not None
+            and not verification.passed
+            and verification.mode == "gate"
+        ):
+            decision = self._verification_revise_decision(verification)
+            self._record_review_decision_state(decision)
+            return decision
+        return self._run_automated_review_once(
+            work_summary=work_summary,
+            human_guidance=human_guidance,
+            review_rerun_guidance=review_rerun_guidance,
+            verification_evidence=self._render_verification_evidence(verification),
+        )
 
     def _handle_after_review_checkpoint(
         self,
@@ -1309,7 +1346,7 @@ Use `task_hints` when you can map an issue to planned tasks or likely files. Use
             if result != "rerun-review":
                 return cast(Literal["pass", "revise", "aborted"], result)
 
-            decision = self._run_automated_review_once(
+            decision = self._run_verified_review_once(
                 work_summary=work_summary,
                 human_guidance=human_guidance,
                 review_rerun_guidance=review_rerun_guidance,
@@ -1856,10 +1893,23 @@ After you are done, summarize what changed and whether task verification now pas
             ]
             return self._denied_failure_result(denied, unrestorable), remaining
 
-        workspace = create_workspace_copy(
-            Path(self.state.target_repo),
-            prefix=f"flow-serial-task-{task.id}-",
-        )
+        try:
+            workspace = create_workspace_copy(
+                Path(self.state.target_repo),
+                prefix=f"flow-serial-task-{task.id}-",
+            )
+        except OSError as exc:
+            # A copy failure (disk full, permissions) fails this task, not
+            # the whole run; the target repo is untouched.
+            return (
+                CoderResult(
+                    summary="",
+                    raw_output="",
+                    exit_code=1,
+                    error=f"Could not create isolated workspace copy: {exc}",
+                ),
+                [],
+            )
         try:
             result, changed_files, _created = self._run_task_with_change_tracking(
                 worker_tool=worker_tool,
@@ -1913,7 +1963,15 @@ After you are done, summarize what changed and whether task verification now pas
         target = Path(self.state.target_repo)
 
         if isolation == "copy":
-            workspace = create_workspace_copy(target, prefix="flow-direct-edit-")
+            try:
+                workspace = create_workspace_copy(target, prefix="flow-direct-edit-")
+            except OSError as exc:
+                error = f"Could not create isolated workspace copy: {exc}"
+                self.state.errors.append(error)
+                return (
+                    CoderResult(summary="", raw_output="", exit_code=1, error=error),
+                    [],
+                )
             try:
                 before = snapshot_workspace(workspace)
                 result = worker_tool.run(
@@ -3512,26 +3570,11 @@ Execute the work. After you are done, summarize what changed and whether tests n
         review_rerun_guidance: str | None = None
 
         while True:
-            verification = self._run_verification_round()
-            if (
-                verification is not None
-                and not verification.passed
-                and verification.mode == "gate"
-            ):
-                # Objective failure: the command output IS the review. Skip
-                # the LLM entirely and feed the tails into the revise loop
-                # through the same funnel an automated review uses.
-                decision = self._verification_revise_decision(verification)
-                self._record_review_decision_state(decision)
-            else:
-                decision = self._run_automated_review_once(
-                    work_summary=work_summary,
-                    human_guidance=human_guidance,
-                    review_rerun_guidance=review_rerun_guidance,
-                    verification_evidence=self._render_verification_evidence(
-                        verification
-                    ),
-                )
+            decision = self._run_verified_review_once(
+                work_summary=work_summary,
+                human_guidance=human_guidance,
+                review_rerun_guidance=review_rerun_guidance,
+            )
             logger.info(
                 f"[Flow] Review decision: {decision.status} | Issues: {len(decision.issues)}"
             )
@@ -3942,7 +3985,7 @@ Execute the work. After you are done, summarize what changed and whether tests n
                     summary="Human requested automated review rerun before finalize.",
                     details=[review_rerun_guidance],
                 )
-                review_decision = self._run_automated_review_once(
+                review_decision = self._run_verified_review_once(
                     work_summary=work_summary,
                     human_guidance=human_guidance,
                     review_rerun_guidance=review_rerun_guidance,

@@ -2998,6 +2998,7 @@ def test_resume_after_review_checkpoint_falls_back_to_feedback_log_before_review
         work_summary: str,
         human_guidance: str | None = None,
         review_rerun_guidance: str | None = None,
+        verification_evidence: str | None = None,
     ) -> ReviewCrewDecision:
         review_calls.append(
             {
@@ -3347,6 +3348,113 @@ def test_human_force_pass_skips_verification_round():
     assert runner.calls == []  # human override is sovereign at review time
     assert worker.calls == []
     assert flow.state.verification_runs == []
+
+
+def test_finalize_gate_rerun_review_reverifies_the_tree(monkeypatch):
+    # A rerun-review at the finalize gate must not produce a review decision
+    # against an unverified tree.
+    cfg = FlowConfig(
+        skills={
+            "review": "code-review-and-quality",
+            "finalize": "documentation-and-adrs",
+        },
+        workers={"review": {"worker": "codex"}, "finalize": {"worker": "codex"}},
+        defaults={"worker": "codex", "timeout": 300},
+        human_feedback={
+            "enabled": True,
+            "before_finalize": True,
+            "action_allowlist": {"before_finalize": ["rerun-review"]},
+        },
+        verify={"commands": ["pytest -q"], "mode": "gate"},
+    )
+    flow = CrewAIHeadlessFlow(config=cfg)
+    flow._state = FlowState(  # type: ignore[attr-defined]
+        request="test",
+        target_repo="/tmp/fake",
+        review_status="pass",
+        latest_work_summary="work summary",
+    )
+    runner = FakeVerifyRunner(outcomes={("pytest", "-q"): (1, "2 failed", "")})
+    flow._verification_runner = runner
+    review_worker = RecordingWorker()
+    flow._workers["review"] = review_worker  # type: ignore
+    flow._workers["finalize"] = RecordingWorker()  # type: ignore
+
+    responses = iter(["rerun", ""])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(responses))
+
+    result = cast(Any, flow).finalize("pass")
+
+    assert result == "revise"
+    assert runner.calls == [["pytest", "-q"]]  # the rerun re-verified
+    assert review_worker.calls == []  # gate failure skipped the LLM review
+    assert len(flow.state.verification_runs) == 1
+    assert flow.state.verification_runs[0].passed is False
+
+
+def test_resume_rerun_review_reverifies_the_tree(monkeypatch):
+    flow = CrewAIHeadlessFlow(config=_verify_config(["pytest -q"]))
+    flow._state = FlowState(  # type: ignore[attr-defined]
+        request="test",
+        target_repo="/tmp/fake",
+        review_status="revise",
+    )
+    runner = FakeVerifyRunner()
+    flow._verification_runner = runner
+    worker = RecordingWorker()
+    flow._workers["review"] = worker  # type: ignore
+
+    outcomes = iter([("rerun-review", "look again"), ("pass", None)])
+    monkeypatch.setattr(
+        flow, "_handle_after_review_checkpoint", lambda **kwargs: next(outcomes)
+    )
+
+    result = flow._resume_after_review_checkpoint(
+        "work summary", saved_message="Automated review returned revise."
+    )
+
+    assert result == "pass"
+    assert runner.calls == [["pytest", "-q"]]  # the rerun re-verified
+    assert len(worker.calls) == 1  # verification passed, so the LLM review ran
+
+
+def test_verification_round_checkpoints_before_running_commands():
+    flow = CrewAIHeadlessFlow(config=_verify_config(["pytest -q"]))
+    flow._state = FlowState(request="test", target_repo="/tmp/fake")  # type: ignore[attr-defined]
+
+    class RecordingRunStore:
+        def __init__(self):
+            self.states: list[str] = []
+
+        def save_state(self, payload: str) -> None:
+            self.states.append(payload)
+
+        def save_debug_report(self, payload: str) -> None:
+            pass
+
+        def append_event(self, payload: str) -> None:
+            pass
+
+    store = RecordingRunStore()
+    flow._run_store = store  # type: ignore
+
+    stages_at_run_time: list[object] = []
+
+    def runner(argv, **kwargs):
+        import subprocess as _subprocess
+
+        stage = json.loads(store.states[-1]).get("last_stage") if store.states else None
+        stages_at_run_time.append(stage)
+        return _subprocess.CompletedProcess(argv, 0, "ok", "")
+
+    flow._verification_runner = runner
+    flow._workers["review"] = StubWorker(review_outcome="pass")  # type: ignore
+
+    flow.review("work summary")
+
+    # A crash mid-verify must resume at the review stage: the checkpoint
+    # written BEFORE the commands ran already carries last_stage="review".
+    assert stages_at_run_time == ["review"]
 
 
 # =============================================================================

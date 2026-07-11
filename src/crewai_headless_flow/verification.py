@@ -70,9 +70,20 @@ def _display_command(command: CommandSpec) -> str:
     return shlex.join(str(part) for part in command)
 
 
+def _coerce_text(value: Any) -> str:
+    # TimeoutExpired.stdout/.stderr are the raw captured pipes and stay BYTES
+    # even when the runner was invoked with text=True (CPython does not decode
+    # partial output on timeout).
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value or ""
+
+
 def _tail(stdout: Any, stderr: Any) -> str:
     combined = "\n".join(
-        part.strip() for part in (stdout or "", stderr or "") if part and part.strip()
+        part.strip()
+        for part in (_coerce_text(stdout), _coerce_text(stderr))
+        if part.strip()
     )
     return combined[-OUTPUT_TAIL_LIMIT:]
 
@@ -98,8 +109,24 @@ def run_verification(
         display = _display_command(command)
         started = time.monotonic()
         try:
+            argv = _as_argv(command)
+        except ValueError as exc:
+            # Unparseable string command (e.g. unbalanced quote). Config-load
+            # validation rejects these up front; this guards ad-hoc cfg dicts.
+            report.results.append(
+                VerificationCommandResult(
+                    command=display,
+                    exit_code=LAUNCH_FAILURE_EXIT_CODE,
+                    output_tail=f"Failed to parse command: {exc}",
+                    duration_seconds=time.monotonic() - started,
+                )
+            )
+            report.passed = False
+            report.message = f"`{display}` exited {LAUNCH_FAILURE_EXIT_CODE}"
+            return report
+        try:
             proc = runner(
-                _as_argv(command),
+                argv,
                 cwd=str(cwd),
                 capture_output=True,
                 text=True,

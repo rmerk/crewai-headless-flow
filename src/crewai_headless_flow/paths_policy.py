@@ -22,7 +22,10 @@ Restore semantics and their honest limits:
   where denied files never reach the real repo at all.
 
 ``restore_denied_paths`` is, alongside ``delivery.py``, the only git writer
-in the platform — scoped to ``git checkout -- <denied paths>``.
+in the platform — scoped to ``git checkout -- :(literal)<denied path>``.
+Paths are always passed to git as ``:(literal)`` pathspecs because they are
+derived from worker activity and may be glob-shaped (a file literally named
+``*.env`` must not expand into a checkout of every tracked .env file).
 """
 
 from __future__ import annotations
@@ -68,10 +71,28 @@ def restore_denied_paths(
     unrestorable: list[str] = []
 
     for rel_path in paths:
+        candidate = Path(rel_path)
+        suspicious = (
+            rel_path.startswith(":")
+            or candidate.is_absolute()
+            or ".." in candidate.parts
+        )
+        if suspicious:
+            # ":" starts git pathspec magic and absolute/".." paths escape the
+            # repo. Snapshot-derived paths are never shaped like this, so a
+            # hostile name is refused rather than handed to git or unlink.
+            logger.warning(
+                f"[Paths] Refusing to restore suspicious denied path {rel_path!r}."
+            )
+            unrestorable.append(rel_path)
+            continue
         target = repo / rel_path
-        tracked = git(["ls-files", "--", rel_path], repo)
+        # :(literal) so a glob-shaped name like "*.env" cannot fan out into a
+        # checkout of every matching tracked file (operator WIP destruction).
+        literal = f":(literal){rel_path}"
+        tracked = git(["ls-files", "--", literal], repo)
         if tracked.returncode == 0 and (tracked.stdout or "").strip():
-            restored = git(["checkout", "--", rel_path], repo)
+            restored = git(["checkout", "--", literal], repo)
             if restored.returncode != 0:
                 logger.warning(
                     f"[Paths] Could not restore denied path {rel_path!r}: "

@@ -2401,6 +2401,26 @@ def test_verify_override_is_revalidated(sample_config_dir: Path):
         )
 
 
+def test_verify_unparseable_string_command_rejected_at_load(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["verify"] = {"commands": ["pytest 'unclosed"]}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ValueError, match="not parseable as a command line"):
+        load_config(sample_config_dir)
+
+
+def test_verify_override_empty_commands_rejected(sample_config_dir: Path):
+    # commands=[] via CLI override would silently disable the verification
+    # gate for a single run — a bypass, not a configuration.
+    with pytest.raises(ValueError, match="would disable the verification gate"):
+        load_runtime_config(
+            config_dir=sample_config_dir,
+            verify_overrides=["commands=[]"],
+        )
+
+
 # =============================================================================
 # paths: block + do_work.isolation (autonomy Gap 8b)
 # =============================================================================
