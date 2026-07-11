@@ -7,18 +7,23 @@ are atomic (unique temp file in the same directory + os.replace), so a
 checkpoint can never be observed torn — even with concurrent writers during
 parallel task batches, the last complete write wins.
 
+`summarize_runs` (autonomy Phase 3) is the read side: a run-history listing
+over `runs/` built from each run's checkpointed `state.json`.
+
 This module is deliberately dependency-light: it never imports flow/state and
 takes pre-serialized strings, so it stays trivially testable and reusable.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import tempfile
 import uuid
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 STATE_FILENAME = "state.json"
 DEBUG_REPORT_FILENAME = "debug_report.md"
@@ -123,3 +128,71 @@ class RunStore:
             except OSError:
                 pass
             raise
+
+
+def summarize_runs(base_dir: Path | str, *, limit: int | None = None) -> list[dict]:
+    """Run-history listing over ``base_dir`` (newest first).
+
+    One summary dict per run directory, read from its checkpointed
+    ``state.json``. Run ids start with a timestamp, so reverse-lexical
+    order is reverse-chronological. A run dir with a missing or unreadable
+    state file still gets a row (status ``"unknown"``) — an operator
+    scanning history must see crashed-before-first-checkpoint runs too.
+    """
+    base_dir = Path(base_dir)
+    if not base_dir.is_dir():
+        return []
+
+    summaries: list[dict] = []
+    run_dirs = sorted(
+        (entry for entry in base_dir.iterdir() if entry.is_dir()),
+        key=lambda entry: entry.name,
+        reverse=True,
+    )
+    if limit is not None:
+        run_dirs = run_dirs[:limit]
+    for run_dir in run_dirs:
+        summaries.append(_summarize_run_dir(run_dir))
+    return summaries
+
+
+def _summarize_run_dir(run_dir: Path) -> dict:
+    summary: dict[str, Any] = {
+        "run_id": run_dir.name,
+        "run_dir": str(run_dir),
+        "status": "unknown",
+        "request": None,
+        "revisions": None,
+        "max_revisions": None,
+        "tasks_done": None,
+        "tasks_total": None,
+        "branch": None,
+        "changed_files": None,
+    }
+    try:
+        data = json.loads((run_dir / STATE_FILENAME).read_text())
+    except (OSError, ValueError):
+        return summary
+    if not isinstance(data, dict):
+        return summary
+
+    summary["status"] = str(data.get("status") or "unknown")
+    request = data.get("request")
+    summary["request"] = " ".join(str(request).split())[:80] if request else None
+    summary["revisions"] = data.get("revisions")
+    summary["max_revisions"] = data.get("max_revisions")
+    tasks = data.get("tasks")
+    if isinstance(tasks, list):
+        summary["tasks_total"] = len(tasks)
+        summary["tasks_done"] = sum(
+            1
+            for task in tasks
+            if isinstance(task, dict) and task.get("status") == "done"
+        )
+    delivery = data.get("delivery_report")
+    if isinstance(delivery, dict):
+        summary["branch"] = delivery.get("branch")
+    changed = data.get("changed_files")
+    if isinstance(changed, list):
+        summary["changed_files"] = len(changed)
+    return summary

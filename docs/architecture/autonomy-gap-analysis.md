@@ -192,14 +192,14 @@ All "smallest change" sketches below preserve the AGENTS.md invariants: the insp
 
 **Exit criterion:** `status == "completed"` implies the operator's verify commands passed on the delivered branch, and `runs/<run_id>/` answers "why did run X fail?" without any opt-in flags.
 
-### Phase 3 — Triggering & queueing
+### Phase 3 — Triggering & queueing — CORE SHIPPED (2026-07-11, ADR 0010)
 
 *Only now is a standing autonomous service safe to build.*
 
-1. **Gap 11 — thin `serve`/`enqueue` entrypoint** (file-drop queue or webhook wrapper) reusing the existing `run` path, one run dir per job.
-2. **Concurrency limits + run-history listing** over `runs/`.
-3. **First-party ticket trigger** — absorb or replace the external `invoke-ticket-flow` (`my_crew`) integration.
-4. **Gap 12 (live half)** — opt-in codex/grok smoke files behind the existing markers.
+1. **Gap 11 — thin `serve`/`enqueue` entrypoint** (file-drop queue or webhook wrapper) reusing the existing `run` path, one run dir per job. — SHIPPED (`job_queue.py`; file-drop queue, atomic rename claims, run subprocesses, ADR 0010)
+2. **Concurrency limits + run-history listing** over `runs/`. — SHIPPED (`serve --max-concurrent`; `runs` via `run_store.summarize_runs`)
+3. **First-party ticket trigger** — absorb or replace the external `invoke-ticket-flow` (`my_crew`) integration. — DEFERRED: its interface is exactly an `enqueue` call; which tracker/credentials/mapping to use is an operator decision outside this repo's core (see ADR 0010).
+4. **Gap 12 (live half)** — opt-in codex/grok smoke files behind the existing markers. — SHIPPED (`test_live_codex_smoke.py`, `test_live_grok_smoke.py`)
 
 **Exit criterion:** a feature request dropped in the queue produces, without human touch, a pushed branch (or PR) that passed the verify gate — or a parked, notified escalation awaiting one human decision.
 

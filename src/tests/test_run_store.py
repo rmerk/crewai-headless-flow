@@ -367,3 +367,107 @@ def test_resumed_flow_appends_to_same_events_file(tmp_path: Path):
     events = [json.loads(line) for line in store.events_path.read_text().splitlines()]
     stage_starts = [e for e in events if e["kind"] == "stage_start"]
     assert len(stage_starts) == 2
+
+
+# =============================================================================
+# summarize_runs — run-history listing (autonomy Phase 3)
+# =============================================================================
+
+
+def _write_run(base: Path, run_id: str, state: dict | None) -> Path:
+    run_dir = base / run_id
+    run_dir.mkdir(parents=True)
+    if state is not None:
+        (run_dir / "state.json").write_text(json.dumps(state))
+    return run_dir
+
+
+def test_summarize_runs_lists_newest_first_with_state_fields(tmp_path: Path):
+    from crewai_headless_flow.run_store import summarize_runs
+
+    _write_run(
+        tmp_path,
+        "20260710-100000-older-run-aa",
+        {
+            "status": "completed",
+            "request": "add   auth support",
+            "revisions": 1,
+            "max_revisions": 2,
+            "tasks": [{"status": "done"}, {"status": "failed"}],
+            "delivery_report": {"branch": "flow/older"},
+            "changed_files": ["a.py", "b.py"],
+        },
+    )
+    _write_run(
+        tmp_path,
+        "20260711-120000-newer-run-bb",
+        {"status": "failed", "request": "fix bug", "revisions": 2, "max_revisions": 2},
+    )
+
+    summaries = summarize_runs(tmp_path)
+
+    assert [entry["run_id"] for entry in summaries] == [
+        "20260711-120000-newer-run-bb",
+        "20260710-100000-older-run-aa",
+    ]
+    older = summaries[1]
+    assert older["status"] == "completed"
+    assert older["request"] == "add auth support"  # whitespace collapsed
+    assert older["revisions"] == 1
+    assert older["tasks_done"] == 1
+    assert older["tasks_total"] == 2
+    assert older["branch"] == "flow/older"
+    assert older["changed_files"] == 2
+
+
+def test_summarize_runs_reports_unreadable_state_as_unknown(tmp_path: Path):
+    from crewai_headless_flow.run_store import summarize_runs
+
+    _write_run(tmp_path, "20260711-130000-no-state-cc", None)
+    broken = _write_run(tmp_path, "20260711-140000-broken-dd", None)
+    (broken / "state.json").write_text("{not json")
+
+    summaries = summarize_runs(tmp_path)
+
+    assert [entry["status"] for entry in summaries] == ["unknown", "unknown"]
+    assert summaries[0]["run_id"] == "20260711-140000-broken-dd"
+
+
+def test_summarize_runs_honors_limit_and_missing_dir(tmp_path: Path):
+    from crewai_headless_flow.run_store import summarize_runs
+
+    for index in range(3):
+        _write_run(
+            tmp_path, f"2026071{index}-000000-r-{index}", {"status": "completed"}
+        )
+
+    assert len(summarize_runs(tmp_path, limit=2)) == 2
+    assert summarize_runs(tmp_path / "does-not-exist") == []
+
+
+def test_cli_runs_lists_history(tmp_path: Path, capsys):
+    from crewai_headless_flow import cli
+
+    # A pre-existing handler keeps _configure_logging from binding this
+    # test's captured stdout, so --format json output stays parseable.
+    logging.getLogger("crewai_headless_flow").addHandler(logging.NullHandler())
+
+    _write_run(
+        tmp_path,
+        "20260711-120000-list-me-ee",
+        {
+            "status": "completed",
+            "request": "list me",
+            "revisions": 0,
+            "max_revisions": 2,
+            "delivery_report": {"branch": "flow/list-me"},
+        },
+    )
+
+    exit_code = cli.main(["runs", "--runs-dir", str(tmp_path), "--format", "json"])
+
+    assert exit_code == 0
+    data = json.loads(capsys.readouterr().out)
+    assert len(data) == 1
+    assert data[0]["run_id"] == "20260711-120000-list-me-ee"
+    assert data[0]["branch"] == "flow/list-me"
