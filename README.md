@@ -1139,9 +1139,13 @@ uv run python -m crewai_headless_flow enqueue \
 # Drain forever (Ctrl-C finishes in-flight jobs first), or drain once and exit:
 uv run python -m crewai_headless_flow serve --queue-dir ./queue --max-concurrent 2
 uv run python -m crewai_headless_flow serve --queue-dir ./queue --once
+
+# Inspect the queue without touching it:
+uv run python -m crewai_headless_flow jobs --queue-dir ./queue
+uv run python -m crewai_headless_flow jobs --queue-dir ./queue --state failed --format json
 ```
 
-Queue layout: `pending/` → (atomic claim) → `running/` → `done/` or `failed/`, plus `logs/<job_id>.log` and the run's final state in `results/`. Jobs carry `--max-revisions`, `--config-dir`, and any `--override-*` flags. Serve jobs run with stdin closed — headless by construction — so static HITL gates must stay off; escalation channels park runs instead, and a parked job lands in `failed/` with its `run_status` recorded for manual `run --resume-state-file` follow-up. Orphaned `running/` jobs from a crashed serve are requeued at startup; run exactly one serve loop per queue directory. See `docs/adr/0010-file-drop-job-queue.md`.
+Queue layout: `pending/` → (atomic claim) → `running/` → `done/` or `failed/`, plus `logs/<job_id>.log` and the run's final state in `results/`. `jobs` lists the snapshot per state (id, request, and — once finished — `run_status`, exit code, and any launch error); it only reads job files, so it is safe to run beside a live serve loop. Jobs carry `--max-revisions`, `--config-dir`, and any `--override-*` flags. Serve jobs run with stdin closed — headless by construction — so static HITL gates must stay off; escalation channels park runs instead, and a parked job lands in `failed/` with its `run_status` recorded for manual `run --resume-state-file` follow-up. Orphaned `running/` jobs from a crashed serve are requeued at startup; run exactly one serve loop per queue directory. See `docs/adr/0010-file-drop-job-queue.md`.
 
 ### Run history
 
@@ -1195,7 +1199,7 @@ RUN_LIVE_GEMINI=1 uv run pytest -m live_gemini
 ```
 src/crewai_headless_flow/
 ├── __main__.py             # python -m entrypoint
-├── cli.py                  # argparse CLI: run, doctor, preflight
+├── cli.py                  # argparse CLI: run, doctor, preflight, enqueue, serve, runs, jobs
 ├── diagnostics.py          # detect-only doctor + read-only preflight checks
 ├── flow.py                 # The main CrewAI Flow
 ├── state.py                # Pydantic persisted state

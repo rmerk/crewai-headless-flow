@@ -17,7 +17,7 @@ from .runtime_overrides import load_runtime_config
 from .state import FlowState
 
 
-SUBCOMMANDS = {"run", "doctor", "preflight", "enqueue", "serve", "runs"}
+SUBCOMMANDS = {"run", "doctor", "preflight", "enqueue", "serve", "runs", "jobs"}
 
 
 def run_headless_flow(**kwargs):
@@ -73,6 +73,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _handle_serve(_parse_serve_args(args[1:]))
         if args[0] == "runs":
             return _handle_runs(_parse_runs_args(args[1:]))
+        if args[0] == "jobs":
+            return _handle_jobs(_parse_jobs_args(args[1:]))
         if _has_legacy_args(args):
             return _handle_run(_parse_legacy_args(args))
     except SystemExit as exc:
@@ -281,6 +283,41 @@ def _handle_runs(args: argparse.Namespace) -> int:
         print(line)
         if entry.get("request"):
             print(f"    {entry['request']}")
+    return 0
+
+
+def _handle_jobs(args: argparse.Namespace) -> int:
+    from .job_queue import list_jobs
+
+    queue_dir = normalize_path(args.queue_dir)
+    snapshot = list_jobs(queue_dir)
+    states = [args.state] if args.state else list(snapshot)
+    if args.format == "json":
+        payload = {
+            state: [job.model_dump() for job in snapshot[state]] for state in states
+        }
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+
+    if not any(snapshot[state] for state in states):
+        print(f"No jobs found in {queue_dir}")
+        return 0
+    for state in states:
+        jobs = snapshot[state]
+        print(f"{state} ({len(jobs)}):")
+        for job in jobs:
+            line = f"  {job.job_id}"
+            if job.run_status:
+                line += f"  {job.run_status}"
+            if job.exit_code is not None:
+                line += f"  exit {job.exit_code}"
+            print(line)
+            request = _compact_text(job.request)
+            if request:
+                print(f"    {request}")
+            error = _compact_text(job.error)
+            if error:
+                print(f"    error: {error}")
     return 0
 
 
@@ -636,6 +673,18 @@ def _parse_runs_args(args: list[str]) -> argparse.Namespace:
     return parser.parse_args(args)
 
 
+def _parse_jobs_args(args: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="python -m crewai_headless_flow jobs")
+    parser.add_argument("--queue-dir", default="./queue")
+    parser.add_argument(
+        "--state",
+        choices=("pending", "running", "done", "failed"),
+        help="Only list jobs in this queue state.",
+    )
+    parser.add_argument("--format", choices=("text", "json"), default="text")
+    return parser.parse_args(args)
+
+
 def _add_run_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--request")
     parser.add_argument("--target-repo")
@@ -686,6 +735,7 @@ def _build_help_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("enqueue", help="Drop a request into the file-drop queue")
     subparsers.add_parser("serve", help="Drain the queue by spawning run subprocesses")
     subparsers.add_parser("runs", help="List run history from the runs directory")
+    subparsers.add_parser("jobs", help="List queue jobs by state")
     return parser
 
 

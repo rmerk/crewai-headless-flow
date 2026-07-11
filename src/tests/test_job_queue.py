@@ -539,3 +539,63 @@ def test_cli_enqueue_rejects_missing_target_repo(tmp_path: Path, capsys):
 
     assert exit_code == 1
     assert "not a directory" in capsys.readouterr().err
+
+
+def test_cli_jobs_snapshots_every_queue_state(tmp_path: Path, capsys):
+    import logging
+
+    from crewai_headless_flow import cli
+
+    # Keep --format json output parseable regardless of test order: a
+    # pre-existing handler stops _configure_logging from binding this
+    # test's captured stdout.
+    logging.getLogger("crewai_headless_flow").addHandler(logging.NullHandler())
+
+    queue = tmp_path / "queue"
+    enqueue_job(queue, _job("add auth"))
+    enqueue_job(queue, _job("fix bug", uuid_hex="ffff0000"))
+    claimed = claim_next_job(queue)  # FIFO: "add auth" sorts first
+    assert claimed is not None and claimed.request == "add auth"
+    claimed.exit_code = 1
+    claimed.run_status = "escalated"
+    finish_job(queue, claimed, succeeded=False)
+
+    exit_code = cli.main(["jobs", "--queue-dir", str(queue), "--format", "json"])
+
+    assert exit_code == 0
+    data = json.loads(capsys.readouterr().out)
+    assert sorted(data) == ["done", "failed", "pending", "running"]
+    assert [job["request"] for job in data["pending"]] == ["fix bug"]
+    assert data["running"] == []
+    assert data["done"] == []
+    assert [job["exit_code"] for job in data["failed"]] == [1]
+    assert [job["run_status"] for job in data["failed"]] == ["escalated"]
+
+
+def test_cli_jobs_text_output_and_state_filter(tmp_path: Path, capsys):
+    from crewai_headless_flow import cli
+
+    queue = tmp_path / "queue"
+    enqueue_job(queue, _job("add auth"))
+
+    exit_code = cli.main(["jobs", "--queue-dir", str(queue), "--state", "pending"])
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "pending (1):" in out
+    assert "add auth" in out
+    assert "running" not in out  # filtered states stay out of the listing
+
+    exit_code = cli.main(["jobs", "--queue-dir", str(queue), "--state", "done"])
+
+    assert exit_code == 0
+    assert "No jobs found" in capsys.readouterr().out
+
+
+def test_cli_jobs_handles_missing_queue_dir(tmp_path: Path, capsys):
+    from crewai_headless_flow import cli
+
+    exit_code = cli.main(["jobs", "--queue-dir", str(tmp_path / "nowhere")])
+
+    assert exit_code == 0
+    assert "No jobs found" in capsys.readouterr().out
