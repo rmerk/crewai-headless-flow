@@ -17,7 +17,7 @@ from .runtime_overrides import load_runtime_config
 from .state import FlowState
 
 
-SUBCOMMANDS = {"run", "doctor", "preflight"}
+SUBCOMMANDS = {"run", "doctor", "preflight", "enqueue", "serve", "runs"}
 
 
 def run_headless_flow(**kwargs):
@@ -67,6 +67,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _handle_doctor(_parse_doctor_args(args[1:]))
         if args[0] == "preflight":
             return _handle_preflight(_parse_preflight_args(args[1:]))
+        if args[0] == "enqueue":
+            return _handle_enqueue(_parse_enqueue_args(args[1:]))
+        if args[0] == "serve":
+            return _handle_serve(_parse_serve_args(args[1:]))
+        if args[0] == "runs":
+            return _handle_runs(_parse_runs_args(args[1:]))
         if _has_legacy_args(args):
             return _handle_run(_parse_legacy_args(args))
     except SystemExit as exc:
@@ -185,6 +191,107 @@ def _handle_preflight(args: argparse.Namespace) -> int:
     report = run_preflight(args.target_repo, config_dir=args.config_dir)
     _print_report(report, args.format)
     return 1 if report.status == "fail" else 0
+
+
+def _handle_enqueue(args: argparse.Namespace) -> int:
+    from .job_queue import enqueue_job, new_job
+
+    target_repo = normalize_path(args.target_repo)
+    if not target_repo.is_dir():
+        raise ValueError(f"--target-repo is not a directory: {target_repo}")
+    config_dir = normalize_path(args.config_dir) if args.config_dir else None
+    if config_dir is not None and not config_dir.is_dir():
+        raise ValueError(f"--config-dir is not a directory: {config_dir}")
+
+    job = new_job(
+        args.request,
+        str(target_repo),
+        max_revisions=_resolve_max_revisions(args.max_revisions),
+        config_dir=str(config_dir) if config_dir else None,
+        overrides=_collect_override_kinds(args),
+    )
+    path = enqueue_job(normalize_path(args.queue_dir), job)
+    if args.format == "json":
+        print(json.dumps({"job_id": job.job_id, "path": str(path)}, indent=2))
+    else:
+        print(f"Enqueued job {job.job_id}")
+        print(f"Job file: {path}")
+    return 0
+
+
+def _handle_serve(args: argparse.Namespace) -> int:
+    from .job_queue import serve_queue
+
+    if args.max_concurrent < 1:
+        raise ValueError("--max-concurrent must be at least 1")
+    if args.poll_interval <= 0:
+        raise ValueError("--poll-interval must be positive")
+
+    report = serve_queue(
+        normalize_path(args.queue_dir),
+        runs_dir=_resolve_runs_dir(args.runs_dir),
+        max_concurrent=args.max_concurrent,
+        poll_interval=args.poll_interval,
+        once=args.once,
+    )
+    if args.format == "json":
+        print(json.dumps(report.model_dump(), indent=2, sort_keys=True))
+    else:
+        print(
+            f"Processed: {report.processed} "
+            f"(done: {len(report.done)}, failed: {len(report.failed)}, "
+            f"requeued: {len(report.requeued)})"
+        )
+        for job_id in report.failed:
+            print(f"- failed: {job_id}")
+    return 0 if not report.failed else 1
+
+
+def _handle_runs(args: argparse.Namespace) -> int:
+    from .run_store import summarize_runs
+
+    runs_dir = _resolve_runs_dir(args.runs_dir)
+    if runs_dir is None:
+        raise ValueError("runs requires a runs directory (--runs-dir)")
+    summaries = summarize_runs(runs_dir, limit=args.limit)
+    if args.format == "json":
+        print(json.dumps(summaries, indent=2, sort_keys=True))
+        return 0
+
+    if not summaries:
+        print(f"No runs found in {runs_dir}")
+        return 0
+    for entry in summaries:
+        revisions = (
+            f"{entry['revisions']}/{entry['max_revisions']}"
+            if entry.get("revisions") is not None
+            else "-"
+        )
+        tasks = (
+            f"{entry['tasks_done']}/{entry['tasks_total']}"
+            if entry.get("tasks_total") is not None
+            else "-"
+        )
+        line = (
+            f"{entry['run_id']}  {entry['status']:<12} "
+            f"rev {revisions:<5} tasks {tasks:<7}"
+        )
+        if entry.get("branch"):
+            line += f" -> {entry['branch']}"
+        print(line)
+        if entry.get("request"):
+            print(f"    {entry['request']}")
+    return 0
+
+
+def _collect_override_kinds(args: argparse.Namespace) -> dict[str, list[str]]:
+    """Map parsed --override-* flags onto job_queue override kinds."""
+    overrides: dict[str, list[str]] = {}
+    for attr, values in vars(args).items():
+        if not attr.startswith("override_") or not values:
+            continue
+        overrides[attr.removeprefix("override_").replace("_", "-")] = list(values)
+    return overrides
 
 
 def _print_report(report: diagnostics.DiagnosticReport, output_format: str) -> None:
@@ -490,6 +597,45 @@ def _parse_preflight_args(args: list[str]) -> argparse.Namespace:
     return parser.parse_args(args)
 
 
+def _parse_enqueue_args(args: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="python -m crewai_headless_flow enqueue")
+    parser.add_argument("--request", required=True)
+    parser.add_argument("--target-repo", required=True)
+    parser.add_argument("--queue-dir", default="./queue")
+    parser.add_argument("--max-revisions", type=int)
+    parser.add_argument("--config-dir")
+    parser.add_argument("--format", choices=("text", "json"), default="text")
+    _add_runtime_override_args(parser)
+    return parser.parse_args(args)
+
+
+def _parse_serve_args(args: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="python -m crewai_headless_flow serve")
+    parser.add_argument("--queue-dir", default="./queue")
+    parser.add_argument(
+        "--runs-dir",
+        default="./runs",
+        help="Base directory for the spawned runs' artifact dirs.",
+    )
+    parser.add_argument("--max-concurrent", type=int, default=1)
+    parser.add_argument("--poll-interval", type=float, default=2.0)
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Drain the queue and exit instead of polling forever.",
+    )
+    parser.add_argument("--format", choices=("text", "json"), default="text")
+    return parser.parse_args(args)
+
+
+def _parse_runs_args(args: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="python -m crewai_headless_flow runs")
+    parser.add_argument("--runs-dir", default="./runs")
+    parser.add_argument("--limit", type=int, default=20)
+    parser.add_argument("--format", choices=("text", "json"), default="text")
+    return parser.parse_args(args)
+
+
 def _add_run_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--request")
     parser.add_argument("--target-repo")
@@ -537,6 +683,9 @@ def _build_help_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("run", help="Run the full headless flow")
     subparsers.add_parser("doctor", help="Run detect-only environment diagnostics")
     subparsers.add_parser("preflight", help="Inspect target repository readiness")
+    subparsers.add_parser("enqueue", help="Drop a request into the file-drop queue")
+    subparsers.add_parser("serve", help="Drain the queue by spawning run subprocesses")
+    subparsers.add_parser("runs", help="List run history from the runs directory")
     return parser
 
 

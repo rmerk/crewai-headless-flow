@@ -59,3 +59,11 @@ _Avoid_: sandbox (that is the adapters' CLI flag domain)
 **WorkerSpec** (autonomy Phase 2):
 The single registration record for one worker (`workers/__init__.py::WORKER_SPECS`): adapter class, default binary, doctor help command, required flags. `WORKER_ADAPTERS` and doctor's worker dicts are derived from it; the top-level `workers:` config block overrides binaries per worker.
 _Avoid_: adapter registry (unqualified), plugin table
+
+**Job Queue** (autonomy Phase 3):
+The file-drop trigger surface (`src/crewai_headless_flow/job_queue.py`): a job is a JSON file in `queue/pending/`, claimed by atomic rename into `running/` and finished into `done/`/`failed/`. `enqueue` writes jobs; one `serve` loop per queue directory drains them by spawning the ordinary `run` CLI as a subprocess (stdin closed, per-job log, final state in `results/`). The platform holds zero network code — external listeners converge on `enqueue`.
+_Avoid_: task queue (a "task" is a plan work item, not a queued job), server, daemon
+
+**Run History** (autonomy Phase 3):
+The `runs` listing built by `run_store.summarize_runs`: one row per `runs/<run_id>/` directory, newest first, read from each run's [[Checkpoint]] `state.json` (status, revisions, task progress, delivery branch, request). Run dirs without a readable state file are listed as `unknown`, never hidden.
+_Avoid_: audit log, event log (that is the [[Event Log]])

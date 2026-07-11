@@ -89,6 +89,11 @@ uv run python -m crewai_headless_flow doctor --target-repo /path/to/target --for
 # Read-only target-repo readiness check
 uv run python -m crewai_headless_flow preflight --target-repo /path/to/target
 
+# File-drop queue (Phase 3): enqueue a request, drain the queue, list run history
+uv run python -m crewai_headless_flow enqueue --request "..." --target-repo /path/to/target --queue-dir ./queue
+uv run python -m crewai_headless_flow serve --queue-dir ./queue --once
+uv run python -m crewai_headless_flow runs --runs-dir ./runs
+
 # Linting & types (run before committing non-trivial work)
 uv run ruff check .
 uv run ruff format --check .

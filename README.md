@@ -1122,6 +1122,35 @@ workers:
 
 `doctor` probes the configured binary too. One-run override: `--override-worker-binary codex=/opt/bin/codex-nightly`.
 
+## Triggering & Queueing (autonomy Phase 3)
+
+### File-drop job queue
+
+Requests no longer need a human at a terminal. `enqueue` drops a JSON job file into a queue directory; a single `serve` loop drains it by spawning the ordinary `run` CLI as a subprocess — one run dir, one delivery branch, one log per job:
+
+```bash
+# Anything that can write a file is a trigger (cron, webhook receiver, ticket bot, human):
+uv run python -m crewai_headless_flow enqueue \
+  --request "Add a health endpoint" \
+  --target-repo /path/to/target \
+  --queue-dir ./queue \
+  --override-verify 'commands=["uv run pytest -q"]'
+
+# Drain forever (Ctrl-C finishes in-flight jobs first), or drain once and exit:
+uv run python -m crewai_headless_flow serve --queue-dir ./queue --max-concurrent 2
+uv run python -m crewai_headless_flow serve --queue-dir ./queue --once
+```
+
+Queue layout: `pending/` → (atomic claim) → `running/` → `done/` or `failed/`, plus `logs/<job_id>.log` and the run's final state in `results/`. Jobs carry `--max-revisions`, `--config-dir`, and any `--override-*` flags. Serve jobs run with stdin closed — headless by construction — so static HITL gates must stay off; escalation channels park runs instead, and a parked job lands in `failed/` with its `run_status` recorded for manual `run --resume-state-file` follow-up. Orphaned `running/` jobs from a crashed serve are requeued at startup; run exactly one serve loop per queue directory. See `docs/adr/0010-file-drop-job-queue.md`.
+
+### Run history
+
+```bash
+uv run python -m crewai_headless_flow runs --runs-dir ./runs --limit 20
+```
+
+Lists runs newest-first from each run dir's checkpointed `state.json`: status, revisions, task progress, delivery branch, and the request. `--format json` for scripting; run dirs without a readable state file are listed as `unknown` rather than hidden.
+
 ## Domain Model Integration (OpenWiki pass-through)
 
 If your target repository already uses [OpenWiki](https://github.com/langchain-ai/openwiki) to generate and maintain its own domain documentation, **the `cursor`, `claude`, `codex`, and `grok` workers pick up that context automatically — no `crewai-headless-flow` configuration needed.** OpenWiki self-registers by appending a pointer into the target repo's `AGENTS.md`/`CLAUDE.md`, and all four workers already read those files natively when invoked in that repo's working directory.
