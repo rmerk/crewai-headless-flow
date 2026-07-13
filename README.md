@@ -151,6 +151,7 @@ want a narrower, precomposed lane without editing YAML:
 | `config/` | You want the default direct-worker path: Codex for plan/review/finalize and Grok for `do_work`. |
 | `examples/configs/claude-do-work` | You want Claude Code on the edit stage with the rest of the flow unchanged. |
 | `examples/configs/gemini-do-work` | You want Gemini CLI on the edit stage with the rest of the flow unchanged. |
+| `examples/configs/jira-workflow` | You want to run the flow against Jira tickets using custom Jira planning and implementation skills. |
 | `examples/configs/cursor-do-work` | You want Cursor Agent CLI on all stages with a single model lane. |
 | `examples/configs/plan-gate` | You want an operator checkpoint before repository-wide planning starts. |
 | `examples/configs/planning-crew` | You want the optional planning Crew without changing implementation/review topology. |
@@ -1232,6 +1233,7 @@ examples/
     ├── finalize-targeting-gate/
     ├── finalize-review-gate/
     ├── gemini-do-work/
+    ├── jira-workflow/
     ├── guided-operator-loop/
     ├── implementation-crew/
     ├── implementation-crew-parallel/

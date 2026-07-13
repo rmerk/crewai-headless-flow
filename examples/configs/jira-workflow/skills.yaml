@@ -1,0 +1,5 @@
+stages:
+  plan: jira-ticket-plan
+  do_work: jira-ticket-implement
+  review: jira-ticket-plan-audit
+  finalize: documentation-and-adrs

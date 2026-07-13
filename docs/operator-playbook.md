@@ -63,6 +63,26 @@ uv run python -m crewai_headless_flow run \
   --config-dir examples/configs/gemini-do-work
 ```
 
+## 3.5. Jira Workflow
+
+Use when:
+- You want to plan, implement, and audit Jira tickets directly
+- You want to use the `jira-ticket-plan`, `jira-ticket-implement`, and `jira-ticket-plan-audit` skills
+- You are targeting a frontend repo like `asure.ptm.portal.web.ui.new` while referencing the `webapi` repo
+
+Config dir:
+- `examples/configs/jira-workflow`
+
+Command:
+
+```bash
+uv run python -m crewai_headless_flow run \
+  --request "AS-5245" \
+  --target-repo /Users/rchoi/Developer/asure/asure.ptm.portal.web.ui.new \
+  --config-dir examples/configs/jira-workflow
+```
+
+
 ## 4. Cursor On All Stages
 
 Use when:

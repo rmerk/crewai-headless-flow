@@ -1,0 +1,22 @@
+defaults:
+  worker: "claude"
+  model: "sonnet"
+  timeout: 300
+
+stages:
+  plan:
+    worker: "claude"
+
+  do_work:
+    worker: "claude"
+    always_approve: true
+
+  review:
+    worker: "claude"
+    sandbox: "read-only"
+
+  finalize:
+    worker: "claude"
+
+human_feedback:
+  enabled: false

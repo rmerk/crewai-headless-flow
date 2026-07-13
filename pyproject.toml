@@ -11,6 +11,8 @@ dependencies = [
     "pyyaml>=6.0,<7.0",
     "python-dotenv>=1.0.0,<2.0.0",
     "litellm>=1.86.2",
+    "fastapi>=0.139.0",
+    "uvicorn>=0.48.0",
 ]
 
 [project.scripts]

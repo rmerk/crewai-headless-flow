@@ -21,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Literal, cast
 
-from crewai.flow.flow import Flow, listen, router, start
+from crewai.flow.flow import Flow, listen, router, start, or_
 
 from .config import (
     FlowConfig,
@@ -3323,7 +3323,7 @@ Rules:
 
         return "\n".join(task_summaries).strip() or "No structured tasks were executed."
 
-    @listen("plan")
+    @listen(or_("plan", "process_revision"))
     def do_work(self, plan_output: str) -> str:
         if self._is_terminal_status():
             logger.info(
@@ -3602,7 +3602,7 @@ Execute the work. After you are done, summarize what changed and whether tests n
     # Bounded revise loop
     # ------------------------------------------------------------------
     @listen("revise")
-    def revise(self, decision: str) -> str:
+    def process_revision(self, decision: str) -> str:
         if self._is_terminal_status():
             logger.info(
                 f"[Flow] Skipping revise because flow is terminal: {self.state.status}"
@@ -3647,6 +3647,9 @@ Execute the work. After you are done, summarize what changed and whether tests n
         # Loop back to do_work with the issues as additional context
         issues_text = "\n".join(f"- {i}" for i in self.state.issues)
         return f"Previous review found the following issues that must be fixed:\n{issues_text}"
+
+    def revise(self, decision: str) -> str:
+        return cast(Any, self.process_revision)(decision)
 
     def _planned_task_review_context(self) -> str:
         if not self.state.tasks:

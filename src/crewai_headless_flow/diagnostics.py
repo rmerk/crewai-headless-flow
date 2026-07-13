@@ -558,7 +558,7 @@ def _check_worker_cli(
         help_command = (binary_override, *help_command[1:])
     version = _run_probe((binary, "--version"))
     help_result = _run_probe(help_command)
-    help_text = _bounded_output(help_result.stdout + "\n" + help_result.stderr)
+    help_text = help_result.stdout + "\n" + help_result.stderr
     if version.returncode != 0 and help_result.returncode != 0:
         report.add_check(
             f"cli.{worker}",
@@ -845,10 +845,12 @@ def _run_probe(cmd: tuple[str, ...], timeout: int = 3) -> ProbeResult:
         return ProbeResult(returncode=124, stdout="", stderr="timed out")
     except Exception as exc:
         return ProbeResult(returncode=1, stdout="", stderr=str(exc))
+    
+    is_help = "--help" in cmd or "-h" in cmd
     return ProbeResult(
         returncode=proc.returncode,
-        stdout=_bounded_output(proc.stdout or ""),
-        stderr=_bounded_output(proc.stderr or ""),
+        stdout=proc.stdout or "" if is_help else _bounded_output(proc.stdout or ""),
+        stderr=proc.stderr or "" if is_help else _bounded_output(proc.stderr or ""),
     )
 
 

@@ -75,6 +75,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _handle_runs(_parse_runs_args(args[1:]))
         if args[0] == "jobs":
             return _handle_jobs(_parse_jobs_args(args[1:]))
+        if args[0] in ("dashboard", "ui"):
+            return _handle_dashboard(_parse_dashboard_args(args[1:]))
         if _has_legacy_args(args):
             return _handle_run(_parse_legacy_args(args))
     except SystemExit as exc:
@@ -247,6 +249,18 @@ def _handle_serve(args: argparse.Namespace) -> int:
         for job_id in report.failed:
             print(f"- failed: {job_id}")
     return 0 if not report.failed else 1
+
+
+def _handle_dashboard(args: argparse.Namespace) -> int:
+    from .dashboard import start_dashboard
+
+    start_dashboard(
+        host=args.host,
+        port=args.port,
+        queue_dir=args.queue_dir,
+        runs_dir=args.runs_dir,
+    )
+    return 0
 
 
 def _handle_runs(args: argparse.Namespace) -> int:
@@ -685,6 +699,15 @@ def _parse_jobs_args(args: list[str]) -> argparse.Namespace:
     return parser.parse_args(args)
 
 
+def _parse_dashboard_args(args: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="python -m crewai_headless_flow dashboard")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--queue-dir", default="./queue")
+    parser.add_argument("--runs-dir", default="./runs")
+    return parser.parse_args(args)
+
+
 def _add_run_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--request")
     parser.add_argument("--target-repo")
@@ -736,6 +759,8 @@ def _build_help_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("serve", help="Drain the queue by spawning run subprocesses")
     subparsers.add_parser("runs", help="List run history from the runs directory")
     subparsers.add_parser("jobs", help="List queue jobs by state")
+    subparsers.add_parser("dashboard", help="Start the local web dashboard")
+    subparsers.add_parser("ui", help="Alias for dashboard")
     return parser
 
 

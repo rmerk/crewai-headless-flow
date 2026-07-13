@@ -1,0 +1,890 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Antigravity Headless Coder Dashboard</title>
+    <!-- Modern typography -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    
+    <style>
+        :root {
+            --bg-color: #0b0f19;
+            --panel-bg: rgba(17, 24, 39, 0.7);
+            --panel-border: rgba(255, 255, 255, 0.08);
+            --accent-primary: #8b5cf6; /* Electric Violet */
+            --accent-primary-glow: rgba(139, 92, 246, 0.3);
+            --accent-secondary: #06b6d4; /* Neon Cyan */
+            --text-main: #f3f4f6;
+            --text-muted: #9ca3af;
+            --status-success: #10b981;
+            --status-pending: #f59e0b;
+            --status-error: #ef4444;
+            --font-main: 'Inter', sans-serif;
+            --font-mono: 'Fira Code', monospace;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            font-family: var(--font-main);
+            min-height: 100vh;
+            overflow-x: hidden;
+            background-image: 
+                radial-gradient(circle at 10% 20%, rgba(139, 92, 246, 0.15) 0%, transparent 40%),
+                radial-gradient(circle at 90% 80%, rgba(6, 118, 212, 0.12) 0%, transparent 45%);
+            background-attachment: fixed;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1.5rem 2rem;
+            border-bottom: 1px solid var(--panel-border);
+            backdrop-filter: blur(8px);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            background: rgba(11, 15, 25, 0.8);
+        }
+
+        .header-logo {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .logo-glow {
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            background-color: var(--accent-primary);
+            box-shadow: 0 0 12px 4px var(--accent-primary-glow);
+            animation: pulse 2s infinite alternate;
+        }
+
+        h1 {
+            font-size: 1.25rem;
+            font-weight: 700;
+            letter-spacing: -0.025em;
+            background: linear-gradient(135deg, #fff 30%, #a78bfa 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .status-badge {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.8rem;
+            font-weight: 500;
+            background: rgba(16, 185, 129, 0.1);
+            border: 1px solid rgba(16, 185, 129, 0.2);
+            color: var(--status-success);
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: var(--status-success);
+        }
+
+        main {
+            display: grid;
+            grid-template-columns: 1.1fr 1.9fr;
+            gap: 2rem;
+            padding: 2rem;
+            max-width: 1600px;
+            margin: 0 auto;
+        }
+
+        /* Glassmorphic Cards */
+        .card {
+            background: var(--panel-bg);
+            border: 1px solid var(--panel-border);
+            border-radius: 16px;
+            padding: 1.75rem;
+            backdrop-filter: blur(16px);
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+        }
+
+        .card-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-bottom: 1.5rem;
+            border-left: 3px solid var(--accent-primary);
+            padding-left: 0.75rem;
+            letter-spacing: -0.01em;
+        }
+
+        /* Forms Styling */
+        .form-group {
+            margin-bottom: 1.25rem;
+        }
+
+        label {
+            display: block;
+            font-size: 0.85rem;
+            font-weight: 500;
+            color: var(--text-muted);
+            margin-bottom: 0.5rem;
+        }
+
+        textarea, select, input[type="text"], input[type="number"] {
+            width: 100%;
+            background: rgba(15, 23, 42, 0.6);
+            border: 1px solid var(--panel-border);
+            border-radius: 8px;
+            color: var(--text-main);
+            padding: 0.75rem;
+            font-family: var(--font-main);
+            font-size: 0.9rem;
+            transition: all 0.2s ease;
+        }
+
+        textarea:focus, select:focus, input[type="text"]:focus, input[type="number"]:focus {
+            outline: none;
+            border-color: var(--accent-primary);
+            box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.15);
+        }
+
+        textarea {
+            resize: vertical;
+            min-height: 80px;
+        }
+
+        .repo-warning {
+            margin-top: 0.5rem;
+            padding: 0.5rem 0.75rem;
+            background: rgba(239, 68, 68, 0.1);
+            border: 1px solid rgba(239, 68, 68, 0.2);
+            border-radius: 6px;
+            color: #fca5a5;
+            font-size: 0.75rem;
+            display: none;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        /* Buttons */
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0.75rem 1.5rem;
+            font-size: 0.9rem;
+            font-weight: 600;
+            border-radius: 8px;
+            border: none;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            gap: 0.5rem;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, var(--accent-primary) 0%, #7c3aed 100%);
+            color: white;
+            box-shadow: 0 4px 14px var(--accent-primary-glow);
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 6px 20px rgba(139, 92, 246, 0.4);
+        }
+
+        .btn-block {
+            width: 100%;
+        }
+
+        .btn-cancel {
+            background: rgba(239, 68, 68, 0.15);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            color: var(--status-error);
+            font-size: 0.75rem;
+            padding: 0.35rem 0.75rem;
+            border-radius: 6px;
+        }
+
+        .btn-cancel:hover {
+            background: rgba(239, 68, 68, 0.25);
+        }
+
+        .btn-logs {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid var(--panel-border);
+            color: var(--text-main);
+            font-size: 0.75rem;
+            padding: 0.35rem 0.75rem;
+            border-radius: 6px;
+        }
+
+        .btn-logs:hover {
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        /* Monitor / Tabs Panel */
+        .tabs {
+            display: flex;
+            border-bottom: 1px solid var(--panel-border);
+            margin-bottom: 1.5rem;
+            gap: 1rem;
+        }
+
+        .tab-btn {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            padding: 0.5rem 0.25rem 0.75rem;
+            font-size: 0.9rem;
+            font-weight: 500;
+            cursor: pointer;
+            position: relative;
+            transition: color 0.2s;
+        }
+
+        .tab-btn:hover {
+            color: var(--text-main);
+        }
+
+        .tab-btn.active {
+            color: var(--accent-primary);
+            font-weight: 600;
+        }
+
+        .tab-btn.active::after {
+            content: '';
+            position: absolute;
+            bottom: -1px;
+            left: 0;
+            width: 100%;
+            height: 2px;
+            background-color: var(--accent-primary);
+            box-shadow: 0 0 8px var(--accent-primary);
+        }
+
+        .tab-count {
+            background: rgba(255, 255, 255, 0.08);
+            padding: 0.1rem 0.4rem;
+            border-radius: 10px;
+            font-size: 0.75rem;
+            margin-left: 0.35rem;
+        }
+
+        .job-list {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            max-height: 600px;
+            overflow-y: auto;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 3rem 1rem;
+            color: var(--text-muted);
+            font-size: 0.9rem;
+        }
+
+        /* Job Row Item */
+        .job-item {
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid var(--panel-border);
+            border-radius: 10px;
+            padding: 1rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+            transition: border-color 0.2s;
+        }
+
+        .job-item:hover {
+            border-color: rgba(255, 255, 255, 0.15);
+        }
+
+        .job-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+        }
+
+        .job-title {
+            font-weight: 600;
+            font-size: 0.95rem;
+            color: var(--text-main);
+            line-height: 1.4;
+        }
+
+        .job-id-badge {
+            font-family: var(--font-mono);
+            font-size: 0.7rem;
+            background: rgba(255, 255, 255, 0.05);
+            padding: 0.15rem 0.4rem;
+            border-radius: 4px;
+            color: var(--text-muted);
+        }
+
+        .job-details {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.5rem;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+        }
+
+        .job-detail-row {
+            display: flex;
+            align-items: center;
+            gap: 0.35rem;
+        }
+
+        .job-detail-label {
+            font-weight: 500;
+            color: rgba(255, 255, 255, 0.4);
+        }
+
+        .job-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 0.5rem;
+            border-top: 1px solid rgba(255, 255, 255, 0.04);
+            padding-top: 0.75rem;
+        }
+
+        /* Live Terminal Drawer */
+        .drawer-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background: rgba(0, 0, 0, 0.7);
+            backdrop-filter: blur(4px);
+            z-index: 1000;
+            display: none;
+            justify-content: flex-end;
+            transition: opacity 0.3s;
+        }
+
+        .drawer {
+            width: 100%;
+            max-width: 800px;
+            height: 100%;
+            background: #0f111a;
+            border-left: 1px solid var(--panel-border);
+            display: flex;
+            flex-direction: column;
+            box-shadow: -8px 0 32px rgba(0, 0, 0, 0.5);
+            animation: slideIn 0.3s ease-out;
+        }
+
+        @keyframes slideIn {
+            from { transform: translateX(100%); }
+            to { transform: translateX(0); }
+        }
+
+        .drawer-header {
+            padding: 1.5rem;
+            border-bottom: 1px solid var(--panel-border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: rgba(15, 17, 26, 0.95);
+        }
+
+        .drawer-title {
+            font-size: 1rem;
+            font-weight: 600;
+        }
+
+        .drawer-subtitle {
+            font-family: var(--font-mono);
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-top: 0.25rem;
+        }
+
+        .drawer-controls {
+            display: flex;
+            align-items: center;
+            gap: 1.5rem;
+        }
+
+        .checkbox-container {
+            display: flex;
+            align-items: center;
+            gap: 0.35rem;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            cursor: pointer;
+        }
+
+        .terminal-viewport {
+            flex-grow: 1;
+            padding: 1.5rem;
+            font-family: var(--font-mono);
+            font-size: 0.8rem;
+            line-height: 1.6;
+            color: #a6accd;
+            background-color: #0f111a;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        .close-drawer-btn {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            font-size: 1.5rem;
+            cursor: pointer;
+            transition: color 0.2s;
+        }
+
+        .close-drawer-btn:hover {
+            color: white;
+        }
+
+        @keyframes pulse {
+            from { opacity: 0.6; }
+            to { opacity: 1; }
+        }
+
+        /* Scrollbars styling */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: rgba(255, 255, 255, 0.02);
+        }
+        ::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="header-logo">
+            <div class="logo-glow"></div>
+            <h1>Antigravity Headless Coder</h1>
+        </div>
+        <div class="status-badge">
+            <div class="status-dot"></div>
+            <span>Backend Active</span>
+        </div>
+    </header>
+
+    <main>
+        <!-- Form Section -->
+        <section class="card">
+            <h2 class="card-title">Launch Workflow Run</h2>
+            <form id="runForm">
+                <div class="form-group">
+                    <label for="requestInput">Request / Prompt Summary</label>
+                    <textarea id="requestInput" required placeholder="e.g. AS-5245 or 'Add comments to Jenkinsfile explaining this is a test run'"></textarea>
+                </div>
+
+                <div class="form-group">
+                    <label for="repoSelect">Quick Target Repository</label>
+                    <select id="repoSelect">
+                        <option value="">-- Select repository --</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="repoPathInput">Absolute Target Path</label>
+                    <input type="text" id="repoPathInput" required placeholder="/path/to/target/repository">
+                    <div class="repo-warning" id="repoWarning">
+                        <span>⚠️</span>
+                        <span>This repository is reference-only. Edits are blocked/never saved here.</span>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label for="configSelect">Workflow Config Pack</label>
+                    <select id="configSelect">
+                        <option value="">(Default Settings)</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="revisionsInput">Max Revision Iterations</label>
+                    <input type="number" id="revisionsInput" min="1" max="10" value="1">
+                </div>
+
+                <div class="form-group">
+                    <label for="workerSelect">Override Target Worker</label>
+                    <select id="workerSelect">
+                        <option value="">(Config Default)</option>
+                        <option value="claude">Claude CLI</option>
+                        <option value="gemini">Gemini adapter</option>
+                        <option value="cursor">Cursor Agent</option>
+                        <option value="grok">Grok CLI</option>
+                        <option value="codex">Codex Sandbox</option>
+                    </select>
+                </div>
+
+                <button type="submit" class="btn btn-primary btn-block" style="margin-top: 1rem;">
+                    🚀 Launch Run
+                </button>
+            </form>
+        </section>
+
+        <!-- Monitor / Queue Section -->
+        <section class="card">
+            <h2 class="card-title">Job Execution Queue</h2>
+            
+            <div class="tabs">
+                <button class="tab-btn active" data-state="running">
+                    Running <span class="tab-count" id="count-running">0</span>
+                </button>
+                <button class="tab-btn" data-state="pending">
+                    Pending <span class="tab-count" id="count-pending">0</span>
+                </button>
+                <button class="tab-btn" data-state="done">
+                    Done <span class="tab-count" id="count-done">0</span>
+                </button>
+                <button class="tab-btn" data-state="failed">
+                    Failed <span class="tab-count" id="count-failed">0</span>
+                </button>
+            </div>
+
+            <div class="job-list" id="jobListContainer">
+                <div class="empty-state">Loading jobs...</div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Side Drawer Viewport for live terminal logs -->
+    <div class="drawer-overlay" id="drawerOverlay">
+        <div class="drawer">
+            <div class="drawer-header">
+                <div>
+                    <h3 class="drawer-title" id="drawerJobRequest">Job Execution Log</h3>
+                    <div class="drawer-subtitle" id="drawerJobId">Job ID: ...</div>
+                </div>
+                <div class="drawer-controls">
+                    <label class="checkbox-container">
+                        <input type="checkbox" id="autoScrollCheck" checked> Auto-Scroll
+                    </label>
+                    <button class="btn btn-cancel" id="cancelJobBtn" style="display: none;">🛑 Cancel Job</button>
+                    <button class="close-drawer-btn" id="closeDrawerBtn">&times;</button>
+                </div>
+            </div>
+            <div class="terminal-viewport" id="terminalViewport"></div>
+        </div>
+    </div>
+
+    <script>
+        let currentTabState = 'running';
+        let jobsData = { pending: [], running: [], done: [], failed: [] };
+        
+        // Active log polling state
+        let activeLogJobId = null;
+        let logPollInterval = null;
+
+        // Elements caching
+        const repoSelect = document.getElementById('repoSelect');
+        const repoPathInput = document.getElementById('repoPathInput');
+        const repoWarning = document.getElementById('repoWarning');
+        const configSelect = document.getElementById('configSelect');
+        const runForm = document.getElementById('runForm');
+        const jobListContainer = document.getElementById('jobListContainer');
+        
+        const drawerOverlay = document.getElementById('drawerOverlay');
+        const terminalViewport = document.getElementById('terminalViewport');
+        const drawerJobRequest = document.getElementById('drawerJobRequest');
+        const drawerJobId = document.getElementById('drawerJobId');
+        const autoScrollCheck = document.getElementById('autoScrollCheck');
+        const cancelJobBtn = document.getElementById('cancelJobBtn');
+        const closeDrawerBtn = document.getElementById('closeDrawerBtn');
+
+        // Init and initial fetches
+        async function init() {
+            await Promise.all([
+                fetchTargetRepos(),
+                fetchConfigPacks()
+            ]);
+            
+            // Initial poll
+            pollJobs();
+            // Regular queue status polling (every 1.5s)
+            setInterval(pollJobs, 1500);
+        }
+
+        async function fetchTargetRepos() {
+            try {
+                const res = await fetch('/api/target-repos');
+                const repos = await res.json();
+                repos.forEach(repo => {
+                    const opt = document.createElement('option');
+                    opt.value = repo.path;
+                    opt.textContent = `${repo.name} (${repo.role})`;
+                    opt.dataset.role = repo.role;
+                    repoSelect.appendChild(opt);
+                });
+            } catch (err) {
+                console.error("Failed to load target repos:", err);
+            }
+        }
+
+        async function fetchConfigPacks() {
+            try {
+                const res = await fetch('/api/config-packs');
+                const packs = await res.json();
+                packs.forEach(pack => {
+                    const opt = document.createElement('option');
+                    opt.value = pack;
+                    opt.textContent = pack;
+                    configSelect.appendChild(opt);
+                });
+            } catch (err) {
+                console.error("Failed to load config packs:", err);
+            }
+        }
+
+        // Dropdown change mapping to text input + warning banner toggling
+        repoSelect.addEventListener('change', () => {
+            const path = repoSelect.value;
+            repoPathInput.value = path;
+            
+            const selectedOpt = repoSelect.options[repoSelect.selectedIndex];
+            const role = selectedOpt.dataset.role;
+            if (role === 'reference-only') {
+                repoWarning.style.display = 'flex';
+            } else {
+                repoWarning.style.display = 'none';
+            }
+        });
+
+        // Form submit handler
+        runForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const request = document.getElementById('requestInput').value;
+            const target_repo = repoPathInput.value;
+            const config_dir = configSelect.value ? `examples/configs/${configSelect.value}` : null;
+            const max_revisions = parseInt(document.getElementById('revisionsInput').value);
+            const workerOverride = document.getElementById('workerSelect').value;
+            
+            const overrides = {};
+            if (workerOverride) {
+                overrides['default-worker'] = [workerOverride];
+                overrides['worker'] = [`plan=${workerOverride}`, `do_work=${workerOverride}`, `review=${workerOverride}`, `finalize=${workerOverride}`];
+            }
+
+            try {
+                const res = await fetch('/api/jobs', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        request,
+                        target_repo,
+                        config_dir,
+                        max_revisions,
+                        overrides
+                    })
+                });
+                
+                if (!res.ok) {
+                    const err = await res.json();
+                    alert(`Error: ${err.detail}`);
+                    return;
+                }
+                
+                // Clear input request, switch tab to pending to see the new entry
+                document.getElementById('requestInput').value = '';
+                switchTab('pending');
+                pollJobs();
+            } catch (err) {
+                alert(`Error enqueuing job: ${err}`);
+            }
+        });
+
+        // Poll jobs queue status
+        async function pollJobs() {
+            try {
+                const res = await fetch('/api/jobs');
+                const data = await res.json();
+                
+                jobsData = {
+                    pending: data.pending || [],
+                    running: data.running || [],
+                    done: data.done || [],
+                    failed: data.failed || []
+                };
+
+                // Update tab counters
+                document.getElementById('count-running').textContent = jobsData.running.length;
+                document.getElementById('count-pending').textContent = jobsData.pending.length;
+                document.getElementById('count-done').textContent = jobsData.done.length;
+                document.getElementById('count-failed').textContent = jobsData.failed.length;
+
+                renderCurrentTab();
+            } catch (err) {
+                console.error("Error polling queue:", err);
+            }
+        }
+
+        // Render job rows for the selected tab
+        function renderCurrentTab() {
+            const list = jobsData[currentTabState];
+            if (!list || list.length === 0) {
+                jobListContainer.innerHTML = `<div class="empty-state">No jobs in "${currentTabState}" state.</div>`;
+                return;
+            }
+
+            jobListContainer.innerHTML = list.map(job => {
+                const created = new Date(job.created_at || Date.now()).toLocaleTimeString();
+                const pathShort = job.target_repo.split('/').pop();
+                
+                // Show cancel button only for active running jobs
+                const cancelBtnHTML = currentTabState === 'running' 
+                    ? `<button class="btn btn-cancel" onclick="cancelJob('${job.job_id}')">🛑 Cancel</button>` 
+                    : '';
+
+                return `
+                    <div class="job-item">
+                        <div class="job-header">
+                            <div class="job-title">${escapeHtml(job.request)}</div>
+                            <span class="job-id-badge">${job.job_id.substring(0, 15)}...</span>
+                        </div>
+                        <div class="job-details">
+                            <div class="job-detail-row">
+                                <span class="job-detail-label">Repo:</span>
+                                <span>${escapeHtml(pathShort)}</span>
+                            </div>
+                            <div class="job-detail-row">
+                                <span class="job-detail-label">Created:</span>
+                                <span>${created}</span>
+                            </div>
+                            ${job.run_status ? `
+                            <div class="job-detail-row">
+                                <span class="job-detail-label">Run Status:</span>
+                                <span style="color: ${job.run_status === 'completed' ? 'var(--status-success)' : 'var(--status-error)'}">${job.run_status}</span>
+                            </div>` : ''}
+                        </div>
+                        <div class="job-actions">
+                            <button class="btn btn-logs" onclick="openLogsDrawer('${job.job_id}', '${escapeJs(job.request)}')">📋 View Logs</button>
+                            ${cancelBtnHTML}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        // Tab selection switches
+        document.querySelectorAll('.tab-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const tab = btn.getAttribute('data-state');
+                switchTab(tab);
+            });
+        });
+
+        function switchTab(stateName) {
+            currentTabState = stateName;
+            document.querySelectorAll('.tab-btn').forEach(b => {
+                if (b.getAttribute('data-state') === stateName) {
+                    b.classList.add('active');
+                } else {
+                    b.classList.remove('active');
+                }
+            });
+            renderCurrentTab();
+        }
+
+        // Logs Drawer Logic
+        function openLogsDrawer(jobId, requestSummary) {
+            activeLogJobId = jobId;
+            drawerJobRequest.textContent = requestSummary;
+            drawerJobId.textContent = `Job ID: ${jobId}`;
+            
+            // Check if job is currently running, to display the cancel button
+            const isRunning = jobsData.running.some(j => j.job_id === jobId);
+            cancelJobBtn.style.display = isRunning ? 'inline-flex' : 'none';
+            cancelJobBtn.onclick = () => cancelJob(jobId);
+
+            terminalViewport.textContent = "Loading execution logs...";
+            drawerOverlay.style.display = 'flex';
+            
+            // Fetch logs immediately and start polling (every 1s)
+            fetchLogs();
+            logPollInterval = setInterval(fetchLogs, 1000);
+        }
+
+        async function fetchLogs() {
+            if (!activeLogJobId) return;
+            try {
+                const res = await fetch(`/api/jobs/${activeLogJobId}/logs`);
+                const data = await res.json();
+                terminalViewport.textContent = data.log || "(No log output produced yet)";
+                
+                if (autoScrollCheck.checked) {
+                    terminalViewport.scrollTop = terminalViewport.scrollHeight;
+                }
+            } catch (err) {
+                console.error("Failed to fetch logs:", err);
+            }
+        }
+
+        function closeLogsDrawer() {
+            activeLogJobId = null;
+            clearInterval(logPollInterval);
+            drawerOverlay.style.display = 'none';
+        }
+
+        closeDrawerBtn.addEventListener('click', closeLogsDrawer);
+        drawerOverlay.addEventListener('click', (e) => {
+            if (e.target === drawerOverlay) closeLogsDrawer();
+        });
+
+        // Cancel Job Action
+        async function cancelJob(jobId) {
+            if (!confirm(`Are you sure you want to terminate job ${jobId}?`)) return;
+            try {
+                const res = await fetch(`/api/jobs/${jobId}/cancel`, { method: 'POST' });
+                const result = await res.json();
+                alert(result.message);
+                
+                // Hide cancel button if we are inside the active logs view
+                if (activeLogJobId === jobId) {
+                    cancelJobBtn.style.display = 'none';
+                }
+                pollJobs();
+            } catch (err) {
+                alert(`Error canceling job: ${err}`);
+            }
+        }
+
+        // Helpers
+        function escapeHtml(str) {
+            if (!str) return '';
+            return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+        }
+
+        function escapeJs(str) {
+            if (!str) return '';
+            return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '\\"').replace(/\n/g, '\\n');
+        }
+
+        // Start initialization
+        window.addEventListener('DOMContentLoaded', init);
+    </script>
+</body>
+</html>
