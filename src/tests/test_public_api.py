@@ -42,7 +42,7 @@ def test_load_runtime_config_supports_library_defaults():
     cfg = load_runtime_config(config_dir=config_dir)
 
     assert cfg.skills == load_config(config_dir).skills
-    assert cfg.get_stage("do_work").worker == "grok"
+    assert cfg.get_stage("do_work").worker == "claude"
     assert cfg.human_feedback["enabled"] is False
 
 

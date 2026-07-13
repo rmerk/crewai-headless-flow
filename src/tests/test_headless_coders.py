@@ -457,6 +457,22 @@ def test_claude_passes_model_when_given():
         assert args[model_idx + 1] == "sonnet"
 
 
+def test_claude_passes_effort_when_given():
+    adapter = ClaudeAdapter(binary="claude", effort="high")
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value.stdout = '{"result": "ok"}'
+        mock_run.return_value.stderr = ""
+        mock_run.return_value.returncode = 0
+
+        adapter.run("task", cwd="/tmp/r", mode="edit")
+
+        args = mock_run.call_args[0][0]
+        assert "--effort" in args
+        effort_idx = args.index("--effort")
+        assert args[effort_idx + 1] == "high"
+
+
 def test_grok_disposable_copy_does_not_preserve_absolute_symlink(tmp_path):
     adapter = GrokAdapter(binary="grok")
     outside = tmp_path / "outside.txt"

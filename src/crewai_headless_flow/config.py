@@ -563,7 +563,7 @@ def _validate_verify(raw: Any) -> dict[str, Any]:
     return verify
 
 
-_WORKER_SETTINGS_KEYS = {"binary"}
+_WORKER_SETTINGS_KEYS = {"binary", "effort"}
 
 
 def _validate_workers_block(raw: Any) -> dict[str, Any]:
@@ -601,6 +601,18 @@ def _validate_workers_block(raw: Any) -> dict[str, Any]:
             raise ValueError(
                 f"workers.{name}.binary must be a non-empty string, got {binary!r}"
             )
+        effort = entry.get("effort")
+        if effort is not None:
+            if not isinstance(effort, str) or not effort.strip():
+                raise ValueError(
+                    f"workers.{name}.effort must be a non-empty string, got {effort!r}"
+                )
+            valid_efforts = {"low", "medium", "high", "xhigh", "max"}
+            if effort not in valid_efforts:
+                supported_efforts = ", ".join(sorted(valid_efforts))
+                raise ValueError(
+                    f"workers.{name}.effort must be one of: {supported_efforts}, got {effort!r}"
+                )
         settings[name] = dict(entry)
     return settings
 

@@ -9,14 +9,14 @@
 # Supported workers: "codex" | "grok" | "claude" | "gemini" | "cursor"
 
 defaults:
-  worker: "codex"
-  model: null
+  worker: "claude"
+  model: "claude-opus-4.8"
   timeout: 300
 
 stages:
   plan:
     # Planning is read-only and now goes through the configured worker by default
-    worker: "codex"
+    worker: "claude"
     model: null
     crew:
       # Optional richer multi-agent planning. Disabled by default to preserve the
@@ -47,8 +47,8 @@ stages:
 
   do_work:
     # The heavy lifting stage — choose your preferred coding agent
-    worker: "grok"
-    model: "grok-3-latest"   # or whatever model you want for this stage
+    worker: "claude"
+    model: "sonnet"
     # Fixed safety declaration for Grok edit mode. The adapter already runs
     # edit mode non-interactively; unsupported values fail config validation.
     always_approve: true
@@ -122,7 +122,7 @@ stages:
 
   review:
     # Reviews should be read-only / inspect mode
-    worker: "codex"
+    worker: "claude"
     # Fixed safety declaration for inspect/review mode. The adapter enforces
     # read-only behavior; unsupported values fail config validation.
     sandbox: "read-only"
@@ -154,7 +154,7 @@ stages:
         temperature: 0.2
 
   finalize:
-    worker: "codex"
+    worker: "claude"
     model: null
 
 # =============================================================================
@@ -249,7 +249,9 @@ paths:
 # Example:
 #   workers:
 #     codex: {binary: "/opt/bin/codex"}
-workers: {}
+workers:
+  claude:
+    effort: "high"
 
 # Stage extras like `plan.crew.*`, `do_work.crew.*`, `do_work.parallel.*`, or
 # `review.crew.*` can be overridden per run via

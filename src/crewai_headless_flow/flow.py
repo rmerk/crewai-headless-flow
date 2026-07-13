@@ -221,16 +221,26 @@ class CrewAIHeadlessFlow(Flow[FlowState]):
     def _instantiate_worker(
         self, adapter_cls: type[HeadlessCoder], worker_name: str
     ) -> HeadlessCoder:
-        """Build an adapter, honoring a configured binary override.
+        """Build an adapter, honoring configured settings (binary, effort).
 
         Every adapter accepts ``binary=``; the zero-arg call keeps their
         defaults when no override is configured.
         """
+        import inspect
+
         settings = getattr(self.config, "worker_settings", {}) or {}
-        binary = (settings.get(worker_name) or {}).get("binary")
-        if binary:
-            return adapter_cls(binary=binary)  # type: ignore[call-arg]
-        return adapter_cls()
+        worker_cfg = settings.get(worker_name) or {}
+        kwargs = {}
+        if "binary" in worker_cfg and worker_cfg["binary"]:
+            kwargs["binary"] = worker_cfg["binary"]
+        if "effort" in worker_cfg and worker_cfg["effort"]:
+            sig = inspect.signature(adapter_cls.__init__)
+            if "effort" in sig.parameters or any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+            ):
+                kwargs["effort"] = worker_cfg["effort"]
+
+        return adapter_cls(**kwargs)  # type: ignore[call-arg]
 
     def _get_worker(self, stage: str) -> HeadlessCoderTool:
         if stage not in self._workers:

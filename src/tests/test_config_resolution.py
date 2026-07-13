@@ -59,6 +59,31 @@ def sample_config_dir(tmp_path: Path) -> Path:
     return d
 
 
+@pytest.fixture
+def pristine_config_dir(tmp_path: Path) -> Path:
+    import shutil
+
+    config_dir = tmp_path / "pristine_config"
+    config_dir.mkdir()
+    shutil.copy(REPO_ROOT / "config" / "skills.yaml", config_dir / "skills.yaml")
+
+    worker_file = REPO_ROOT / "config" / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+
+    # Reset to legacy defaults
+    data["defaults"]["worker"] = "codex"
+    data["defaults"]["model"] = None
+    data["stages"]["plan"]["worker"] = "codex"
+    data["stages"]["do_work"]["worker"] = "grok"
+    data["stages"]["do_work"]["model"] = "grok-3-latest"
+    data["stages"]["review"]["worker"] = "codex"
+    data["stages"]["finalize"]["worker"] = "codex"
+    data["workers"] = {}
+
+    (config_dir / "worker.yaml").write_text(yaml.safe_dump(data))
+    return config_dir
+
+
 def test_loads_and_resolves_stages(sample_config_dir: Path):
     cfg = load_config(sample_config_dir)
 
@@ -1987,11 +2012,12 @@ def test_example_config_implementation_crew_parallel_replan_loads():
     ],
 )
 def test_documented_implementation_crew_override_recipes_match_example_packs(
+    pristine_config_dir: Path,
     example_name: str,
     stage_extra_overrides: list[str],
 ):
     recipe_cfg = load_runtime_config(
-        config_dir=REPO_ROOT / "config",
+        config_dir=pristine_config_dir,
         stage_extra_overrides=stage_extra_overrides,
     )
     example_cfg = load_config(REPO_ROOT / "examples" / "configs" / example_name)
@@ -2039,12 +2065,13 @@ def test_documented_implementation_crew_override_recipes_match_example_packs(
     ],
 )
 def test_documented_simple_override_recipes_match_example_packs(
+    pristine_config_dir: Path,
     example_name: str,
     stage: str,
     runtime_kwargs: dict[str, list[str]],
 ):
     recipe_cfg = load_runtime_config(
-        config_dir=REPO_ROOT / "config",
+        config_dir=pristine_config_dir,
         **runtime_kwargs,
     )
     example_cfg = load_config(REPO_ROOT / "examples" / "configs" / example_name)
@@ -2090,11 +2117,12 @@ def test_documented_simple_override_recipes_match_example_packs(
     ],
 )
 def test_documented_parallel_override_recipes_match_example_packs(
+    pristine_config_dir: Path,
     example_name: str,
     stage_extra_overrides: list[str],
 ):
     recipe_cfg = load_runtime_config(
-        config_dir=REPO_ROOT / "config",
+        config_dir=pristine_config_dir,
         stage_extra_overrides=stage_extra_overrides,
     )
     example_cfg = load_config(REPO_ROOT / "examples" / "configs" / example_name)
@@ -2539,6 +2567,27 @@ def test_workers_block_empty_binary_rejected(sample_config_dir: Path):
     worker_file.write_text(yaml.safe_dump(data))
 
     with pytest.raises(ValueError, match="workers.codex.binary must be a non-empty"):
+        load_config(sample_config_dir)
+
+
+def test_workers_block_loads_effort(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["workers"] = {"claude": {"effort": "high"}}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    cfg = load_config(sample_config_dir)
+
+    assert cfg.worker_settings == {"claude": {"effort": "high"}}
+
+
+def test_workers_block_invalid_effort_rejected(sample_config_dir: Path):
+    worker_file = sample_config_dir / "worker.yaml"
+    data = yaml.safe_load(worker_file.read_text())
+    data["workers"] = {"claude": {"effort": "super-high"}}
+    worker_file.write_text(yaml.safe_dump(data))
+
+    with pytest.raises(ValueError, match="workers.claude.effort must be one of"):
         load_config(sample_config_dir)
 
 

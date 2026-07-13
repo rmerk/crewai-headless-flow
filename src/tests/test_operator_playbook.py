@@ -70,7 +70,7 @@ def _patch_clean_preflight_git(monkeypatch: pytest.MonkeyPatch) -> None:
             REPO_ROOT / "config",
             {
                 "status": "pass",
-                "do_work_worker": "grok",
+                "do_work_worker": "claude",
                 "human_feedback_enabled": False,
             },
         ),
@@ -514,7 +514,7 @@ def test_operator_playbook_doctor_examples_route_through_cli(
             REPO_ROOT / "config",
             [],
             {
-                "do_work_worker": "grok",
+                "do_work_worker": "claude",
                 "human_feedback_enabled": False,
             },
         ),

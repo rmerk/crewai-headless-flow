@@ -29,8 +29,9 @@ from .structured_output import build_repair_prompt, extract_validated_json
 class ClaudeAdapter:
     """Concrete adapter for Claude Code CLI (`claude`)."""
 
-    def __init__(self, binary: str = "claude") -> None:
+    def __init__(self, binary: str = "claude", effort: Optional[str] = None) -> None:
         self.binary = binary
+        self.effort = effort
 
     def run(
         self,
@@ -129,6 +130,8 @@ class ClaudeAdapter:
             cmd += ["--json-schema", json.dumps(schema)]
         if model:
             cmd += ["--model", model]
+        if self.effort:
+            cmd += ["--effort", self.effort]
         return cmd
 
     def _create_disposable_copy(self, src: Path) -> Path:
