@@ -1,0 +1,62 @@
+# Canonical headless-flow topology (crewai.flow/v1).
+# Stage bodies stay in Python behind call: code refs (ADR-0012).
+# CLI still uses the decorator CrewAIHeadlessFlow until Phase 3 flip.
+schema: crewai.flow/v1
+name: CrewAIHeadlessFlow
+description: >
+  Reusable, config-driven Flow that uses agent-skills as operating procedures
+  and delegates code work to pluggable headless coders.
+
+config:
+  suppress_flow_events: true
+  max_method_calls: 200
+
+state:
+  type: pydantic
+  ref: crewai_headless_flow.state:FlowState
+
+methods:
+  plan:
+    start: true
+    do:
+      call: code
+      ref: crewai_headless_flow.stages.plan:execute_plan
+
+  do_work:
+    listen:
+      or: [plan, process_revision]
+    do:
+      call: code
+      ref: crewai_headless_flow.stages.do_work:execute_do_work
+
+  review:
+    listen: do_work
+    router: true
+    emit: [pass, revise, aborted]
+    do:
+      call: code
+      ref: crewai_headless_flow.stages.review:execute_review
+
+  process_revision:
+    listen: revise
+    do:
+      call: code
+      ref: crewai_headless_flow.stages.revision:execute_process_revision
+
+  finalize:
+    listen: pass
+    do:
+      call: code
+      ref: crewai_headless_flow.stages.finalize:execute_finalize
+
+  handle_aborted:
+    listen: aborted
+    do:
+      call: code
+      ref: crewai_headless_flow.stages.terminal:execute_handle_aborted
+
+  handle_failed:
+    listen: failed
+    do:
+      call: code
+      ref: crewai_headless_flow.stages.terminal:execute_handle_failed
