@@ -162,7 +162,7 @@ Map gates to methods with `human_feedback` + custom `provider` implementing `Hum
 
 ## Offline smoke (this research)
 
-Ran locally against the project venv (`crewai 1.15.2`), no network:
+Ran locally against the project venv (`crewai 1.15.2`), no network. Automated under `pytest -m offline` in `src/tests/test_flow_definition_projection.py`:
 
 | Check | Result |
 |-------|--------|
