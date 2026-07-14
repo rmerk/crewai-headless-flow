@@ -18,6 +18,7 @@ from .crew_defs import (
     delegation_enabled,
     is_hierarchical,
     load_crew_yaml,
+    tool_agent_map,
 )
 from .do_work_contract import (
     DoWorkExecutionPlan,
@@ -262,15 +263,16 @@ def build_do_work_round_crew(
         model=model,
     )
     agents_config, tasks_config = load_crew_yaml("do_work_round", config_dir=config_dir)
+    tools_by_agent, agents_requiring_tools = tool_agent_map(
+        ("evidence", [inspect_tool]),
+        ("implementer", [edit_tool]),
+        ("verifier", [inspect_tool]),
+    )
     agents = build_agents_from_yaml(
         agents_config,
         llm=llm,
-        tools_by_agent={
-            "evidence": [inspect_tool],
-            "implementer": [edit_tool],
-            "verifier": [inspect_tool],
-        },
-        agents_requiring_tools={"evidence", "implementer", "verifier"},
+        tools_by_agent=tools_by_agent,
+        agents_requiring_tools=agents_requiring_tools,
         delegation_agent_keys={"coordinator"},
         allow_delegation=delegation_enabled(crew_config),
     )
@@ -388,11 +390,14 @@ def build_do_work_decomposition_crew(
     agents_config, tasks_config = load_crew_yaml(
         "do_work_decomposition", config_dir=config_dir
     )
+    tools_by_agent, agents_requiring_tools = tool_agent_map(
+        ("researcher", [inspect_tool]),
+    )
     agents = build_agents_from_yaml(
         agents_config,
         llm=llm,
-        tools_by_agent={"researcher": [inspect_tool]},
-        agents_requiring_tools={"researcher"},
+        tools_by_agent=tools_by_agent,
+        agents_requiring_tools=agents_requiring_tools,
         delegation_agent_keys={"validator"},
         allow_delegation=delegation_enabled(crew_config),
     )

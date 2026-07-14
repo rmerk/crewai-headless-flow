@@ -21,6 +21,7 @@ from .crew_defs import (
     delegation_enabled,
     is_hierarchical,
     load_crew_yaml,
+    tool_agent_map,
 )
 from .review_contract import ReviewDecision, normalize_review_output
 from .tools.coder_tool import HeadlessCoderTool
@@ -98,16 +99,17 @@ def build_review_crew(
         model=model,
     )
     agents_config, tasks_config = load_crew_yaml("review", config_dir=config_dir)
+    tools_by_agent, agents_requiring_tools = tool_agent_map(
+        ("evidence", [inspect_tool]),
+        ("correctness", [inspect_tool]),
+        ("test", [inspect_tool]),
+        ("scope", [inspect_tool]),
+    )
     agents = build_agents_from_yaml(
         agents_config,
         llm=llm,
-        tools_by_agent={
-            "evidence": [inspect_tool],
-            "correctness": [inspect_tool],
-            "test": [inspect_tool],
-            "scope": [inspect_tool],
-        },
-        agents_requiring_tools={"evidence", "correctness", "test", "scope"},
+        tools_by_agent=tools_by_agent,
+        agents_requiring_tools=agents_requiring_tools,
         delegation_agent_keys={"coordinator"},
         allow_delegation=delegation_enabled(crew_config),
     )

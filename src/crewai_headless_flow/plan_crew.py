@@ -15,6 +15,7 @@ from .crew_defs import (
     delegation_enabled,
     is_hierarchical,
     load_crew_yaml,
+    tool_agent_map,
 )
 from .plan_contract import PlanOutput, normalize_plan_output
 from .review_crew import HeadlessInspectTool
@@ -55,14 +56,15 @@ def build_plan_crew(
         model=model,
     )
     agents_config, tasks_config = load_crew_yaml("plan", config_dir=config_dir)
+    tools_by_agent, agents_requiring_tools = tool_agent_map(
+        ("researcher", [inspect_tool]),
+        ("planner", [inspect_tool]),
+    )
     agents = build_agents_from_yaml(
         agents_config,
         llm=llm,
-        tools_by_agent={
-            "researcher": [inspect_tool],
-            "planner": [inspect_tool],
-        },
-        agents_requiring_tools={"researcher", "planner"},
+        tools_by_agent=tools_by_agent,
+        agents_requiring_tools=agents_requiring_tools,
         delegation_agent_keys={"coordinator"},
         allow_delegation=delegation_enabled(crew_config),
     )

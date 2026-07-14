@@ -162,6 +162,26 @@ def delegation_enabled(crew_config: dict[str, Any]) -> bool:
     return bool(delegation_cfg.get("enabled", False))
 
 
+def tool_agent_map(
+    *assignments: tuple[str, list[BaseTool]],
+) -> tuple[dict[str, list[BaseTool]], frozenset[str]]:
+    """Build ``tools_by_agent`` and ``agents_requiring_tools`` from one list.
+
+    Keeps the reverse-miss contract as a single source of truth so call sites
+    cannot drift the two collections apart.
+    """
+    mapping: dict[str, list[BaseTool]] = {}
+    for name, tools in assignments:
+        if not tools:
+            raise ValueError(
+                f"tool_agent_map entry {name!r} must include a non-empty tool list"
+            )
+        if name in mapping:
+            raise ValueError(f"tool_agent_map has duplicate agent key {name!r}")
+        mapping[name] = list(tools)
+    return mapping, frozenset(mapping)
+
+
 def build_agents_from_yaml(
     agents_config: dict[str, dict[str, Any]],
     *,

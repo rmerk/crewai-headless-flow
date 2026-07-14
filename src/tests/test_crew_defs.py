@@ -12,6 +12,7 @@ from crewai_headless_flow.crew_defs import (
     build_tasks_from_yaml,
     crew_defs_dir,
     load_crew_yaml,
+    tool_agent_map,
 )
 from crewai_headless_flow.plan_contract import PlanOutput
 from crewai_headless_flow.plan_crew import build_plan_crew
@@ -172,6 +173,22 @@ def test_build_plan_crew_uses_config_dir_agent_roles(tmp_path: Path):
     )
 
     assert any(a.role == "Pack-Local Researcher" for a in crew.agents)
+
+
+def test_tool_agent_map_builds_mapping_and_required_set():
+    tools = {"a": [object()], "b": [object()]}  # type: ignore[list-item]
+    mapping, required = tool_agent_map(
+        ("a", tools["a"]),
+        ("b", tools["b"]),
+    )
+
+    assert mapping == tools
+    assert required == frozenset({"a", "b"})
+
+
+def test_tool_agent_map_rejects_empty_tool_list():
+    with pytest.raises(ValueError, match="empty"):
+        tool_agent_map(("researcher", []))
 
 
 def test_build_agents_from_yaml_rejects_tools_without_required_set():
