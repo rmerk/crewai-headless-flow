@@ -196,6 +196,14 @@ That gives later stages a lightweight audit trail without depending on raw CLI t
 - **Safety & Cost Control**: Inspect stages can never accidentally mutate the user's repository. All heavy work is opt-in and can be mocked for free offline testing.
 - **Observability**: Startup prints the resolved stage mapping, and persisted Flow state plus the execution report carry the resolved per-stage runtime configuration and resolved human-feedback configuration for later debugging and automation.
 
+## Flow Topology & Stage Modules
+
+Decorator topology (`@start` / `@listen` / `@router`) still lives on `CrewAIHeadlessFlow` in `flow.py` — that remains the CLI/library entrypoint and the surface asserted by `build_flow_definition` projection tests.
+
+Stage **bodies** and stage-private helpers live under `src/crewai_headless_flow/stages/` (`plan`, `do_work`, `review`, `revision`, `finalize`, `terminal`) as importable free functions that take the flow instance as their first argument. Class methods are thin wrappers so offline tests and monkeypatches that target `flow._…` keep working.
+
+Cross-cutting concerns stay on the class (not in `stages/`): worker setup, HITL prompting, observability/checkpoints, and resume runners. Safety primitives (inspect copies, `paths.deny`, verify, delivery) remain Flow-owned Python as before — see ADR-0012 for the hybrid FlowDefinition cutover (Phase 0–1 landed; YAML twin / entrypoint flip are later).
+
 ## Optional Review Crew
 
 The `review` stage can optionally run a sequential CrewAI `Crew` before the Flow router makes its pass/revise decision. This keeps the Flow responsible for state and routing while letting specialized review agents collect evidence, check correctness, evaluate test coverage, and merge findings into one structured decision.
