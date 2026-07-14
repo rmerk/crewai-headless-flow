@@ -1,0 +1,40 @@
+evidence_task:
+  description: |
+    Use read-only inspect tool to gather implementation context.
+
+    {context}
+  expected_output: >
+    Concise evidence summary with relevant files, dependencies, and
+    verification hooks.
+  agent: evidence
+
+implementation_task:
+  description: >
+    Use edit tool to implement current slice. Stay scoped to current
+    slice and summarize what changed.
+  expected_output: Concise implementation summary from edit run.
+  agent: implementer
+  context:
+    - evidence_task
+
+verification_task:
+  description: >
+    Use inspect tool to verify whether implementation appears to
+    satisfy current slice. Call out concrete remaining issues if any.
+  expected_output: Concrete remaining issues, or an explicit no-issues statement.
+  agent: verifier
+  context:
+    - evidence_task
+    - implementation_task
+
+decision_task:
+  description: >
+    Merge implementation and verification outputs into single decision.
+    Use status='pass' only if no concrete issue remains. Use
+    status='revise' when missing behavior, missing verification,
+    or scope drift remains.
+  expected_output: A JSON object with status, issues, and summary.
+  agent: coordinator
+  context:
+    - implementation_task
+    - verification_task

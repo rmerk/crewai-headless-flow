@@ -5,8 +5,7 @@ description = "Reusable CrewAI Flow using agent-skills as operating procedures a
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
 dependencies = [
-    "crewai>=1.14.0,<2.0.0",
-    "crewai-tools>=0.30.0,<1.0.0",
+    "crewai>=1.15.2,<2.0.0",
     "pydantic>=2.0.0,<3.0.0",
     "pyyaml>=6.0,<7.0",
     "python-dotenv>=1.0.0,<2.0.0",

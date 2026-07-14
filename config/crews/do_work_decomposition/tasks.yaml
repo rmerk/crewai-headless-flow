@@ -1,0 +1,31 @@
+research_task:
+  description: |
+    Use read-only inspect tool to gather decomposition context.
+
+    {context}
+  expected_output: >
+    Concise research summary with likely files, dependencies, and
+    verification hooks for current task.
+  agent: researcher
+
+draft_task:
+  description: >
+    Using research summary, break current task into at most
+    {max_subtasks} ordered execution slices. Use one slice when task is
+    already small. Each slice should have a short title, concrete
+    description, likely files, and verification checks.
+  expected_output: Draft ordered slice list.
+  agent: decomposer
+  context:
+    - research_task
+
+final_task:
+  description: >
+    Return final structured execution plan. Keep it conservative and
+    ordered. Prefer fewer slices. If uncertainty is high, still return
+    one concrete slice rather than inventing extra structure.
+  expected_output: A JSON object with summary and subtasks.
+  agent: validator
+  context:
+    - research_task
+    - draft_task

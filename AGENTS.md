@@ -7,7 +7,7 @@ Guidelines for AI agents (and humans using agents) working in this repository.
 **crewai-headless-flow** is a reusable, multi-agent CrewAI Flow that treats **Addy Osmani's agent-skills** as operating procedures ("the how") and delegates actual code editing, running, and testing to **pluggable headless coding CLIs** ("the hands").
 
 - **Core idea**: The Flow provides the orchestration and state machine. Skills provide consistent methodology. Workers (CodexAdapter, GrokAdapter, ClaudeAdapter, GeminiAdapter, CursorAdapter) provide the execution capability.
-- **Primary reusability levers**: Two small YAML files (`config/skills.yaml` and `config/worker.yaml`). Changing procedures or which brain actually edits the code requires **zero Python changes**.
+- **Primary reusability levers**: YAML config (`config/skills.yaml`, `config/worker.yaml`, and optional crew agent/task text under `config/crews/`). Changing procedures, which brain edits the code, or optional-crew prompts requires **zero Python changes**.
 - **Safety model**: Inspect/review stages are always read-only. Edit stages are non-interactive. Grok inspect mode uses disposable copies; Claude inspect mode uses a disposable copy plus `dontAsk`.
 - **Testing guarantee**: 100% of core behavior is offline-testable (`pytest -m offline`). Live CLI smoke tests are opt-in and gated.
 
@@ -39,7 +39,7 @@ Guidelines for AI agents (and humans using agents) working in this repository.
 The Flow (`flow.py`) only knows about stages, state, and the abstract tool. It never imports concrete adapters directly in normal operation.
 
 ### 3. Optional Crew Coordination Modes
-- Each optional Crew (`plan_crew.py`, `do_work_crew.py`, `review_crew.py`) supports two `process` values via `worker.yaml`'s `crew.process` key: `"sequential"` (default) and `"hierarchical"`.
+- Each optional Crew (`plan_crew.py`, `do_work_crew.py`, `review_crew.py`) uses CrewBase-style YAML under `config/crews/{plan,do_work_round,do_work_decomposition,review}/` for agent/task text, while Python still injects runtime tools and `worker.yaml` overlays (`process`, `delegation`, `manager.llm`). Each supports two `process` values via `worker.yaml`'s `crew.process` key: `"sequential"` (default) and `"hierarchical"`.
 - **Sequential + delegation**: tasks keep their fixed `agent=` assignment and read prior task output via `Task.context=[...]`. Setting `crew.delegation.enabled: true` additionally gives that crew's coordinator/decision agent `allow_delegation=True` (CrewAI's `DelegateWorkTool` / `AskQuestionTool`) so it can pull in a specialist mid-task instead of only reading a frozen context summary.
 - **Hierarchical + manager**: `crew.process: "hierarchical"` builds the Crew with `Process.hierarchical` and an auto-created manager (`manager_llm`, sourced from `crew.manager.llm`, falling back to the crew's own `llm` block). Tasks are built **without** a fixed `agent=` so the manager actually decides who runs each task at runtime. Delegation reliability depends heavily on using a capable tool-calling model for `manager.llm` — small/local models are known to mis-format delegation tool calls or have the manager skip delegation entirely.
 - Each crew module exposes a `build_*_crew(...)` function (e.g. `build_review_crew`) that constructs the `Crew`/`Agent`/`Task` graph without invoking `.kickoff()`, so offline tests can assert on `crew.process`, `crew.manager_llm`, and per-agent `allow_delegation` without a live LLM. The corresponding `run_*_crew(...)` function calls the builder and then kicks off the crew.
@@ -50,6 +50,7 @@ The Flow (`flow.py`) only knows about stages, state, and the abstract tool. It n
 
 - `config/skills.yaml` — Maps each stage to the agent-skill that supplies the operating procedure.
 - `config/worker.yaml` — Controls per-stage worker (`codex` | `grok` | `claude` | `gemini` | `cursor`), model, sandbox mode, timeouts, optional crew stages (including `process: sequential|hierarchical`, `delegation.enabled`, and `manager.llm`), and human-in-the-loop flags.
+- `config/crews/<name>/{agents,tasks}.yaml` — CrewBase-style agent/task text for optional Planning / Implementation / Review crews. Resolved from the run's `--config-dir` when that pack has a complete crew bundle; otherwise falls back to the default config pack (so example packs that only override `worker.yaml` / `skills.yaml` keep working).
 
 At startup the system prints a clear table of the resolved mapping. Always verify this table when debugging "why is X using Y?".
 

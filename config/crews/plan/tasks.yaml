@@ -1,0 +1,41 @@
+research_task:
+  description: |
+    Use the read-only inspection tool to gather planning context.
+
+    {context}
+  expected_output: >
+    A concise research summary covering likely files, dependencies,
+    constraints, and verification hooks.
+  agent: researcher
+
+draft_task:
+  description: >
+    Using the research summary, draft an implementation plan with a concise
+    spec and small vertical-slice tasks.
+  expected_output: A draft plan with spec text and ordered tasks.
+  agent: planner
+  context:
+    - research_task
+
+validation_task:
+  description: >
+    Review the draft plan for missing files, weak verification, bad
+    dependencies, or scope drift. Call out concrete fixes.
+  expected_output: Concrete plan issues or an explicit no-issues statement.
+  agent: validator
+  context:
+    - research_task
+    - draft_task
+
+final_task:
+  description: >
+    Produce the final structured implementation plan. Incorporate any
+    validation feedback. Return a single plan object with a concise spec
+    and ordered tasks that include acceptance criteria, verification,
+    dependencies, likely files, and estimated scope.
+  expected_output: A JSON object with spec and tasks.
+  agent: coordinator
+  context:
+    - research_task
+    - draft_task
+    - validation_task

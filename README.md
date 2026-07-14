@@ -738,10 +738,11 @@ Re-run the same command — no code changes required. The startup banner will sh
 
 ## Configuration
 
-The entire behavior is driven by two small YAML files:
+The entire behavior is driven by a small set of YAML files:
 
 - `config/skills.yaml` — which agent-skill provides the operating procedure for each stage
 - `config/worker.yaml` — which headless coder (`codex`/`grok`/`claude`), model, and flags to use per stage
+- `config/crews/<name>/{agents,tasks}.yaml` — optional Crew agent/task prompts (plan, do_work_round, do_work_decomposition, review)
 
 At startup the project prints a clear table:
 
@@ -1215,7 +1216,12 @@ src/crewai_headless_flow/
 
 config/
 ├── skills.yaml
-└── worker.yaml
+├── worker.yaml
+└── crews/
+    ├── plan/{agents,tasks}.yaml
+    ├── do_work_round/{agents,tasks}.yaml
+    ├── do_work_decomposition/{agents,tasks}.yaml
+    └── review/{agents,tasks}.yaml
 
 examples/
 ├── create_sample_target.py
