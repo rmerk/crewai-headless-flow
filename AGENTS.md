@@ -185,7 +185,7 @@ These are the main directions worth considering next (as of June 2026). The offi
 | **Done** | **Expand runtime observability** | State files and debug reports now capture per-task attempts, isolated workspace/batch metadata, and crew round details. | Implemented |
 | **Done** | **Gemini CLI adapter** | Validates the pluggable-worker architecture with a fourth production adapter and a second prompt-repair structured-output path. | Implemented |
 | **Done** | **Cursor Agent CLI adapter** | Adds a fifth opt-in worker via `cursor agent --print` with plan/force inspect/edit normalization. | Implemented |
-| **Accepted** | **FlowDefinition topology cutover (hybrid)** | Move canonical start/listen/router wiring to `crewai.flow/v1` behind `call: code`; keep safety/HITL/verify/delivery in Python. Phase 0 projection/smoke + ADR-0012 landed; extraction/twin/flip are later phases. | Medium–High |
+| **Accepted** | **FlowDefinition topology cutover (hybrid)** | Move canonical start/listen/router wiring to `crewai.flow/v1` behind `call: code`; keep safety/HITL/verify/delivery in Python. Phase 0 projection/smoke + Phase 1 `stages/` extraction landed; twin/flip are later phases. | Medium–High |
 | **Highest** | **Extend HITL/runtime controls** | Extra gates, resumable stage inputs, review reruns, targeted task selection, first operator shortcuts, one-run skill overrides, and stage-scoped HITL action allowlists are in place; next value is deeper operator decisions plus any remaining runtime override gaps. | Medium |
 | **Medium** | **Expand real-world examples/docs** | The architecture is broader now; runnable example coverage and operator docs will make it easier to adopt. | Low |
 

@@ -893,7 +893,7 @@ def test_do_work_crew_path_is_used_and_detects_changes(monkeypatch, tmp_path: Pa
         )
 
     monkeypatch.setattr(
-        "crewai_headless_flow.flow.run_do_work_crew", fake_run_do_work_crew
+        "crewai_headless_flow.stages.do_work.run_do_work_crew", fake_run_do_work_crew
     )
 
     result = _run_do_work(flow, "plan output")
@@ -958,7 +958,7 @@ def test_do_work_crew_revise_marks_task_failed(monkeypatch, tmp_path: Path):
         )
 
     monkeypatch.setattr(
-        "crewai_headless_flow.flow.run_do_work_crew", fake_run_do_work_crew
+        "crewai_headless_flow.stages.do_work.run_do_work_crew", fake_run_do_work_crew
     )
 
     result = _run_do_work(flow, "plan output")
@@ -1033,7 +1033,7 @@ def test_do_work_crew_stays_sequential_when_parallel_is_disabled(
         )
 
     monkeypatch.setattr(
-        "crewai_headless_flow.flow.run_do_work_crew", fake_run_do_work_crew
+        "crewai_headless_flow.stages.do_work.run_do_work_crew", fake_run_do_work_crew
     )
 
     result = _run_do_work(flow, "plan output")
@@ -1094,7 +1094,7 @@ def test_do_work_parallel_crew_uses_isolated_workspaces_and_merges_disjoint_chan
         )
 
     monkeypatch.setattr(
-        "crewai_headless_flow.flow.run_do_work_crew", fake_run_do_work_crew
+        "crewai_headless_flow.stages.do_work.run_do_work_crew", fake_run_do_work_crew
     )
 
     result = _run_do_work(flow, "plan output")
@@ -1169,7 +1169,7 @@ def test_do_work_parallel_crew_rejects_overlapping_actual_changes(
         )
 
     monkeypatch.setattr(
-        "crewai_headless_flow.flow.run_do_work_crew", fake_run_do_work_crew
+        "crewai_headless_flow.stages.do_work.run_do_work_crew", fake_run_do_work_crew
     )
 
     result = _run_do_work(flow, "plan output")
@@ -3139,7 +3139,7 @@ def test_review_crew_path_is_used_when_enabled(monkeypatch):
         )
 
     monkeypatch.setattr(
-        "crewai_headless_flow.flow.run_review_crew",
+        "crewai_headless_flow.stages.review.run_review_crew",
         fake_run_review_crew,
     )
 
@@ -3172,7 +3172,7 @@ def test_review_crew_path_fails_closed_to_revise(monkeypatch):
         raise RuntimeError("crew unavailable")
 
     monkeypatch.setattr(
-        "crewai_headless_flow.flow.run_review_crew",
+        "crewai_headless_flow.stages.review.run_review_crew",
         fake_run_review_crew,
     )
 

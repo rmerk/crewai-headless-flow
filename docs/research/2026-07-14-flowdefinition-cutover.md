@@ -135,6 +135,7 @@ Map gates to methods with `human_feedback` + custom `provider` implementing `Hum
 ### Phase 1 — Extract without changing entrypoint (gate: behavior parity)
 
 - Split stage bodies / helpers out of `flow.py` into importable modules still invoked by class methods (thin wrappers).
+- Landed under `src/crewai_headless_flow/stages/` (`plan`, `do_work`, `review`, `revision`, `finalize`, `terminal`); cross-cutting HITL / workers / observability / resume runners remain on `CrewAIHeadlessFlow`.
 - No operator YAML yet; no HITL engine swap.
 - **Gate:** full `uv run pytest -m offline` green; no change to inspect/deny/verify/delivery invariants (ADR-0007/0009).
 

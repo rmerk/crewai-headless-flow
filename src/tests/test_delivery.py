@@ -802,7 +802,7 @@ def _spy_deliver(monkeypatch) -> list[dict]:
         calls.append(kwargs)
         return DeliveryReport(status="committed", branch="flow/x")
 
-    monkeypatch.setattr("crewai_headless_flow.flow.deliver", spy)
+    monkeypatch.setattr("crewai_headless_flow.stages.finalize.deliver", spy)
     return calls
 
 
@@ -861,7 +861,9 @@ def test_flow_records_push_failure_in_errors(tmp_path: Path, monkeypatch):
             message="git push failed: no remote",
         )
 
-    monkeypatch.setattr("crewai_headless_flow.flow.deliver", failing_push_deliver)
+    monkeypatch.setattr(
+        "crewai_headless_flow.stages.finalize.deliver", failing_push_deliver
+    )
 
     cast(Any, flow).finalize("pass")
 

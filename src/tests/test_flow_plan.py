@@ -142,7 +142,9 @@ def test_plan_crew_path_is_used_when_enabled(monkeypatch):
             ],
         )
 
-    monkeypatch.setattr("crewai_headless_flow.flow.run_plan_crew", fake_run_plan_crew)
+    monkeypatch.setattr(
+        "crewai_headless_flow.stages.plan.run_plan_crew", fake_run_plan_crew
+    )
 
     rendered = _call_plan(flow)
 

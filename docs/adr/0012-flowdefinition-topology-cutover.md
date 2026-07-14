@@ -23,8 +23,9 @@ Adopt a **hybrid cutover**:
 
 ## Consequences
 
-- Phase 0 (this ADR’s landing): offline projection snapshot of `CrewAIHeadlessFlow` plus declarative `call: code` / script-disabled smokes (`src/tests/test_flow_definition_projection.py`). No entrypoint change.
-- Later phases (separate work): extract importable stage callables; author `config/flow.yaml` twin; equivalence suite; entrypoint flip.
+- Phase 0: offline projection snapshot of `CrewAIHeadlessFlow` plus declarative `call: code` / script-disabled smokes (`src/tests/test_flow_definition_projection.py`). No entrypoint change.
+- Phase 1 (landed): stage bodies and stage-private helpers live under `src/crewai_headless_flow/stages/`; `CrewAIHeadlessFlow` keeps thin decorator wrappers so topology projection and offline tests stay unchanged. No operator YAML; no HITL engine swap.
+- Later phases (separate work): author `config/flow.yaml` twin; equivalence suite; entrypoint flip.
 - **Explicitly deferred:** replacing this repo’s HITL with CrewAI `human_feedback` (only reconsider with a custom `HumanFeedbackProvider`); migrating optional crews from CrewBase hybrid / `run_*_crew` to native `call: crew` declarations; expressing verify/deny/delivery in CEL or agents.
 
 ## Alternatives considered

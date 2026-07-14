@@ -349,7 +349,7 @@ def test_isolation_copy_creation_failure_fails_task_not_run(
         raise OSError("disk full")
 
     monkeypatch.setattr(
-        "crewai_headless_flow.flow.create_workspace_copy", exploding_copy
+        "crewai_headless_flow.stages.do_work.create_workspace_copy", exploding_copy
     )
 
     cast(Any, flow).do_work("plan output")
@@ -372,7 +372,7 @@ def test_unstructured_isolation_copy_creation_failure_records_error(
         raise OSError("disk full")
 
     monkeypatch.setattr(
-        "crewai_headless_flow.flow.create_workspace_copy", exploding_copy
+        "crewai_headless_flow.stages.do_work.create_workspace_copy", exploding_copy
     )
 
     cast(Any, flow).do_work("plan output")
