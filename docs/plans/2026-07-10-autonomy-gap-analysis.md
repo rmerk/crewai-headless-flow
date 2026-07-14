@@ -22,8 +22,8 @@ Exploration covered (a) Flow core/state/CLI, (b) workers/skills/config, (c) docs
 
 Planned-vs-shipped (must be reported as "planned, not shipped", not unknown gaps):
 - Conditional HITL Phase 0 **shipped** (hitl_policy seam, 2 triggers, config, overrides, doctor warning — ADR-0003, plan doc all-todos-complete). Later-phase triggers (parallel-conflict, sensitive-paths, review-volume, LLM-judged) **planned** (plan L128-131, ADR-0003 L24).
-- HITL↔DMI convergence Phases 2–3 **planned**, gated on ADR-0002's "no Flow-side reading" tension.
-- DMI/OpenWiki is deliberately **documentation-only** (ADR-0002; plan L20); gemini native-AGENTS.md is a documented target-repo config gap.
+- Later-phase HITL triggers (parallel-conflict, sensitive-paths, review-issue-volume, LLM-judged) remain **planned, not shipped**.
+- Domain Model Integration / OpenWiki pass-through (and HITL↔DMI convergence) is **rejected** — see ADR-0011.
 - Notification channels / approval UX / gate timeouts: **not designed anywhere** — genuine gap, not deferred work.
 - `invoke-ticket-flow` is an external command driving a *different* repo (`my_crew`); this repo has no ticket ingestion.
 
@@ -73,4 +73,4 @@ Create `docs/architecture/autonomy-gap-analysis.md` containing:
 
 - Report exists at `docs/architecture/autonomy-gap-analysis.md`; every file:line citation resolves to the claimed code (all blocker claims verified during planning).
 - `git status` shows only the new files.
-- The report explicitly labels planned-not-shipped items (HITL later phases, DMI convergence) as such.
+- The report explicitly labels planned-not-shipped items (HITL later phases) as such; OpenWiki/DMI is recorded as rejected (ADR-0011), not as a gap.

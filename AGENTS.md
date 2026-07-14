@@ -199,7 +199,7 @@ When picking the next piece of work, deeper HITL/runtime controls and stronger e
 
 - `README.md` — User-facing installation, demo, and configuration guide.
 - `DESIGN.md` — Deep architectural rationale, adapter normalizations, and future directions.
-- `CONTEXT.md` — Project glossary / ubiquitous language (domain terms like Gate, Trigger, Domain Model Integration).
+- `CONTEXT.md` — Project glossary / ubiquitous language (domain terms like Gate, Trigger, Run, Delivery).
 - `docs/adr/` — Architecture Decision Records (numbered, append-only).
 - `docs/architecture/` — Standing architecture analyses (e.g. `autonomy-gap-analysis.md`, the Phase 1–3 autonomy roadmap).
 - `docs/plans/` — Design/implementation plans for in-flight and shipped features.

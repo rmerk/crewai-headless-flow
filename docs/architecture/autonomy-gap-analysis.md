@@ -30,9 +30,7 @@ The platform's **inner loop is genuinely done** — a clean five-worker adapter 
 | --- | --- | --- |
 | Conditional HITL Phase 0 (seam, 2 triggers, config, overrides, diagnostics) | **Shipped** | ADR-0003; `docs/plans/2026-07-06-conditional-hitl-phase-0.md` (todos complete) |
 | Later-phase HITL triggers: parallel-conflict, sensitive-paths, review-issue-volume, LLM-judged confidence | **Planned, not shipped** | Phase 0 plan L128-131 ("Out of scope"); ADR-0003 L24 |
-| HITL↔DMI convergence Phases 2–3 (`read_domain_context` seam, domain-aware `sensitive_paths_touched` trigger) | **Planned, not shipped** — gated on reversing ADR-0002's "no Flow-side reading" stance | `docs/plans/2026-07-06-hitl-dmi-convergence.md` (Tasks 3-5, L19, L104) |
-| Domain Model Integration (OpenWiki pass-through) | **Deliberately documentation-only** — "The Flow contributes zero code to this path" | ADR-0002; `docs/plans/2026-07-06-domain-model-integration.md` L20 |
-| Gemini native AGENTS.md pickup for DMI | **Documented target-repo config requirement**, not a Flow gap | DMI plan L17, L26-28; DESIGN.md L239 |
+| Domain Model Integration / OpenWiki pass-through (and HITL↔DMI convergence) | **Rejected** | ADR-0011 (supersedes ADR-0001 / ADR-0002) |
 | Escalation channels (stdin/file/command), crash-safe persistence, commit delivery (Phase 1) | **Shipped 2026-07-10** | ADRs 0004–0006 |
 | Verification gate, push/PR delivery, JSONL event log, deny paths + serial isolation, WorkerSpec (Phase 2) | **Shipped 2026-07-10** | ADRs 0007–0009 |
 | Triggering/queueing (Phase 3) | **Not designed anywhere** — genuine gap (Gap 11) | — |

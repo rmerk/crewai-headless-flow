@@ -232,12 +232,6 @@ Human-feedback behavior is also overridable per run from the CLI, so operators c
 
 Stage worker/model/timeout defaults are also overridable per run from the CLI, and nested stage extras remain overridable as well. That makes plan-crew, do_work-crew, parallel-execution, review-crew, and similar experimental knobs adjustable without editing `worker.yaml`.
 
-## Domain Model Integration (OpenWiki pass-through)
-
-Domain Model Integration gives Flow stages durable, cross-run grounding in a target repository's own domain vocabulary — by relying entirely on [OpenWiki](https://github.com/langchain-ai/openwiki) rather than any Flow-authored mechanism. An earlier design (`docs/adr/0001-canonical-adr-location-for-domain-model-integration.md`, superseded) had `plan`/`finalize` read and write a Flow-owned `CONTEXT.md`/`docs/adr/` pair using the vendored `domain-modeling` skill's conventions; that approach was dropped in favor of the OpenWiki pivot recorded in `docs/adr/0002-openwiki-replaces-domain-modeling-for-target-repo-context.md`.
-
-The resolved design is intentionally minimal: OpenWiki maintains `openwiki/` and its own `AGENTS.md`/`CLAUDE.md` pointer entirely externally, via its own CI update loop. The Flow contributes zero code to this path — it neither invokes `openwiki` nor parses its output. The only place the domain context reaches an agent is inside whichever worker CLI already reads `AGENTS.md`/`CLAUDE.md` natively when run against that target repo's working directory. v1 ships as documentation only, scoped to the `cursor`, `claude`, `codex`, and `grok` workers — all four empirically or previously confirmed to read the relevant pointer file natively; `gemini`'s `GEMINI.md`-only default is a known, documented gap rather than a Flow-side code path. See `docs/plans/2026-07-06-domain-model-integration.md` for the full per-worker verification evidence.
-
 ## Unattended-Run Reliability (autonomy Phase 1)
 
 Phase 1 of `docs/architecture/autonomy-gap-analysis.md` hardened the platform so a no-TTY run either completes on its own branch, parks resumably awaiting approval, or fails with a resumable checkpoint — never an unrecoverable crash. Five seams, each offline-testable:

@@ -4,13 +4,9 @@ A reusable, multi-agent CrewAI Flow that treats agent-skills as operating proced
 
 ## Language
 
-**Domain Model Integration**:
-A documentation-only reliance on [OpenWiki](https://github.com/langchain-ai/openwiki)'s own `AGENTS.md`/`CLAUDE.md` self-registration in a target repository, which the `cursor`, `claude`, `codex`, and `grok` workers already read natively — no Flow-side code, config, or maintenance. Superseded an earlier `domain-modeling`-skill-based design (Flow-authored `CONTEXT.md`/`docs/adr/`); see `docs/plans/2026-07-06-domain-model-integration.md`.
-_Avoid_: Wiki, agent wiki, target-repo domain model (see below, now historical)
-
-**Target-repo domain model** _(historical — see Domain Model Integration)_:
-The `CONTEXT.md`/`CONTEXT-MAP.md` glossary and `docs/adr/` decision records that a target repository's own `domain-modeling`-skill-based conventions would hold. No longer written or read by this project's Flow as of the OpenWiki-based revision.
-_Avoid_: Wiki, project wiki
+**Domain Model Integration** _(rejected — ADR-0011)_:
+Former initiative to ground Flow stages in a target repository's domain vocabulary via OpenWiki pass-through (and earlier via a Flow-authored `CONTEXT.md`/`docs/adr/` path). Abandoned; not a current feature. Ordinary worker CLI reading of a target repo's existing `AGENTS.md`/`CLAUDE.md` is unrelated.
+_Avoid_: Wiki, OpenWiki pass-through, target-repo domain model (as a Flow concern)
 
 **Gate** (human-in-the-loop):
 A named checkpoint in the flow where operator input may be requested — one of `before_plan`, `before_do_work`, `before_review`, `after_review`, `before_finalize`. A gate maps to exactly one stage. Whether a gate actually prompts is decided by `hitl_policy.should_prompt()`: in `mode: static` by the gate's boolean, in `mode: conditional` by its [[Trigger]]s. See `src/crewai_headless_flow/hitl_policy.py`.
