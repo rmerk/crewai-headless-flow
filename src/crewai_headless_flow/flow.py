@@ -1578,10 +1578,6 @@ def build_headless_flow(
     return flow
 
 
-# Back-compat alias for Phase 2 equivalence helpers / older imports.
-build_topology_twin_flow = build_headless_flow
-
-
 # Convenience runner for demos / CLI
 def run_headless_flow(
     request: str,

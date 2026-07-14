@@ -6,6 +6,18 @@ from pathlib import Path
 import pytest
 import yaml
 
+from crewai_headless_flow.diagnostics import (
+    ProbeResult,
+    SUPPORTED_WORKERS,
+    WORKER_BINARIES,
+    WORKER_HELP_COMMANDS,
+    WORKER_REQUIRED_FLAGS,
+    run_doctor,
+    run_preflight,
+)
+from crewai_headless_flow.flow import WORKER_ADAPTERS
+from crewai_headless_flow.workers import WORKER_SPECS
+
 
 pytestmark = pytest.mark.offline
 
@@ -39,7 +51,6 @@ def config_dir(tmp_path: Path) -> Path:
 
 
 def test_doctor_fails_missing_yaml_file(config_dir: Path, monkeypatch):
-    from crewai_headless_flow.diagnostics import run_doctor
 
     (config_dir / "worker.yaml").unlink()
     monkeypatch.setattr(
@@ -56,7 +67,6 @@ def test_doctor_passes_flow_topology_via_default_fallback(
     config_dir: Path, monkeypatch
 ):
     """Override packs without flow.yaml fall back to the default pack (ADR-0012)."""
-    from crewai_headless_flow.diagnostics import run_doctor
 
     monkeypatch.setattr(
         "crewai_headless_flow.diagnostics.shutil.which", lambda name: None
@@ -84,7 +94,6 @@ def test_doctor_passes_flow_topology_via_default_fallback(
 
 
 def test_doctor_fails_closed_on_incomplete_flow_yaml(config_dir: Path, monkeypatch):
-    from crewai_headless_flow.diagnostics import run_doctor
 
     incomplete = {
         "schema": "crewai.flow/v1",
@@ -112,7 +121,6 @@ def test_doctor_fails_closed_on_incomplete_flow_yaml(config_dir: Path, monkeypat
 
 
 def test_doctor_fails_malformed_yaml_type(config_dir: Path, monkeypatch):
-    from crewai_headless_flow.diagnostics import run_doctor
 
     (config_dir / "skills.yaml").write_text("[]")
     monkeypatch.setattr(
@@ -128,7 +136,6 @@ def test_doctor_fails_malformed_yaml_type(config_dir: Path, monkeypatch):
 
 
 def test_doctor_fails_missing_required_skill_stage(config_dir: Path, monkeypatch):
-    from crewai_headless_flow.diagnostics import run_doctor
 
     data = yaml.safe_load((config_dir / "skills.yaml").read_text())
     del data["stages"]["review"]
@@ -146,7 +153,6 @@ def test_doctor_fails_missing_required_skill_stage(config_dir: Path, monkeypatch
 
 
 def test_doctor_fails_unsupported_worker(config_dir: Path, monkeypatch):
-    from crewai_headless_flow.diagnostics import run_doctor
 
     data = yaml.safe_load((config_dir / "worker.yaml").read_text())
     data["defaults"]["worker"] = "bad-worker"
@@ -164,7 +170,6 @@ def test_doctor_fails_unsupported_worker(config_dir: Path, monkeypatch):
 def test_doctor_fails_missing_referenced_skill(
     config_dir: Path, tmp_path: Path, monkeypatch
 ):
-    from crewai_headless_flow.diagnostics import run_doctor
 
     monkeypatch.setattr(
         "crewai_headless_flow.diagnostics.shutil.which", lambda name: None
@@ -177,7 +182,6 @@ def test_doctor_fails_missing_referenced_skill(
 
 
 def test_doctor_fails_missing_configured_cli(config_dir: Path, monkeypatch):
-    from crewai_headless_flow.diagnostics import run_doctor
 
     monkeypatch.setattr(
         "crewai_headless_flow.diagnostics.shutil.which",
@@ -197,7 +201,6 @@ def test_doctor_fails_missing_configured_cli(config_dir: Path, monkeypatch):
 
 
 def test_doctor_fails_missing_required_cli_flag(config_dir: Path, monkeypatch):
-    from crewai_headless_flow.diagnostics import ProbeResult, run_doctor
 
     monkeypatch.setattr(
         "crewai_headless_flow.diagnostics.shutil.which", lambda name: f"/bin/{name}"
@@ -216,7 +219,6 @@ def test_doctor_fails_missing_required_cli_flag(config_dir: Path, monkeypatch):
 
 
 def test_doctor_fails_ollama_unavailable(config_dir: Path, monkeypatch):
-    from crewai_headless_flow.diagnostics import ProbeResult, run_doctor
 
     worker_data = yaml.safe_load((config_dir / "worker.yaml").read_text())
     worker_data["stages"]["plan"] = {
@@ -249,7 +251,6 @@ def test_doctor_fails_ollama_unavailable(config_dir: Path, monkeypatch):
 def test_doctor_does_not_require_ollama_when_no_crews_enabled(
     config_dir: Path, monkeypatch
 ):
-    from crewai_headless_flow.diagnostics import ProbeResult, run_doctor
 
     monkeypatch.setattr(
         "crewai_headless_flow.diagnostics.shutil.which",
@@ -270,7 +271,6 @@ def test_doctor_does_not_require_ollama_when_no_crews_enabled(
 
 
 def test_doctor_warns_when_do_work_crew_is_enabled(config_dir: Path, monkeypatch):
-    from crewai_headless_flow.diagnostics import ProbeResult, run_doctor
 
     worker_data = yaml.safe_load((config_dir / "worker.yaml").read_text())
     worker_data["stages"]["do_work"] = {
@@ -307,7 +307,6 @@ def test_doctor_warns_when_do_work_crew_is_enabled(config_dir: Path, monkeypatch
 def test_doctor_fails_when_enabled_crew_bundle_is_incomplete(
     config_dir: Path, monkeypatch
 ):
-    from crewai_headless_flow.diagnostics import ProbeResult, run_doctor
 
     worker_data = yaml.safe_load((config_dir / "worker.yaml").read_text())
     worker_data["stages"]["plan"] = {
@@ -353,7 +352,6 @@ def test_doctor_fails_when_enabled_crew_bundle_is_incomplete(
 def test_doctor_fails_when_decomposition_crew_bundle_is_incomplete(
     config_dir: Path, monkeypatch
 ):
-    from crewai_headless_flow.diagnostics import ProbeResult, run_doctor
 
     worker_data = yaml.safe_load((config_dir / "worker.yaml").read_text())
     worker_data["stages"]["do_work"] = {
@@ -401,7 +399,6 @@ def test_doctor_fails_when_decomposition_crew_bundle_is_incomplete(
 
 
 def test_doctor_skips_ollama_for_custom_crew_provider(config_dir: Path, monkeypatch):
-    from crewai_headless_flow.diagnostics import ProbeResult, run_doctor
 
     worker_data = yaml.safe_load((config_dir / "worker.yaml").read_text())
     worker_data["stages"]["review"] = {
@@ -442,7 +439,6 @@ def test_doctor_skips_ollama_for_custom_crew_provider(config_dir: Path, monkeypa
 
 
 def test_doctor_accepts_gemini_worker(config_dir: Path, monkeypatch):
-    from crewai_headless_flow.diagnostics import ProbeResult, run_doctor
 
     worker_data = yaml.safe_load((config_dir / "worker.yaml").read_text())
     worker_data["stages"]["finalize"] = {"worker": "gemini"}
@@ -467,7 +463,6 @@ def test_doctor_accepts_gemini_worker(config_dir: Path, monkeypatch):
 
 
 def test_doctor_accepts_cursor_worker(config_dir: Path, monkeypatch):
-    from crewai_headless_flow.diagnostics import ProbeResult, run_doctor
 
     worker_data = yaml.safe_load((config_dir / "worker.yaml").read_text())
     worker_data["stages"]["finalize"] = {"worker": "cursor"}
@@ -501,7 +496,6 @@ def test_doctor_accepts_cursor_worker(config_dir: Path, monkeypatch):
 
 
 def test_doctor_cursor_auth_passes_when_api_key_set(config_dir: Path, monkeypatch):
-    from crewai_headless_flow.diagnostics import ProbeResult, run_doctor
 
     worker_data = yaml.safe_load((config_dir / "worker.yaml").read_text())
     worker_data["stages"]["finalize"] = {"worker": "cursor"}
@@ -533,7 +527,6 @@ def test_doctor_cursor_auth_passes_when_api_key_set(config_dir: Path, monkeypatc
 
 
 def test_doctor_includes_resolved_runtime_metadata(config_dir: Path, monkeypatch):
-    from crewai_headless_flow.diagnostics import ProbeResult, run_doctor
 
     worker_data = yaml.safe_load((config_dir / "worker.yaml").read_text())
     worker_data["stages"] = {
@@ -605,7 +598,6 @@ def test_doctor_includes_resolved_runtime_metadata(config_dir: Path, monkeypatch
 
 
 def test_preflight_fails_missing_target_path(tmp_path: Path):
-    from crewai_headless_flow.diagnostics import run_preflight
 
     report = run_preflight(tmp_path / "missing")
 
@@ -614,7 +606,6 @@ def test_preflight_fails_missing_target_path(tmp_path: Path):
 
 
 def test_preflight_fails_file_target(tmp_path: Path):
-    from crewai_headless_flow.diagnostics import run_preflight
 
     target = tmp_path / "file.txt"
     target.write_text("not a directory")
@@ -626,7 +617,6 @@ def test_preflight_fails_file_target(tmp_path: Path):
 
 
 def test_preflight_warns_non_git_directory(tmp_path: Path, monkeypatch):
-    from crewai_headless_flow.diagnostics import run_preflight
 
     monkeypatch.setattr(
         "crewai_headless_flow.diagnostics.shutil.which", lambda name: "/bin/git"
@@ -647,7 +637,6 @@ def test_preflight_warns_non_git_directory(tmp_path: Path, monkeypatch):
 
 
 def test_preflight_fails_merge_conflict(tmp_path: Path, monkeypatch):
-    from crewai_headless_flow.diagnostics import ProbeResult, run_preflight
 
     monkeypatch.setattr(
         "crewai_headless_flow.diagnostics.shutil.which", lambda name: "/bin/git"
@@ -673,7 +662,6 @@ def test_preflight_fails_merge_conflict(tmp_path: Path, monkeypatch):
 
 
 def test_preflight_reports_clean_git_repo_and_tooling(tmp_path: Path, monkeypatch):
-    from crewai_headless_flow.diagnostics import ProbeResult, run_preflight
 
     (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
     (tmp_path / "README.md").write_text("# x\n")
@@ -704,7 +692,6 @@ def test_preflight_reports_clean_git_repo_and_tooling(tmp_path: Path, monkeypatc
 
 
 def _codex_probe(cmd, timeout=3):
-    from crewai_headless_flow.diagnostics import ProbeResult
 
     return ProbeResult(
         returncode=0,
@@ -714,7 +701,6 @@ def _codex_probe(cmd, timeout=3):
 
 
 def _run_doctor_with_hf(config_dir: Path, monkeypatch, human_feedback: dict):
-    from crewai_headless_flow.diagnostics import run_doctor
 
     worker_data = yaml.safe_load((config_dir / "worker.yaml").read_text())
     worker_data["human_feedback"] = human_feedback
@@ -803,7 +789,6 @@ def test_doctor_adds_no_conditional_check_in_static_mode(config_dir: Path, monke
 
 
 def _run_doctor_with_blocks(config_dir: Path, monkeypatch, **blocks):
-    from crewai_headless_flow.diagnostics import run_doctor
 
     worker_data = yaml.safe_load((config_dir / "worker.yaml").read_text())
     worker_data.update(blocks)
@@ -868,7 +853,6 @@ def test_doctor_warns_when_pr_enabled_without_gh(config_dir: Path, monkeypatch):
     )
     # _run_doctor_with_blocks fakes shutil.which to find everything; re-run
     # with gh explicitly missing.
-    from crewai_headless_flow.diagnostics import run_doctor
 
     monkeypatch.setattr(
         "crewai_headless_flow.diagnostics.shutil.which",
@@ -942,14 +926,6 @@ def test_doctor_adds_no_paths_check_when_deny_empty(config_dir: Path, monkeypatc
 
 
 def test_worker_dicts_are_derived_from_worker_specs():
-    from crewai_headless_flow.diagnostics import (
-        SUPPORTED_WORKERS,
-        WORKER_BINARIES,
-        WORKER_HELP_COMMANDS,
-        WORKER_REQUIRED_FLAGS,
-    )
-    from crewai_headless_flow.flow import WORKER_ADAPTERS
-    from crewai_headless_flow.workers import WORKER_SPECS
 
     assert set(WORKER_ADAPTERS) == set(WORKER_SPECS)
     assert SUPPORTED_WORKERS == set(WORKER_SPECS)
@@ -965,7 +941,6 @@ def test_worker_dicts_are_derived_from_worker_specs():
 
 
 def test_doctor_probes_configured_worker_binary(config_dir: Path, monkeypatch):
-    from crewai_headless_flow.diagnostics import run_doctor
 
     worker_data = yaml.safe_load((config_dir / "worker.yaml").read_text())
     worker_data["workers"] = {"codex": {"binary": "/opt/bin/codex-nightly"}}

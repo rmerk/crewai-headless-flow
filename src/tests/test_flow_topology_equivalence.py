@@ -11,6 +11,7 @@ import pytest
 import yaml
 
 from crewai_headless_flow.config import FlowConfig
+from crewai_headless_flow import flow as flow_module
 from crewai_headless_flow.flow import CrewAIHeadlessFlow, build_headless_flow
 from crewai_headless_flow.flow_topology import (
     load_flow_definition,
@@ -287,6 +288,31 @@ def test_build_headless_flow_binds_stage_callables():
         action = flow._methods[name].__closure__[0].cell_contents
         assert action.definition.ref == expected_ref, name
         assert action.definition.call == "code", name
+
+
+def test_run_headless_flow_constructs_via_yaml_bound_builder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Production runner must go through build_headless_flow with stage refs."""
+    captured: dict[str, Any] = {}
+    real_build = flow_module.build_headless_flow
+
+    def tracking_build(**kwargs: Any) -> CrewAIHeadlessFlow:
+        flow = real_build(**kwargs)
+        captured["refs"] = {
+            name: flow._definition.methods[name].do.ref for name in STAGE_REFS
+        }
+        flow.kickoff = lambda inputs=None: None  # type: ignore[method-assign]
+        return flow
+
+    monkeypatch.setattr(flow_module, "build_headless_flow", tracking_build)
+
+    flow_module.run_headless_flow(
+        request="topology check",
+        target_repo=str(tmp_path / "repo"),
+    )
+
+    assert captured["refs"] == STAGE_REFS
 
 
 def test_yaml_kickoff_plan_to_pass(tmp_path: Path):

@@ -15,6 +15,7 @@ import pytest
 
 from crewai_headless_flow.config import FlowConfig
 from crewai_headless_flow.flow import CrewAIHeadlessFlow
+from tests.flow_test_helpers import patch_build_headless_flow
 from crewai_headless_flow.run_store import (
     RunStore,
     generate_run_id,
@@ -178,10 +179,7 @@ def test_run_headless_flow_stamps_run_identity_before_kickoff(
             captured["run_store"] = self.run_store
             self._state = FlowState.model_validate(inputs)
 
-    def _fake_build(*, config=None, run_store=None, config_dir=None):
-        return FakeFlow(config=config, run_store=run_store)
-
-    monkeypatch.setattr(flow_module, "build_headless_flow", _fake_build)
+    patch_build_headless_flow(monkeypatch, flow_module, FakeFlow)
 
     result = flow_module.run_headless_flow(
         request="stamp identity",
@@ -218,10 +216,7 @@ def test_run_headless_flow_without_runs_dir_has_no_identity(
             self._state = FlowState.model_validate(inputs)
             assert self.run_store is None
 
-    def _fake_build(*, config=None, run_store=None, config_dir=None):
-        return FakeFlow(config=config, run_store=run_store)
-
-    monkeypatch.setattr(flow_module, "build_headless_flow", _fake_build)
+    patch_build_headless_flow(monkeypatch, flow_module, FakeFlow)
 
     result = flow_module.run_headless_flow(
         request="no identity",

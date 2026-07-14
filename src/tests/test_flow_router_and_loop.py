@@ -16,6 +16,7 @@ import pytest
 from crewai_headless_flow.config import FlowConfig
 from crewai_headless_flow import flow as flow_module
 from crewai_headless_flow.flow import CrewAIHeadlessFlow
+from tests.flow_test_helpers import patch_build_headless_flow
 from crewai_headless_flow.review_contract import REVIEW_DECISION_SCHEMA, ReviewDecision
 from crewai_headless_flow.review_crew import ReviewCrewDecision
 from crewai_headless_flow.state import (
@@ -2437,10 +2438,7 @@ def test_resume_headless_flow_restarts_from_aborted_do_work(monkeypatch):
             self.state.status = "completed"
             return "done"
 
-    def _fake_build(*, config=None, run_store=None, config_dir=None):
-        return FakeFlow(config=config, run_store=run_store)
-
-    monkeypatch.setattr(flow_module, "build_headless_flow", _fake_build)
+    patch_build_headless_flow(monkeypatch, flow_module, FakeFlow)
 
     state = FlowState(
         request="resume it",
@@ -2490,10 +2488,7 @@ def test_resume_headless_flow_restarts_from_aborted_finalize(monkeypatch):
             self.state.status = "completed"
             return "done"
 
-    def _fake_build(*, config=None, run_store=None, config_dir=None):
-        return FakeFlow(config=config, run_store=run_store)
-
-    monkeypatch.setattr(flow_module, "build_headless_flow", _fake_build)
+    patch_build_headless_flow(monkeypatch, flow_module, FakeFlow)
 
     state = FlowState(
         request="resume it",
@@ -2620,10 +2615,7 @@ def test_resume_headless_flow_restarts_revision_loop_from_aborted_finalize(monke
             calls.append(("review", work_summary))
             return "pass"
 
-    def _fake_build(*, config=None, run_store=None, config_dir=None):
-        return FakeFlow(config=config, run_store=run_store)
-
-    monkeypatch.setattr(flow_module, "build_headless_flow", _fake_build)
+    patch_build_headless_flow(monkeypatch, flow_module, FakeFlow)
 
     state = FlowState(
         request="resume it",
@@ -2679,10 +2671,7 @@ def test_resume_headless_flow_stops_when_revise_marks_flow_failed(monkeypatch):
                 "finalize should not run after revise marks the flow failed"
             )
 
-    def _fake_build(*, config=None, run_store=None, config_dir=None):
-        return FakeFlow(config=config, run_store=run_store)
-
-    monkeypatch.setattr(flow_module, "build_headless_flow", _fake_build)
+    patch_build_headless_flow(monkeypatch, flow_module, FakeFlow)
 
     state = FlowState(
         request="resume it",
@@ -2733,10 +2722,7 @@ def test_resume_headless_flow_restarts_from_aborted_plan(monkeypatch):
             self.state.status = "completed"
             return "done"
 
-    def _fake_build(*, config=None, run_store=None, config_dir=None):
-        return FakeFlow(config=config, run_store=run_store)
-
-    monkeypatch.setattr(flow_module, "build_headless_flow", _fake_build)
+    patch_build_headless_flow(monkeypatch, flow_module, FakeFlow)
 
     state = FlowState(
         request="resume it",
@@ -2783,10 +2769,7 @@ def test_resume_headless_flow_restarts_from_aborted_review(monkeypatch):
             self.state.status = "completed"
             return "done"
 
-    def _fake_build(*, config=None, run_store=None, config_dir=None):
-        return FakeFlow(config=config, run_store=run_store)
-
-    monkeypatch.setattr(flow_module, "build_headless_flow", _fake_build)
+    patch_build_headless_flow(monkeypatch, flow_module, FakeFlow)
 
     state = FlowState(
         request="resume it",
@@ -2846,10 +2829,7 @@ def test_resume_headless_flow_reopens_aborted_after_review_gate_without_rerunnin
             self.state.status = "completed"
             return "done"
 
-    def _fake_build(*, config=None, run_store=None, config_dir=None):
-        return FakeFlow(config=config, run_store=run_store)
-
-    monkeypatch.setattr(flow_module, "build_headless_flow", _fake_build)
+    patch_build_headless_flow(monkeypatch, flow_module, FakeFlow)
 
     state = FlowState(
         request="resume it",
