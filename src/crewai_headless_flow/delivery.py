@@ -4,8 +4,9 @@ verification gate).
 
 A "completed" run used to leave the target repo's working tree dirty on
 whatever branch it was on. When ``deliver.enabled`` is true, the Flow now
-puts its own changes on a fresh ``{branch_prefix}{run_id}`` branch with a
-commit, under hard guardrails:
+puts its own changes on a fresh ``{branch_prefix}{run_id}`` branch (or
+``{branch_prefix}{TICKET}-{run_id}`` when the request contains an ``AS-####``
+key) with a commit, under hard guardrails:
 
 - always a fresh branch — never a commit on the branch the operator was on;
 - refuse if the computed branch name is in ``protected_branches``;
@@ -38,6 +39,8 @@ from pathlib import Path
 from typing import Any, Callable, Literal, Mapping
 
 from pydantic import BaseModel, Field
+
+from .ticket_keys import parse_jira_ticket_key
 
 logger = logging.getLogger(__name__)
 
@@ -170,7 +173,7 @@ def _deliver_enabled(
             message="No safe changed files to stage.",
         )
 
-    branch, branch_error = _allocate_branch(cfg, git, target, run_id)
+    branch, branch_error = _allocate_branch(cfg, git, target, run_id, request=request)
     if branch is None:
         return fail(branch_error or "Could not allocate a delivery branch.")
 
@@ -329,11 +332,11 @@ def _ship(
     # operator happened to be on; let gh target the repo's default branch.
     title = _build_commit_message(run_id, request, staged_files).splitlines()[0]
     body = _build_pr_body(run_id, request, staged_files, verification_note)
+    gh_argv = ["pr", "create", "--head", branch, "--title", title, "--body", body]
+    if cfg.get("draft"):
+        gh_argv.append("--draft")
     try:
-        created = gh(
-            ["pr", "create", "--head", branch, "--title", title, "--body", body],
-            target,
-        )
+        created = gh(gh_argv, target)
     except Exception as exc:
         note = f"gh pr create failed: {type(exc).__name__}: {exc}"
         logger.warning(f"[Delivery] {note}")
@@ -420,10 +423,17 @@ def _allocate_branch(
     git: GitRunner,
     target: Path,
     run_id: str | None,
+    *,
+    request: str = "",
 ) -> tuple[str | None, str | None]:
     prefix = str(cfg.get("branch_prefix", "flow/"))
     protected = {str(name) for name in cfg.get("protected_branches", [])}
-    base_name = f"{prefix}{run_id or 'run'}"
+    ticket = parse_jira_ticket_key(request)
+    run_slug = run_id or "run"
+    if ticket:
+        base_name = f"{prefix}{ticket}-{run_slug}"
+    else:
+        base_name = f"{prefix}{run_slug}"
 
     for attempt in range(1, _BRANCH_COLLISION_LIMIT + 1):
         candidate = base_name if attempt == 1 else f"{base_name}-{attempt}"

@@ -497,8 +497,8 @@
             <h2 class="card-title">Launch Workflow Run</h2>
             <form id="runForm">
                 <div class="form-group">
-                    <label for="requestInput">Request / Prompt Summary</label>
-                    <textarea id="requestInput" required placeholder="e.g. AS-5245 or 'Add comments to Jenkinsfile explaining this is a test run'"></textarea>
+                    <label for="requestInput">Jira Ticket (AS-####)</label>
+                    <textarea id="requestInput" required autofocus placeholder="AS-5245 or Jira URL"></textarea>
                 </div>
 
                 <div class="form-group">
@@ -526,7 +526,7 @@
 
                 <div class="form-group">
                     <label for="revisionsInput">Max Revision Iterations</label>
-                    <input type="number" id="revisionsInput" min="1" max="10" value="1">
+                    <input type="number" id="revisionsInput" min="1" max="10" value="3">
                 </div>
 
                 <div class="form-group">
@@ -557,6 +557,9 @@
                 </button>
                 <button class="tab-btn" data-state="pending">
                     Pending <span class="tab-count" id="count-pending">0</span>
+                </button>
+                <button class="tab-btn" data-state="approvals">
+                    Awaiting approval <span class="tab-count" id="count-approvals">0</span>
                 </button>
                 <button class="tab-btn" data-state="done">
                     Done <span class="tab-count" id="count-done">0</span>
@@ -633,13 +636,25 @@
             try {
                 const res = await fetch('/api/target-repos');
                 const repos = await res.json();
+                let preferred = null;
                 repos.forEach(repo => {
                     const opt = document.createElement('option');
                     opt.value = repo.path;
                     opt.textContent = `${repo.name} (${repo.role})`;
                     opt.dataset.role = repo.role;
                     repoSelect.appendChild(opt);
+                    if (
+                        repo.role === 'editable' &&
+                        /portal\.web\.ui|ptm\.portal\.web\.ui/i.test(repo.name) &&
+                        !preferred
+                    ) {
+                        preferred = opt;
+                    }
                 });
+                if (preferred) {
+                    preferred.selected = true;
+                    repoSelect.dispatchEvent(new Event('change'));
+                }
             } catch (err) {
                 console.error("Failed to load target repos:", err);
             }
@@ -653,6 +668,9 @@
                     const opt = document.createElement('option');
                     opt.value = pack;
                     opt.textContent = pack;
+                    if (pack === 'jira-workflow') {
+                        opt.selected = true;
+                    }
                     configSelect.appendChild(opt);
                 });
             } catch (err) {
@@ -722,19 +740,29 @@
             try {
                 const res = await fetch('/api/jobs');
                 const data = await res.json();
-                
+                let approvals = [];
+                try {
+                    const approvalRes = await fetch('/api/runs?pending_approval=true');
+                    if (approvalRes.ok) {
+                        approvals = (await approvalRes.json()).runs || [];
+                    }
+                } catch (err) {
+                    console.error("Error polling approvals:", err);
+                }
+
                 jobsData = {
                     pending: data.pending || [],
                     running: data.running || [],
                     done: data.done || [],
-                    failed: data.failed || []
+                    failed: data.failed || [],
+                    approvals
                 };
 
-                // Update tab counters
                 document.getElementById('count-running').textContent = jobsData.running.length;
                 document.getElementById('count-pending').textContent = jobsData.pending.length;
                 document.getElementById('count-done').textContent = jobsData.done.length;
                 document.getElementById('count-failed').textContent = jobsData.failed.length;
+                document.getElementById('count-approvals').textContent = jobsData.approvals.length;
 
                 renderCurrentTab();
             } catch (err) {
@@ -744,6 +772,11 @@
 
         // Render job rows for the selected tab
         function renderCurrentTab() {
+            if (currentTabState === 'approvals') {
+                renderApprovalsTab();
+                return;
+            }
+
             const list = jobsData[currentTabState];
             if (!list || list.length === 0) {
                 jobListContainer.innerHTML = `<div class="empty-state">No jobs in "${currentTabState}" state.</div>`;
@@ -787,6 +820,62 @@
                     </div>
                 `;
             }).join('');
+        }
+
+        function renderApprovalsTab() {
+            const list = jobsData.approvals || [];
+            if (!list.length) {
+                jobListContainer.innerHTML = `<div class="empty-state">No runs awaiting approval.</div>`;
+                return;
+            }
+            jobListContainer.innerHTML = list.map(run => {
+                const trigger = run.trigger_reason
+                    ? (run.trigger_reason.kind || JSON.stringify(run.trigger_reason))
+                    : 'conditional HITL';
+                return `
+                    <div class="job-item">
+                        <div class="job-header">
+                            <div class="job-title">${escapeHtml(run.request || run.run_id)}</div>
+                            <span class="job-id-badge">${escapeHtml(run.run_id)}</span>
+                        </div>
+                        <div class="job-details">
+                            <div class="job-detail-row"><span class="job-detail-label">Gate:</span><span>${escapeHtml(run.gate || '')}</span></div>
+                            <div class="job-detail-row"><span class="job-detail-label">Trigger:</span><span>${escapeHtml(String(trigger))}</span></div>
+                            <div class="job-detail-row"><span class="job-detail-label">Revisions:</span><span>${run.revisions || 0}/${run.max_revisions || '?'}</span></div>
+                            ${run.error_tail ? `<div class="job-detail-row"><span class="job-detail-label">Error:</span><span>${escapeHtml(run.error_tail)}</span></div>` : ''}
+                            <div class="job-detail-row"><span class="job-detail-label">Prompt:</span><span>${escapeHtml(run.prompt || '')}</span></div>
+                        </div>
+                        <div class="job-actions">
+                            <button class="btn btn-primary" onclick="answerApproval('${escapeJs(run.run_id)}', 'continue')">Continue</button>
+                            <button class="btn btn-cancel" onclick="answerApproval('${escapeJs(run.run_id)}', 'abort')">Abort</button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        async function answerApproval(runId, answer) {
+            try {
+                const res = await fetch(`/api/runs/${runId}/approval`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ answer })
+                });
+                if (!res.ok) {
+                    const err = await res.json();
+                    alert(`Error: ${err.detail}`);
+                    return;
+                }
+                const resume = await fetch(`/api/runs/${runId}/resume`, { method: 'POST' });
+                if (!resume.ok) {
+                    const err = await resume.json();
+                    alert(`Answer saved but resume failed: ${err.detail}`);
+                    return;
+                }
+                pollJobs();
+            } catch (err) {
+                alert(`Approval error: ${err}`);
+            }
         }
 
         // Tab selection switches

@@ -707,6 +707,7 @@ def test_deliver_defaults_when_absent(sample_config_dir: Path):
         "commit": True,
         "push": False,
         "pr": False,
+        "draft": False,
         "remote": "origin",
         "protected_branches": ["main", "master"],
     }
@@ -2325,7 +2326,12 @@ def test_example_config_implementation_crew_loads():
 def test_verify_defaults_when_absent(sample_config_dir: Path):
     cfg = load_config(sample_config_dir)
 
-    assert cfg.verify == {"commands": [], "mode": "gate", "timeout": 600}
+    assert cfg.verify == {
+        "commands": [],
+        "pre_delivery_commands": [],
+        "mode": "gate",
+        "timeout": 600,
+    }
 
 
 def test_verify_partial_override_merges_defaults(sample_config_dir: Path):

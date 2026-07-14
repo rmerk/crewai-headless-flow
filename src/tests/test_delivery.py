@@ -112,6 +112,25 @@ def test_commits_only_listed_files_on_fresh_branch(tmp_path: Path):
     assert f"Run-Id: {RUN_ID}" in message
 
 
+def test_ticket_request_prefixes_delivery_branch(tmp_path: Path):
+    repo = _git_repo(tmp_path)
+    (repo / "src").mkdir()
+    (repo / "src/feature.py").write_text("new feature\n")
+
+    report = deliver(
+        _cfg(),
+        target_repo=repo,
+        changed_files=["src/feature.py"],
+        run_id=RUN_ID,
+        request="AS-5245",
+    )
+
+    expected = f"flow/AS-5245-{RUN_ID}"
+    assert report.status == "committed"
+    assert report.branch == expected
+    assert _git(repo, "rev-parse", "--abbrev-ref", "HEAD") == expected
+
+
 def test_stages_deletions(tmp_path: Path):
     repo = _git_repo(tmp_path)
     (repo / "obsolete.py").write_text("kill me\n")
@@ -537,10 +556,40 @@ def test_pr_created_via_gh_with_url_captured(tmp_path: Path):
     assert argv[:2] == ["pr", "create"]
     assert argv[argv.index("--head") + 1] == f"flow/{RUN_ID}"
     assert "--base" not in argv  # let gh target the repo's default branch
+    assert "--draft" not in argv
     body = argv[argv.index("--body") + 1]
     assert "open a pr" in body
     assert f"Run-Id: {RUN_ID}" in body
     assert "Verification: passed" in body
+
+
+def test_pr_created_as_draft_when_deliver_draft_true(tmp_path: Path):
+    repo = _git_repo(tmp_path)
+    (repo / "new.py").write_text("x\n")
+    gh_calls: list[list[str]] = []
+
+    def fake_gh(args, cwd):
+        gh_calls.append(args)
+        return subprocess.CompletedProcess(
+            args=["gh", *args],
+            returncode=0,
+            stdout="https://github.com/acme/repo/pull/43\n",
+            stderr="",
+        )
+
+    report = deliver(
+        _cfg(push=True, pr=True, draft=True),
+        target_repo=repo,
+        changed_files=["new.py"],
+        run_id=RUN_ID,
+        request="open a draft pr",
+        git=_push_intercepting_git([]),
+        gh=fake_gh,
+    )
+
+    assert report.pr == "created"
+    assert report.pr_url == "https://github.com/acme/repo/pull/43"
+    assert "--draft" in gh_calls[0]
 
 
 def test_pr_gh_failure_keeps_commit_and_push(tmp_path: Path):
@@ -818,3 +867,82 @@ def test_flow_records_push_failure_in_errors(tmp_path: Path, monkeypatch):
 
     assert flow.state.status == "completed"
     assert any("Delivery push failed" in err for err in flow.state.errors)
+
+
+def test_pre_delivery_commands_run_before_deliver_and_gate_push(
+    tmp_path: Path, monkeypatch
+):
+    repo = _git_repo(tmp_path)
+    cfg = FlowConfig(
+        skills={"finalize": "documentation-and-adrs"},
+        workers={"finalize": {"worker": "claude"}},
+        defaults={"worker": "codex", "timeout": 300},
+        deliver={"enabled": True, "push": True},
+        verify={
+            "commands": [],
+            "pre_delivery_commands": [["npm", "run", "test:ci"]],
+        },
+    )
+    flow = CrewAIHeadlessFlow(config=cfg)
+    flow._state = FlowState(  # type: ignore[attr-defined]
+        request="AS-5245",
+        target_repo=str(repo),
+        run_id=RUN_ID,
+        changed_files=["src/feature.py"],
+        review_status="pass",
+    )
+    flow._workers["finalize"] = FinalizeWritingWorker()  # type: ignore
+
+    verify_calls: list[tuple] = []
+
+    def fake_runner(argv, cwd, **kwargs):
+        verify_calls.append(tuple(argv))
+        return subprocess.CompletedProcess(
+            args=argv, returncode=1, stdout="fail", stderr=""
+        )
+
+    flow._verification_runner = fake_runner  # type: ignore[method-assign]
+    calls = _spy_deliver(monkeypatch)
+
+    cast(Any, flow).finalize("pass")
+
+    assert verify_calls == [("npm", "run", "test:ci")]
+    assert len(flow.state.verification_runs) == 1
+    assert flow.state.verification_runs[0].passed is False
+    assert calls[0]["verification_ok"] is False
+
+
+def test_pre_delivery_commands_pass_allows_push(tmp_path: Path, monkeypatch):
+    repo = _git_repo(tmp_path)
+    cfg = FlowConfig(
+        skills={"finalize": "documentation-and-adrs"},
+        workers={"finalize": {"worker": "claude"}},
+        defaults={"worker": "codex", "timeout": 300},
+        deliver={"enabled": True, "push": True},
+        verify={
+            "commands": [],
+            "pre_delivery_commands": [["npm", "run", "test:ci"]],
+        },
+    )
+    flow = CrewAIHeadlessFlow(config=cfg)
+    flow._state = FlowState(  # type: ignore[attr-defined]
+        request="AS-5245",
+        target_repo=str(repo),
+        run_id=RUN_ID,
+        changed_files=["src/feature.py"],
+        review_status="pass",
+    )
+    flow._workers["finalize"] = FinalizeWritingWorker()  # type: ignore
+
+    def fake_runner(argv, cwd, **kwargs):
+        return subprocess.CompletedProcess(
+            args=argv, returncode=0, stdout="ok", stderr=""
+        )
+
+    flow._verification_runner = fake_runner  # type: ignore[method-assign]
+    calls = _spy_deliver(monkeypatch)
+
+    cast(Any, flow).finalize("pass")
+
+    assert flow.state.verification_runs[0].passed is True
+    assert calls[0]["verification_ok"] is True

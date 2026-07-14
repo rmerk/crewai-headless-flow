@@ -63,23 +63,33 @@ uv run python -m crewai_headless_flow run \
   --config-dir examples/configs/gemini-do-work
 ```
 
-## 3.5. Jira Workflow
+## 3.5. Jira Workflow (Ticket → PR)
 
 Use when:
-- You want to plan, implement, and audit Jira tickets directly
-- You want to use the `jira-ticket-plan`, `jira-ticket-implement`, and `jira-ticket-plan-audit` skills
-- You are targeting a frontend repo like `asure.ptm.portal.web.ui.new` while referencing the `webapi` repo
+- You want to plan, implement, and audit Jira tickets (`AS-####`) via the dashboard or CLI
+- You want `jira-ticket-plan` → `jira-ticket-implement` → `jira-ticket-plan-audit`
+- You are targeting `asure.ptm.portal.web.ui.new` (webapi is reference-only)
 
 Config dir:
 - `examples/configs/jira-workflow`
 
-Command:
+Pack behavior (Ticket → PR):
+- Conditional HITL + `escalation.channel: file` (dashboard-safe park/resume)
+- `max_revisions` should be **3** at kick time (dashboard default)
+- Deliver: push + **draft** PR on `flow/AS-####-<run_id>`
+- Verify: `scripts/verify-round.sh` each review; `scripts/verify-pre-delivery.sh` before ship
+
+Preferred kick: start the dashboard (`uv run python -m crewai_headless_flow dashboard`), which preselects this pack.
+
+CLI escape hatch:
 
 ```bash
 uv run python -m crewai_headless_flow run \
   --request "AS-5245" \
   --target-repo /Users/rchoi/Developer/asure/asure.ptm.portal.web.ui.new \
-  --config-dir examples/configs/jira-workflow
+  --config-dir examples/configs/jira-workflow \
+  --max-revisions 3 \
+  --runs-dir ./runs
 ```
 
 

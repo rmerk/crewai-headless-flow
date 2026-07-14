@@ -105,16 +105,18 @@ DEFAULT_DELIVER: dict[str, Any] = {
     "commit": True,
     "push": False,  # ships the branch; requires the latest verification to pass
     "pr": False,  # opens a PR via `gh` after a successful push
+    "draft": False,  # pass --draft to `gh pr create` when pr is true
     "remote": "origin",
     "protected_branches": ["main", "master"],
 }
-_DELIVER_BOOLEAN_KEYS = ("enabled", "commit", "push", "pr")
+_DELIVER_BOOLEAN_KEYS = ("enabled", "commit", "push", "pr", "draft")
 _BRANCH_PREFIX_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
 _REMOTE_PATTERN = re.compile(r"^[^\s-][^\s]*$")
 
 VERIFY_MODES = ("gate", "advisory")
 DEFAULT_VERIFY: dict[str, Any] = {
     "commands": [],
+    "pre_delivery_commands": [],
     "mode": "gate",
     "timeout": 600,
 }
@@ -502,6 +504,36 @@ def _validate_deliver(raw: Any) -> dict[str, Any]:
     return deliver
 
 
+def _validate_command_list(commands: Any, *, field_name: str) -> None:
+    if not isinstance(commands, list):
+        value_type = type(commands).__name__
+        raise ValueError(f"{field_name} must be a list, got {value_type}")
+    for command in commands:
+        if isinstance(command, str) and command.strip():
+            try:
+                argv = shlex.split(command)
+            except ValueError as exc:
+                raise ValueError(
+                    f"{field_name} entry {command!r} is not parseable as a "
+                    f"command line: {exc}. Fix the quoting or use the list form."
+                ) from exc
+            if not argv:
+                raise ValueError(
+                    f"{field_name} entry {command!r} parses to an empty command line."
+                )
+            continue
+        if (
+            isinstance(command, list)
+            and command
+            and all(isinstance(part, str) and part for part in command)
+        ):
+            continue
+        raise ValueError(
+            f"{field_name} entries must be non-empty strings or non-empty "
+            f"lists of non-empty strings, got {command!r}"
+        )
+
+
 def _validate_verify(raw: Any) -> dict[str, Any]:
     if raw is None:
         raw = {}
@@ -519,35 +551,11 @@ def _validate_verify(raw: Any) -> dict[str, Any]:
 
     verify = {**DEFAULT_VERIFY, **raw}
 
-    commands = verify["commands"]
-    if not isinstance(commands, list):
-        value_type = type(commands).__name__
-        raise ValueError(f"verify.commands must be a list, got {value_type}")
-    for command in commands:
-        if isinstance(command, str) and command.strip():
-            try:
-                argv = shlex.split(command)
-            except ValueError as exc:
-                raise ValueError(
-                    f"verify.commands entry {command!r} is not parseable as a "
-                    f"command line: {exc}. Fix the quoting or use the list form."
-                ) from exc
-            if not argv:
-                raise ValueError(
-                    f"verify.commands entry {command!r} parses to an empty "
-                    "command line."
-                )
-            continue
-        if (
-            isinstance(command, list)
-            and command
-            and all(isinstance(part, str) and part for part in command)
-        ):
-            continue
-        raise ValueError(
-            "verify.commands entries must be non-empty strings or non-empty "
-            f"lists of non-empty strings, got {command!r}"
-        )
+    _validate_command_list(verify["commands"], field_name="verify.commands")
+    _validate_command_list(
+        verify["pre_delivery_commands"],
+        field_name="verify.pre_delivery_commands",
+    )
 
     mode = verify["mode"]
     if mode not in VERIFY_MODES:

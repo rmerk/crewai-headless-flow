@@ -154,6 +154,7 @@ def _handle_run(args: argparse.Namespace) -> int:
             max_revisions=max_revisions or 2,
             config=config,
             runs_dir=runs_dir,
+            config_dir=config_dir,
         )
 
     data = _state_to_dict(result_state)

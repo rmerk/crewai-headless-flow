@@ -671,7 +671,8 @@ def test_doctor_reports_verify_configuration(config_dir: Path, monkeypatch):
     assert check is not None
     assert check.status == "pass"
     assert "mode: gate" in check.message
-    assert "2 command(s)" in check.message
+    assert "2 review command(s)" in check.message
+    assert "0 pre-delivery command(s)" in check.message
 
 
 def test_doctor_warns_when_push_enabled_without_verify_commands(
