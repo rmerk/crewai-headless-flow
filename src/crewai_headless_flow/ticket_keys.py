@@ -11,6 +11,8 @@ _JIRA_URL_RE = re.compile(
     r"(?:selectedIssue=|browse/)(AS-\d+)\b",
     re.IGNORECASE,
 )
+# Matches bare keys with or without hyphen (AS-5245 or AS5245).
+_NORMALIZABLE_KEY_RE = re.compile(r"^(AS)-?(\d+)$", re.IGNORECASE)
 
 
 def parse_jira_ticket_key(request: str, *, strict: bool = False) -> str | None:
@@ -39,3 +41,16 @@ def parse_jira_ticket_key(request: str, *, strict: bool = False) -> str | None:
         return key_match.group(1).upper()
 
     return None
+
+
+def normalize_jira_key(raw: str) -> str:
+    """Return a canonical ``AS-####`` key, raising ValueError if unrecognisable.
+
+    Accepts ``AS-5245``, ``as-5245``, ``AS5245`` (no hyphen), or any variant
+    with surrounding whitespace. Raises ValueError for anything else.
+    """
+    text = (raw or "").strip()
+    m = _NORMALIZABLE_KEY_RE.fullmatch(text)
+    if not m:
+        raise ValueError(f"Not a valid Jira key: {raw!r}")
+    return f"{m.group(1).upper()}-{m.group(2)}"
