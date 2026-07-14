@@ -151,7 +151,7 @@ def _handle_run(args: argparse.Namespace) -> int:
         result_state = run_headless_flow(
             request=args.request,
             target_repo=str(target_repo),
-            max_revisions=max_revisions or 2,
+            max_revisions=max_revisions or config.max_revisions or 2,
             config=config,
             runs_dir=runs_dir,
             config_dir=config_dir,

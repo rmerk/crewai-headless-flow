@@ -354,6 +354,18 @@ def _validate_conditional(raw: Any) -> dict[str, Any]:
     return {"triggers": triggers}
 
 
+def _validate_max_revisions(raw: Any) -> int | None:
+    """Optional pack-level revise ceiling (worker.yaml ``max_revisions``)."""
+    if raw is None:
+        return None
+    if not _is_positive_int(raw):
+        value_type = type(raw).__name__
+        raise ValueError(
+            f"worker.yaml max_revisions must be a positive integer, got {value_type}"
+        )
+    return int(raw)
+
+
 def _validate_human_feedback(raw: dict[str, Any] | None) -> dict[str, Any]:
     human_feedback = {**DEFAULT_HUMAN_FEEDBACK, **(raw or {})}
     for key in HUMAN_FEEDBACK_BOOLEAN_KEYS:
@@ -942,6 +954,7 @@ class FlowConfig:
         verify: dict[str, Any] | None = None,
         paths: dict[str, Any] | None = None,
         worker_settings: dict[str, Any] | None = None,
+        max_revisions: int | None = None,
     ) -> None:
         self.skills = skills
         # NOTE: ``workers`` is the legacy per-stage mapping (worker.yaml's
@@ -954,6 +967,7 @@ class FlowConfig:
         self.verify = _validate_verify(verify)
         self.paths = _validate_paths(paths)
         self.worker_settings = _validate_workers_block(worker_settings)
+        self.max_revisions = _validate_max_revisions(max_revisions)
         self._stage_cache: dict[str, StageConfig] = {}
 
     def get_stage(self, stage: str) -> StageConfig:
@@ -1062,6 +1076,7 @@ def load_config(config_dir: Optional[Path] = None) -> FlowConfig:
     verify = worker_raw.get("verify", {})
     paths = worker_raw.get("paths", {})
     worker_settings = worker_raw.get("workers", {})
+    max_revisions = worker_raw.get("max_revisions")
 
     return FlowConfig(
         skills=skills,
@@ -1072,6 +1087,7 @@ def load_config(config_dir: Optional[Path] = None) -> FlowConfig:
         verify=verify,
         paths=paths,
         worker_settings=worker_settings,
+        max_revisions=max_revisions,
     )
 
 

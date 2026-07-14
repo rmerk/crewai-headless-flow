@@ -84,6 +84,20 @@ def test_create_job_rejects_non_ticket_request(client, tmp_path):
     assert "AS-####" in response.json()["detail"]
 
 
+def test_create_job_rejects_free_text_containing_ticket(client, tmp_path):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    response = client.post(
+        "/api/jobs",
+        json={
+            "request": "Please implement AS-1002 for payroll",
+            "target_repo": str(repo),
+        },
+    )
+    assert response.status_code == 400
+    assert "AS-####" in response.json()["detail"]
+
+
 def test_create_job_rejects_webapi_reference_only_target(client, tmp_path):
     repo = tmp_path / "asure.ptm.webapi"
     repo.mkdir()

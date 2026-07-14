@@ -13,6 +13,10 @@ defaults:
   model: "claude-opus-4.8"
   timeout: 300
 
+# Optional pack-level revise ceiling. When set, `run` uses it if --max-revisions
+# is omitted (platform default remains 2). Example packs may set this explicitly.
+# max_revisions: 3
+
 stages:
   plan:
     # Planning is read-only and now goes through the configured worker by default

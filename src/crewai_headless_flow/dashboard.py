@@ -90,8 +90,8 @@ class ApprovalAnswer(BaseModel):
 _RUN_ID_RE = re.compile(r"^[a-zA-Z0-9_\-]+$")
 
 
-def _is_reference_only_repo(path: Path) -> bool:
-    """True for Asure webapi (and similarly named) reference-only checkouts."""
+def _is_webapi_reference_repo(path: Path) -> bool:
+    """True when the checkout name looks like Asure webapi (reference-only)."""
     return "webapi" in path.name.lower()
 
 
@@ -165,7 +165,6 @@ def _approval_brief(run_dir: Path) -> Dict[str, Any]:
         "request": state.get("request") or pending.get("request"),
         "gate": pending.get("gate"),
         "stage": pending.get("stage") or state.get("last_stage"),
-        "prompt": pending.get("prompt"),
         "revisions": pending.get("revisions", state.get("revisions")),
         "max_revisions": state.get("max_revisions"),
         "target_repo": pending.get("target_repo") or state.get("target_repo"),
@@ -253,7 +252,7 @@ def get_jobs() -> Dict[str, List[Dict[str, Any]]]:
 @app.post("/api/jobs")
 def create_job(payload: EnqueueRequest) -> Dict[str, Any]:
     """Enqueue a new run request into the job queue."""
-    ticket = parse_jira_ticket_key(payload.request)
+    ticket = parse_jira_ticket_key(payload.request, strict=True)
     if ticket is None:
         raise HTTPException(
             status_code=400,
@@ -266,7 +265,7 @@ def create_job(payload: EnqueueRequest) -> Dict[str, Any]:
             status_code=400,
             detail=f"target_repo is not a directory: {payload.target_repo}",
         )
-    if _is_reference_only_repo(target):
+    if _is_webapi_reference_repo(target):
         raise HTTPException(
             status_code=400,
             detail=(
@@ -375,7 +374,9 @@ def get_target_repos() -> List[Dict[str, str]]:
     if base_dir.exists() and base_dir.is_dir():
         for item in sorted(base_dir.iterdir(), key=lambda x: x.name):
             if item.is_dir() and not item.name.startswith("."):
-                role = "reference-only" if _is_reference_only_repo(item) else "editable"
+                role = (
+                    "reference-only" if _is_webapi_reference_repo(item) else "editable"
+                )
                 repos.append(
                     {"name": item.name, "path": str(item.resolve()), "role": role}
                 )

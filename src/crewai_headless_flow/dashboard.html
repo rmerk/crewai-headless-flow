@@ -861,7 +861,7 @@
                             <div class="job-detail-row"><span class="job-detail-label">Revisions:</span><span>${run.revisions || 0}/${run.max_revisions || '?'}</span></div>
                             ${taskIds ? `<div class="job-detail-row"><span class="job-detail-label">Failed task(s):</span><span>${escapeHtml(taskIds)}</span></div>` : ''}
                             ${run.error_tail ? `<div class="job-detail-row"><span class="job-detail-label">Error:</span><span>${escapeHtml(run.error_tail)}</span></div>` : ''}
-                            ${run.run_dir ? `<div class="job-detail-row"><span class="job-detail-label">Run dir:</span><span><code>${escapeHtml(run.run_dir)}</code></span></div>` : ''}
+                            ${run.run_dir ? `<div class="job-detail-row"><span class="job-detail-label">Run dir:</span><span><a href="file://${escapeHtml(run.run_dir)}" title="Open local run directory"><code>${escapeHtml(run.run_dir)}</code></a></span></div>` : ''}
                         </div>
                         <div class="job-actions">
                             ${openDebug}

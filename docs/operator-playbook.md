@@ -75,7 +75,7 @@ Config dir:
 
 Pack behavior (Ticket → PR):
 - Conditional HITL + `escalation.channel: file` (dashboard-safe park/resume)
-- `max_revisions` should be **3** at kick time (dashboard defaults to 3 when omitted)
+- `max_revisions: 3` in the pack (CLI/`run` honors it when `--max-revisions` is omitted; dashboard also defaults to 3)
 - Deliver: push + **draft** PR on `flow/AS-####-<run_id>`
 - Verify: `scripts/verify-round.sh` each review; `scripts/verify-pre-delivery.sh` before ship
 - Pack scripts use `{config_dir}` so they resolve even when cwd is the target repo

@@ -1611,6 +1611,7 @@ def test_example_config_jira_workflow_loads():
     assert cfg.human_feedback["enabled"] is True
     assert cfg.human_feedback["mode"] == "conditional"
     assert cfg.human_feedback["escalation"]["channel"] == "file"
+    assert cfg.max_revisions == 3
     triggers = cfg.human_feedback["conditional"]["triggers"]
     assert triggers["repeated_task_failure"] == {"enabled": True, "min_attempts": 2}
     assert triggers["approaching_max_revisions"] == {"enabled": True, "within": 1}
