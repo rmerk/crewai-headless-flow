@@ -172,6 +172,14 @@ def build_agents_from_yaml(
 ) -> dict[str, Agent]:
     """Build agents from CrewBase-style agents.yaml, injecting tools/LLM."""
     tools_by_agent = tools_by_agent or {}
+    required_keys = set(tools_by_agent) | set(delegation_agent_keys)
+    missing = sorted(required_keys - set(agents_config))
+    if missing:
+        raise KeyError(
+            "agents.yaml missing required agent keys referenced by tools/"
+            f"delegation: {missing}"
+        )
+
     agents: dict[str, Agent] = {}
     for name, raw in agents_config.items():
         config = dict(raw)
@@ -201,6 +209,12 @@ def build_tasks_from_yaml(
     """
     description_vars = description_vars or {}
     output_pydantic_by_task = output_pydantic_by_task or {}
+    missing_pydantic_tasks = sorted(set(output_pydantic_by_task) - set(tasks_config))
+    if missing_pydantic_tasks:
+        raise KeyError(
+            "output_pydantic_by_task references unknown tasks.yaml keys: "
+            f"{missing_pydantic_tasks}"
+        )
     built: dict[str, Task] = {}
 
     for name, raw in tasks_config.items():

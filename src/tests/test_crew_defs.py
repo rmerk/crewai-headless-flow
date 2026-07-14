@@ -172,3 +172,38 @@ def test_build_plan_crew_uses_config_dir_agent_roles(tmp_path: Path):
     )
 
     assert any(a.role == "Pack-Local Researcher" for a in crew.agents)
+
+
+def test_build_agents_from_yaml_rejects_missing_tool_agent_keys():
+    agents_config, _tasks = load_crew_yaml("plan")
+    agents_config = {k: v for k, v in agents_config.items() if k != "researcher"}
+    llm = LLM(
+        model="ollama/llama3.2",
+        base_url="http://localhost:11434",
+        temperature=0.2,
+    )
+
+    with pytest.raises(KeyError, match="researcher"):
+        build_agents_from_yaml(
+            agents_config,
+            llm=llm,
+            tools_by_agent={"researcher": []},
+        )
+
+
+def test_build_tasks_from_yaml_rejects_unknown_output_pydantic_task_key():
+    agents_config, tasks_config = load_crew_yaml("plan")
+    llm = LLM(
+        model="ollama/llama3.2",
+        base_url="http://localhost:11434",
+        temperature=0.2,
+    )
+    agents = build_agents_from_yaml(agents_config, llm=llm)
+
+    with pytest.raises(KeyError, match="missing_task"):
+        build_tasks_from_yaml(
+            tasks_config,
+            agents,
+            assign_agents=True,
+            output_pydantic_by_task={"missing_task": PlanOutput},
+        )
