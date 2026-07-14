@@ -1,0 +1,41 @@
+evidence_task:
+  description: |
+    Use the read-only inspection tool to gather evidence for this review.
+
+    {context}
+  expected_output: A concise evidence summary with files, tests, and risks.
+  agent: evidence
+
+correctness_task:
+  description: Review the evidence for correctness defects.
+  expected_output: Concrete correctness issues, or an explicit no-issues statement.
+  agent: correctness
+  context:
+    - evidence_task
+
+test_task:
+  description: Review the evidence for missing or weak tests.
+  expected_output: Concrete test coverage issues, or an explicit no-issues statement.
+  agent: test
+  context:
+    - evidence_task
+
+scope_task:
+  description: Review the evidence for scope or safety problems.
+  expected_output: Concrete scope/safety issues, or an explicit no-issues statement.
+  agent: scope
+  context:
+    - evidence_task
+
+decision_task:
+  description: >
+    Merge the reviewer outputs into a single decision. Use status='pass'
+    only if there are no concrete issues. Use status='revise' when any
+    correctness, test coverage, scope, or safety issue remains.
+  expected_output: >
+    A JSON object with status ('pass' or 'revise'), issues, and summary.
+  agent: coordinator
+  context:
+    - correctness_task
+    - test_task
+    - scope_task

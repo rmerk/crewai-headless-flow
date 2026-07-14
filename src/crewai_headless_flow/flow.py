@@ -1101,6 +1101,7 @@ Use `task_hints` when you can map an issue to planned tasks or likely files. Use
                     timeout=stage_cfg.timeout,
                     model=stage_cfg.model,
                     crew_config=crew_cfg,
+                    config_dir=self.state.config_dir,
                 )
             except Exception as exc:
                 decision = ReviewCrewDecision(
@@ -1453,6 +1454,7 @@ Produce a single structured plan with:
                     timeout=stage_cfg.timeout,
                     model=stage_cfg.model,
                     crew_config=stage_cfg.extra.get("crew", {}) or {},
+                    config_dir=self.state.config_dir,
                 )
             except Exception as exc:
                 raise RuntimeError(f"Planning Crew failed: {exc}") from exc
@@ -1794,6 +1796,7 @@ After you are done, summarize what changed and whether task verification now pas
                     round_observer=lambda event: crew_rounds.append(
                         CrewRoundEntry.model_validate(event)
                     ),
+                    config_dir=self.state.config_dir,
                 )
             except Exception as exc:
                 result = CoderResult(
@@ -4227,12 +4230,14 @@ Recent flow history:
             self.state.errors.append(f"Delivery PR failed: {report.message}")
 
     @listen("aborted")
-    def aborted(self, _decision: str) -> str:
+    def handle_aborted(self, _decision: str) -> str:
+        # Method name must not match the router event it listens to (CrewAI 1.15+).
         logger.info(f"[Flow] Flow stopped at terminal status: {self.state.status}")
         return self._terminal_result()
 
     @listen("failed")
-    def failed(self, _decision: str) -> str:
+    def handle_failed(self, _decision: str) -> str:
+        # Method name must not match the router event it listens to (CrewAI 1.15+).
         logger.info(f"[Flow] Flow stopped at terminal status: {self.state.status}")
         return self._terminal_result()
 

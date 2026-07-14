@@ -757,7 +757,8 @@ uv run python -m crewai_headless_flow preflight --target-repo /tmp/demo-target
 
 `doctor` is an env/config check, not only a YAML parse. It fails closed if a
 configured worker CLI is missing or does not expose the required flags for this
-repo.
+repo, and if an enabled crew stage cannot resolve a complete
+`crews/<name>/{agents,tasks}.yaml` bundle under the active config pack.
 
 It also accepts the same runtime override flags as `run`, so you can validate
 an ad hoc worker/HITL/crew change before executing the flow. Text mode now

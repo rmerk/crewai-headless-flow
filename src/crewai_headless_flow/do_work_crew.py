@@ -3,12 +3,23 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
-from crewai import Agent, Crew, LLM, Process, Task
+from crewai import Crew
 from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
 
+from .crew_defs import (
+    build_agents_from_yaml,
+    build_crew,
+    build_tasks_from_yaml,
+    crew_llm,
+    delegation_enabled,
+    is_hierarchical,
+    load_crew_yaml,
+    tool_agent_map,
+)
 from .do_work_contract import (
     DoWorkExecutionPlan,
     DoWorkSubtask,
@@ -72,64 +83,6 @@ def normalize_do_work_crew_output(output: Any) -> ReviewDecision:
     )
 
 
-def _crew_llm(crew_config: dict[str, Any]) -> LLM:
-    llm_cfg = crew_config.get("llm", {}) or {}
-    return LLM(
-        model=llm_cfg.get("model", "ollama/llama3.2"),
-        base_url=llm_cfg.get("base_url", "http://localhost:11434"),
-        temperature=llm_cfg.get("temperature", 0.2),
-    )
-
-
-def _is_hierarchical(crew_config: dict[str, Any]) -> bool:
-    return crew_config.get("process", "sequential") == "hierarchical"
-
-
-def _first_not_none(*values: Any) -> Any:
-    for value in values:
-        if value is not None:
-            return value
-    return None
-
-
-def _manager_llm(crew_config: dict[str, Any]) -> LLM:
-    """LLM for the auto-created manager agent (hierarchical mode only).
-
-    Falls back to the crew's own ``llm`` block for any field left unset, so a
-    minimal ``manager.llm.model`` override is enough to point the manager at
-    a stronger tool-calling model while reusing the crew's base_url/temperature.
-    ``None`` (not just "missing key") is treated as unset so an explicit
-    ``temperature: 0.0`` override is never mistaken for "fall back".
-    """
-    fallback_cfg = crew_config.get("llm", {}) or {}
-    manager_cfg = (crew_config.get("manager", {}) or {}).get("llm", {}) or {}
-    return LLM(
-        model=_first_not_none(
-            manager_cfg.get("model"), fallback_cfg.get("model"), "ollama/llama3.2"
-        ),
-        base_url=_first_not_none(
-            manager_cfg.get("base_url"),
-            fallback_cfg.get("base_url"),
-            "http://localhost:11434",
-        ),
-        temperature=_first_not_none(
-            manager_cfg.get("temperature"), fallback_cfg.get("temperature"), 0.2
-        ),
-    )
-
-
-def _delegation_enabled(crew_config: dict[str, Any]) -> bool:
-    """Sequential-only: whether the coordinator agent gets allow_delegation=True.
-
-    Hierarchical mode always routes execution through CrewAI's auto-created
-    manager, so this flag is only meaningful under Process.sequential.
-    """
-    if _is_hierarchical(crew_config):
-        return False
-    delegation_cfg = crew_config.get("delegation", {}) or {}
-    return bool(delegation_cfg.get("enabled", False))
-
-
 def run_do_work_crew(
     *,
     task_prompt: str,
@@ -139,6 +92,7 @@ def run_do_work_crew(
     model: str | None = None,
     crew_config: dict[str, Any] | None = None,
     round_observer: Callable[[dict[str, Any]], None] | None = None,
+    config_dir: str | Path | None = None,
 ) -> tuple[CoderResult, ReviewDecision]:
     """Run optional Implementation Crew and return edit + decision."""
 
@@ -150,6 +104,7 @@ def run_do_work_crew(
         timeout=timeout,
         model=model,
         crew_config=crew_config,
+        config_dir=config_dir,
     )
 
     last_result = CoderResult(
@@ -178,6 +133,7 @@ def run_do_work_crew(
             crew_config=crew_config,
             subtask=subtask if used_decomposition else None,
             round_observer=round_observer,
+            config_dir=config_dir,
         )
         raw_outputs.append(last_result.raw_output)
 
@@ -221,6 +177,7 @@ def _run_prompt_with_rounds(
     crew_config: dict[str, Any] | None = None,
     subtask: DoWorkSubtask | None = None,
     round_observer: Callable[[dict[str, Any]], None] | None = None,
+    config_dir: str | Path | None = None,
 ) -> tuple[CoderResult, ReviewDecision]:
     crew_config = crew_config or {}
     feedback_block: str | None = None
@@ -247,6 +204,7 @@ def _run_prompt_with_rounds(
             timeout=timeout,
             model=model,
             crew_config=crew_config,
+            config_dir=config_dir,
         )
         if round_observer is not None:
             round_observer(
@@ -268,113 +226,6 @@ def _run_prompt_with_rounds(
     return last_result, last_decision
 
 
-def _build_do_work_round_agents(
-    *,
-    llm: LLM,
-    inspect_tool: HeadlessInspectTool,
-    edit_tool: HeadlessEditTool,
-    delegation_enabled: bool,
-) -> dict[str, Agent]:
-    evidence_agent = Agent(
-        role="Implementation Evidence Collector",
-        goal="Gather grounded repository context for current implementation slice.",
-        backstory=(
-            "You inspect repository state and summarize only facts that are "
-            "relevant to safely implementing assigned slice."
-        ),
-        tools=[inspect_tool],
-        llm=llm,
-        verbose=False,
-    )
-    implementer_agent = Agent(
-        role="Task Implementer",
-        goal="Implement assigned slice within stated boundaries.",
-        backstory="You make focused, minimal changes that satisfy current slice.",
-        tools=[edit_tool],
-        llm=llm,
-        verbose=False,
-    )
-    verifier_agent = Agent(
-        role="Task Verifier",
-        goal="Check whether implementation appears complete and on-scope.",
-        backstory="You look for missing behavior, weak verification, and scope drift.",
-        tools=[inspect_tool],
-        llm=llm,
-        verbose=False,
-    )
-    coordinator = Agent(
-        role="Implementation Coordinator",
-        goal="Decide whether current slice is ready to progress.",
-        backstory="You make conservative pass-or-revise calls from concrete evidence.",
-        llm=llm,
-        verbose=False,
-        allow_delegation=delegation_enabled,
-    )
-    return {
-        "evidence": evidence_agent,
-        "implementer": implementer_agent,
-        "verifier": verifier_agent,
-        "coordinator": coordinator,
-    }
-
-
-def _build_do_work_round_tasks(
-    agents: dict[str, Agent], task_prompt: str, *, assign_agents: bool
-) -> list[Task]:
-    """Build the implementation round task pipeline.
-
-    When ``assign_agents`` is False (hierarchical mode), tasks are built
-    without a fixed ``agent=`` so CrewAI's manager actually decides who runs
-    each task at runtime instead of following a pre-assigned pipeline.
-    """
-
-    def agent_or_none(name: str) -> Agent | None:
-        return agents[name] if assign_agents else None
-
-    evidence_task = Task(
-        description=(
-            "Use read-only inspect tool to gather implementation context.\n\n"
-            f"{task_prompt}"
-        ),
-        expected_output=(
-            "Concise evidence summary with relevant files, dependencies, and "
-            "verification hooks."
-        ),
-        agent=agent_or_none("evidence"),
-    )
-    implementation_task = Task(
-        description=(
-            "Use edit tool to implement current slice. Stay scoped to current "
-            "slice and summarize what changed."
-        ),
-        expected_output="Concise implementation summary from edit run.",
-        context=[evidence_task],
-        agent=agent_or_none("implementer"),
-    )
-    verification_task = Task(
-        description=(
-            "Use inspect tool to verify whether implementation appears to "
-            "satisfy current slice. Call out concrete remaining issues if any."
-        ),
-        expected_output="Concrete remaining issues, or an explicit no-issues statement.",
-        context=[evidence_task, implementation_task],
-        agent=agent_or_none("verifier"),
-    )
-    decision_task = Task(
-        description=(
-            "Merge implementation and verification outputs into single decision. "
-            "Use status='pass' only if no concrete issue remains. Use "
-            "status='revise' when missing behavior, missing verification, "
-            "or scope drift remains."
-        ),
-        expected_output="A JSON object with status, issues, and summary.",
-        context=[implementation_task, verification_task],
-        output_pydantic=ReviewDecision,
-        agent=agent_or_none("coordinator"),
-    )
-    return [evidence_task, implementation_task, verification_task, decision_task]
-
-
 def build_do_work_round_crew(
     *,
     task_prompt: str,
@@ -383,6 +234,7 @@ def build_do_work_round_crew(
     timeout: int,
     model: str | None = None,
     crew_config: dict[str, Any] | None = None,
+    config_dir: str | Path | None = None,
 ) -> tuple[Crew, HeadlessEditTool]:
     """Construct a single Implementation Crew round without invoking it.
 
@@ -391,11 +243,13 @@ def build_do_work_round_crew(
     ``allow_delegation`` without requiring a live LLM (only ``crew.kickoff()``
     makes network calls). Returns the edit tool alongside the crew since the
     caller inspects ``edit_tool.results`` after kickoff.
+
+    Agent/task text comes from ``config/crews/do_work_round/{agents,tasks}.yaml``.
     """
 
     crew_config = crew_config or {}
-    hierarchical = _is_hierarchical(crew_config)
-    llm = _crew_llm(crew_config)
+    hierarchical = is_hierarchical(crew_config)
+    llm = crew_llm(crew_config)
     inspect_tool = HeadlessInspectTool(
         worker_tool=worker_tool,
         cwd=cwd,
@@ -408,31 +262,27 @@ def build_do_work_round_crew(
         timeout=timeout,
         model=model,
     )
-
-    agents = _build_do_work_round_agents(
+    agents_config, tasks_config = load_crew_yaml("do_work_round", config_dir=config_dir)
+    tools_by_agent = tool_agent_map(
+        ("evidence", [inspect_tool]),
+        ("implementer", [edit_tool]),
+        ("verifier", [inspect_tool]),
+    )
+    agents = build_agents_from_yaml(
+        agents_config,
         llm=llm,
-        inspect_tool=inspect_tool,
-        edit_tool=edit_tool,
-        delegation_enabled=_delegation_enabled(crew_config),
+        tools_by_agent=tools_by_agent,
+        delegation_agent_keys={"coordinator"},
+        allow_delegation=delegation_enabled(crew_config),
     )
-    tasks = _build_do_work_round_tasks(
-        agents, task_prompt, assign_agents=not hierarchical
+    tasks = build_tasks_from_yaml(
+        tasks_config,
+        agents,
+        assign_agents=not hierarchical,
+        description_vars={"context": task_prompt},
+        output_pydantic_by_task={"decision_task": ReviewDecision},
     )
-    if hierarchical:
-        crew = Crew(
-            agents=list(agents.values()),
-            tasks=tasks,
-            process=Process.hierarchical,
-            manager_llm=_manager_llm(crew_config),
-            verbose=False,
-        )
-    else:
-        crew = Crew(
-            agents=list(agents.values()),
-            tasks=tasks,
-            process=Process.sequential,
-            verbose=False,
-        )
+    crew = build_crew(agents=agents, tasks=tasks, crew_config=crew_config)
     return crew, edit_tool
 
 
@@ -444,6 +294,7 @@ def _run_do_work_crew_round(
     timeout: int,
     model: str | None = None,
     crew_config: dict[str, Any] | None = None,
+    config_dir: str | Path | None = None,
 ) -> tuple[CoderResult, ReviewDecision]:
     """Run a single Implementation Crew round and return edit + decision."""
 
@@ -454,6 +305,7 @@ def _run_do_work_crew_round(
         timeout=timeout,
         model=model,
         crew_config=crew_config,
+        config_dir=config_dir,
     )
 
     decision = normalize_do_work_crew_output(crew.kickoff())
@@ -480,6 +332,7 @@ def _planned_subtasks(
     timeout: int,
     model: str | None,
     crew_config: dict[str, Any],
+    config_dir: str | Path | None = None,
 ) -> tuple[list[DoWorkSubtask], bool]:
     if not _decomposition_enabled(crew_config):
         return [_synthetic_subtask(task_prompt)], False
@@ -493,6 +346,7 @@ def _planned_subtasks(
             timeout=timeout,
             model=model,
             crew_config=crew_config,
+            config_dir=config_dir,
         )
         if plan is None:
             raise ValueError("decomposition output could not be parsed")
@@ -507,88 +361,6 @@ def _planned_subtasks(
         return [_synthetic_subtask(task_prompt)], False
 
 
-def _build_do_work_decomposition_agents(
-    *, llm: LLM, inspect_tool: HeadlessInspectTool, delegation_enabled: bool
-) -> dict[str, Agent]:
-    researcher = Agent(
-        role="Implementation Researcher",
-        goal="Gather facts needed to split current task into safe execution slices.",
-        backstory="You inspect repo state and surface only grounded execution constraints.",
-        tools=[inspect_tool],
-        llm=llm,
-        verbose=False,
-    )
-    decomposer = Agent(
-        role="Task Decomposer",
-        goal="Break current task into small ordered execution slices.",
-        backstory="You prefer few slices and avoid decomposition when one slice is enough.",
-        llm=llm,
-        verbose=False,
-    )
-    validator = Agent(
-        role="Decomposition Validator",
-        goal="Catch weak slice boundaries, missing file hints, and extra complexity.",
-        backstory="You keep execution plans conservative and grounded.",
-        llm=llm,
-        verbose=False,
-        allow_delegation=delegation_enabled,
-    )
-    return {"researcher": researcher, "decomposer": decomposer, "validator": validator}
-
-
-def _build_do_work_decomposition_tasks(
-    agents: dict[str, Agent],
-    task_prompt: str,
-    max_subtasks: int,
-    *,
-    assign_agents: bool,
-) -> list[Task]:
-    """Build the decomposition task pipeline.
-
-    When ``assign_agents`` is False (hierarchical mode), tasks are built
-    without a fixed ``agent=`` so CrewAI's manager actually decides who runs
-    each task at runtime instead of following a pre-assigned pipeline.
-    """
-
-    def agent_or_none(name: str) -> Agent | None:
-        return agents[name] if assign_agents else None
-
-    research_task = Task(
-        description=(
-            "Use read-only inspect tool to gather decomposition context.\n\n"
-            f"{task_prompt}"
-        ),
-        expected_output=(
-            "Concise research summary with likely files, dependencies, and "
-            "verification hooks for current task."
-        ),
-        agent=agent_or_none("researcher"),
-    )
-    draft_task = Task(
-        description=(
-            "Using research summary, break current task into at most "
-            f"{max_subtasks} ordered execution slices. Use one slice when task is "
-            "already small. Each slice should have a short title, concrete "
-            "description, likely files, and verification checks."
-        ),
-        expected_output="Draft ordered slice list.",
-        context=[research_task],
-        agent=agent_or_none("decomposer"),
-    )
-    final_task = Task(
-        description=(
-            "Return final structured execution plan. Keep it conservative and "
-            "ordered. Prefer fewer slices. If uncertainty is high, still return "
-            "one concrete slice rather than inventing extra structure."
-        ),
-        expected_output="A JSON object with summary and subtasks.",
-        context=[research_task, draft_task],
-        output_pydantic=DoWorkExecutionPlan,
-        agent=agent_or_none("validator"),
-    )
-    return [research_task, draft_task, final_task]
-
-
 def build_do_work_decomposition_crew(
     *,
     task_prompt: str,
@@ -597,11 +369,16 @@ def build_do_work_decomposition_crew(
     timeout: int,
     model: str | None,
     crew_config: dict[str, Any],
+    config_dir: str | Path | None = None,
 ) -> Crew:
-    """Construct the decomposition Crew without invoking it (see build_do_work_round_crew)."""
+    """Construct the decomposition Crew without invoking it (see build_do_work_round_crew).
 
-    hierarchical = _is_hierarchical(crew_config)
-    llm = _crew_llm(crew_config)
+    Agent/task text comes from
+    ``config/crews/do_work_decomposition/{agents,tasks}.yaml``.
+    """
+
+    hierarchical = is_hierarchical(crew_config)
+    llm = crew_llm(crew_config)
     inspect_tool = HeadlessInspectTool(
         worker_tool=worker_tool,
         cwd=cwd,
@@ -609,29 +386,30 @@ def build_do_work_decomposition_crew(
         model=model,
     )
     max_subtasks = _max_subtasks(crew_config)
-
-    agents = _build_do_work_decomposition_agents(
+    agents_config, tasks_config = load_crew_yaml(
+        "do_work_decomposition", config_dir=config_dir
+    )
+    tools_by_agent = tool_agent_map(
+        ("researcher", [inspect_tool]),
+    )
+    agents = build_agents_from_yaml(
+        agents_config,
         llm=llm,
-        inspect_tool=inspect_tool,
-        delegation_enabled=_delegation_enabled(crew_config),
+        tools_by_agent=tools_by_agent,
+        delegation_agent_keys={"validator"},
+        allow_delegation=delegation_enabled(crew_config),
     )
-    tasks = _build_do_work_decomposition_tasks(
-        agents, task_prompt, max_subtasks, assign_agents=not hierarchical
+    tasks = build_tasks_from_yaml(
+        tasks_config,
+        agents,
+        assign_agents=not hierarchical,
+        description_vars={
+            "context": task_prompt,
+            "max_subtasks": max_subtasks,
+        },
+        output_pydantic_by_task={"final_task": DoWorkExecutionPlan},
     )
-    if hierarchical:
-        return Crew(
-            agents=list(agents.values()),
-            tasks=tasks,
-            process=Process.hierarchical,
-            manager_llm=_manager_llm(crew_config),
-            verbose=False,
-        )
-    return Crew(
-        agents=list(agents.values()),
-        tasks=tasks,
-        process=Process.sequential,
-        verbose=False,
-    )
+    return build_crew(agents=agents, tasks=tasks, crew_config=crew_config)
 
 
 def _run_do_work_decomposition_crew(
@@ -642,6 +420,7 @@ def _run_do_work_decomposition_crew(
     timeout: int,
     model: str | None,
     crew_config: dict[str, Any],
+    config_dir: str | Path | None = None,
 ) -> DoWorkExecutionPlan | None:
     crew = build_do_work_decomposition_crew(
         task_prompt=task_prompt,
@@ -650,6 +429,7 @@ def _run_do_work_decomposition_crew(
         timeout=timeout,
         model=model,
         crew_config=crew_config,
+        config_dir=config_dir,
     )
     return normalize_do_work_execution_plan(crew.kickoff())
 

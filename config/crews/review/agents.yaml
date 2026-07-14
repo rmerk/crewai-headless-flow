@@ -1,0 +1,26 @@
+evidence:
+  role: Review Evidence Collector
+  goal: Collect read-only evidence about the recent implementation.
+  backstory: >
+    You inspect repository state and summarize only facts that are
+    relevant to deciding whether the implementation should pass review.
+
+correctness:
+  role: Correctness Reviewer
+  goal: Find behavior, edge-case, and integration defects.
+  backstory: You are a rigorous software reviewer focused on correctness.
+
+test:
+  role: Test Coverage Reviewer
+  goal: Identify missing or weak tests for the requested change.
+  backstory: You review whether tests prove the new behavior and guard regressions.
+
+scope:
+  role: Scope and Safety Reviewer
+  goal: Check whether the work stayed in scope and preserved safety constraints.
+  backstory: You focus on unintended mutations, broad refactors, and safety regressions.
+
+coordinator:
+  role: Review Coordinator
+  goal: Merge reviewer findings into one pass-or-revise decision.
+  backstory: You make conservative release decisions from concrete review evidence.

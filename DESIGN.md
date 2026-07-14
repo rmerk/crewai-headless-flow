@@ -114,6 +114,8 @@ The plan contract also fails closed when the returned "structured" plan is missi
 
 The `plan` stage can optionally run a sequential CrewAI `Crew` before the Flow proceeds to implementation. This uses the configured plan worker only through an inspect-mode tool, so the Planning Crew can research the target repository without mutating it.
 
+Agent/task text is CrewBase-style YAML under `config/crews/plan/{agents,tasks}.yaml`. Python still injects the inspect tool, LLM, and `worker.yaml` process/delegation/manager overlays at build time.
+
 The Planning Crew is disabled by default in `config/worker.yaml`. When enabled, it emits the same `PlanOutput` contract as the direct worker-backed planning path, so downstream Flow behavior stays unchanged.
 
 ## Optional Implementation Crew
@@ -127,6 +129,8 @@ The `do_work` stage can optionally run a CrewAI `Crew` around each planned task.
 - an optional task-local decomposition step that can split one planned task into a few ordered execution slices before edit-mode work begins
 
 That keeps the real mutation inside the configured worker while still moving beyond simple one-shot task execution inside `do_work`.
+
+Agent/task text for the round and decomposition crews lives under `config/crews/do_work_round/` and `config/crews/do_work_decomposition/` (CrewBase-style `agents.yaml` / `tasks.yaml`). Runtime tools and `worker.yaml` process overlays stay in Python.
 
 The Implementation Crew is disabled by default in `config/worker.yaml`. When enabled, it can now participate in the same isolated-workspace parallel batch model as direct task execution: disjoint tasks can run concurrently in separate workspace copies, mergeback still fails closed on overlapping actual changes, and `max_rounds` bounds task-local self-correction before the Flow marks a task failed.
 
@@ -195,6 +199,8 @@ That gives later stages a lightweight audit trail without depending on raw CLI t
 ## Optional Review Crew
 
 The `review` stage can optionally run a sequential CrewAI `Crew` before the Flow router makes its pass/revise decision. This keeps the Flow responsible for state and routing while letting specialized review agents collect evidence, check correctness, evaluate test coverage, and merge findings into one structured decision.
+
+Agent/task text is CrewBase-style YAML under `config/crews/review/{agents,tasks}.yaml`. Python still injects the inspect tool and `worker.yaml` process overlays.
 
 The Review Crew is disabled by default in `config/worker.yaml`. When enabled, it exposes only a custom inspect-mode tool backed by the configured review worker, so the read-only review invariant remains unchanged.
 

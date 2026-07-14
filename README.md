@@ -682,10 +682,12 @@ uv run python -m crewai_headless_flow run \
 ### 3. Check readiness without running a model
 
 `doctor` is detect-only: it checks config, referenced skills, configured CLIs,
-required CLI flags, and optional target-repo preflight. When a crew-backed stage
-is still configured for the default Ollama-style local LLM, it also checks
-Ollama readiness. It does not send model prompts, consume auth, construct the
-Flow, or run worker adapters.
+required CLI flags, and optional target-repo preflight. When optional crews are
+enabled, it also verifies each required `config/crews/<name>/{agents,tasks}.yaml`
+bundle resolves (pack-local when `crews/` is present; otherwise the default pack).
+When a crew-backed stage is still configured for the default Ollama-style local
+LLM, it also checks Ollama readiness. It does not send model prompts, consume
+auth, construct the Flow, or run worker adapters.
 
 Text mode now also prints the resolved per-stage runtime summary plus resolved
 HITL settings, so one-run overrides are visible without switching to JSON.
@@ -738,10 +740,11 @@ Re-run the same command — no code changes required. The startup banner will sh
 
 ## Configuration
 
-The entire behavior is driven by two small YAML files:
+The entire behavior is driven by a small set of YAML files:
 
 - `config/skills.yaml` — which agent-skill provides the operating procedure for each stage
 - `config/worker.yaml` — which headless coder (`codex`/`grok`/`claude`), model, and flags to use per stage
+- `config/crews/<name>/{agents,tasks}.yaml` — optional Crew agent/task prompts (plan, do_work_round, do_work_decomposition, review)
 
 At startup the project prints a clear table:
 
@@ -1215,7 +1218,12 @@ src/crewai_headless_flow/
 
 config/
 ├── skills.yaml
-└── worker.yaml
+├── worker.yaml
+└── crews/
+    ├── plan/{agents,tasks}.yaml
+    ├── do_work_round/{agents,tasks}.yaml
+    ├── do_work_decomposition/{agents,tasks}.yaml
+    └── review/{agents,tasks}.yaml
 
 examples/
 ├── create_sample_target.py
