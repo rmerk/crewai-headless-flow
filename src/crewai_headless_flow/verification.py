@@ -88,15 +88,41 @@ def _tail(stdout: Any, stderr: Any) -> str:
     return combined[-OUTPUT_TAIL_LIMIT:]
 
 
+def expand_config_dir_placeholders(
+    commands: list[CommandSpec],
+    config_dir: Path | str | None,
+) -> list[CommandSpec]:
+    """Replace ``{config_dir}`` tokens in command argv/strings.
+
+    Used by pack configs (e.g. jira-workflow verify scripts) that live next
+    to ``worker.yaml`` and must run with ``cwd`` = the target repo.
+    """
+
+    if not config_dir:
+        return list(commands)
+    root = str(Path(config_dir).resolve())
+    expanded: list[CommandSpec] = []
+    for command in commands:
+        if isinstance(command, str):
+            expanded.append(command.replace("{config_dir}", root))
+            continue
+        expanded.append([part.replace("{config_dir}", root) for part in command])
+    return expanded
+
+
 def run_verification(
     cfg: Mapping[str, Any],
     cwd: Path | str,
     *,
     runner: VerifyRunner = subprocess.run,
+    config_dir: Path | str | None = None,
 ) -> VerificationReport:
     """Run the configured verification commands in ``cwd``, fail-fast."""
 
-    commands: list[CommandSpec] = list(cfg.get("commands") or [])
+    commands: list[CommandSpec] = expand_config_dir_placeholders(
+        list(cfg.get("commands") or []),
+        config_dir,
+    )
     mode = cfg.get("mode", "gate")
     timeout = cfg.get("timeout", 600)
 

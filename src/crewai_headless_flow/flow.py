@@ -954,6 +954,7 @@ Use `task_hints` when you can map an issue to planned tasks or likely files. Use
             verify_cfg,
             cwd=self.state.target_repo,
             runner=self._verification_runner,
+            config_dir=self.state.config_dir,
         )
         report.revision = self.state.revisions
         self.state.verification_runs.append(report)
@@ -4118,12 +4119,14 @@ Recent flow history:
 
         Mode-independent on purpose: ``advisory`` only controls whether a
         failure short-circuits the LLM review — shipping unverified work is
-        never OK while commands are configured. Empty ``verify.commands``
-        means the operator opted out of verification and owns the risk.
-        A human force-pass does not override this predicate either.
+        never OK while commands are configured. Empty ``verify.commands`` and
+        empty ``verify.pre_delivery_commands`` means the operator opted out of
+        verification and owns the risk. A human force-pass does not override
+        this predicate either.
         """
 
-        if not self.config.verify.get("commands"):
+        verify = self.config.verify
+        if not verify.get("commands") and not verify.get("pre_delivery_commands"):
             return True
         runs = self.state.verification_runs
         if not runs:
@@ -4133,12 +4136,52 @@ Recent flow history:
             return last.passed
         return bool(last.get("passed"))
 
+    def _run_pre_delivery_verification(self) -> VerificationReport | None:
+        """Run ``verify.pre_delivery_commands`` once before delivery ships.
+
+        Appends to ``verification_runs`` so ``_delivery_verification_ok``
+        sees this as the latest round. Returns None when no pre-delivery
+        commands are configured.
+        """
+
+        verify_cfg = self.config.verify
+        commands = verify_cfg.get("pre_delivery_commands") or []
+        if not commands:
+            return None
+
+        logger.info(
+            f"[Flow] Running {len(commands)} pre-delivery verification "
+            f"command(s) in {self.state.target_repo}..."
+        )
+        report = run_verification(
+            {**verify_cfg, "commands": commands},
+            cwd=self.state.target_repo,
+            runner=self._verification_runner,
+            config_dir=self.state.config_dir,
+        )
+        report.revision = self.state.revisions
+        self.state.verification_runs.append(report)
+        outcome = "passed" if report.passed else "FAILED"
+        log = logger.info if report.passed else logger.warning
+        log(f"[Flow] Pre-delivery verification {outcome}: {report.message}")
+        self._log_event(
+            "pre_delivery_verification",
+            passed=report.passed,
+            mode=report.mode,
+            commands=len(report.results),
+            message=report.message,
+        )
+        self._refresh_debug_report()
+        return report
+
     def _delivery_verification_note(self, verification_ok: bool) -> str:
         commands = self.config.verify.get("commands") or []
-        if not commands:
+        pre = self.config.verify.get("pre_delivery_commands") or []
+        if not commands and not pre:
             return "Verification: not configured."
         if verification_ok:
-            return f"Verification: passed ({len(commands)} command(s))."
+            total = len(commands) + len(pre)
+            return f"Verification: passed ({total} command(s) configured)."
         return "Verification: latest round did not pass."
 
     def _maybe_deliver(self, extra_changed: list[str]) -> None:
@@ -4154,6 +4197,7 @@ Recent flow history:
                 "Delivery excluded denied paths: " + ", ".join(sorted(denied))
             )
             staged = [path for path in staged if path not in denied]
+        self._run_pre_delivery_verification()
         verification_ok = self._delivery_verification_ok()
         report = deliver(
             deliver_cfg,
@@ -4200,6 +4244,7 @@ def run_headless_flow(
     max_revisions: int = 2,
     config: FlowConfig | None = None,
     runs_dir: str | Path | None = None,
+    config_dir: str | Path | None = None,
 ) -> FlowState:
     """
     High-level entry point for running the full flow.
@@ -4208,6 +4253,7 @@ def run_headless_flow(
         request=request,
         target_repo=target_repo,
         max_revisions=max_revisions,
+        config_dir=str(Path(config_dir).resolve()) if config_dir else None,
     )
 
     run_store: RunStore | None = None

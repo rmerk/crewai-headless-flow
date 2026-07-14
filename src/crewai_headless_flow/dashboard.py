@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
 import subprocess
+import sys
 import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -23,6 +25,8 @@ from .job_queue import (
     new_job,
     serve_queue,
 )
+from .run_store import PENDING_APPROVAL_FILENAME
+from .ticket_keys import parse_jira_ticket_key
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +83,126 @@ class EnqueueRequest(BaseModel):
     overrides: Dict[str, List[str]] = Field(default_factory=dict)
 
 
+class ApprovalAnswer(BaseModel):
+    answer: str  # "y" continue | "n" abort
+
+
+_RUN_ID_RE = re.compile(r"^[a-zA-Z0-9_\-]+$")
+
+
+def _is_webapi_reference_repo(path: Path) -> bool:
+    """True when the checkout name looks like Asure webapi (reference-only)."""
+    return "webapi" in path.name.lower()
+
+
+def _require_runs_dir() -> Path:
+    if RUNS_DIR is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Dashboard was started without --runs-dir; approval APIs unavailable.",
+        )
+    return Path(RUNS_DIR)
+
+
+def _run_dir_for(run_id: str) -> Path:
+    if not _RUN_ID_RE.match(run_id):
+        raise HTTPException(status_code=400, detail="Invalid run ID format.")
+    run_dir = _require_runs_dir() / run_id
+    if not run_dir.is_dir():
+        raise HTTPException(status_code=404, detail=f"Run not found: {run_id}")
+    return run_dir
+
+
+def _read_json(path: Path) -> Dict[str, Any]:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to read {path.name}: {exc}"
+        ) from exc
+
+
+def _approval_brief(run_dir: Path) -> Dict[str, Any]:
+    pending_path = run_dir / PENDING_APPROVAL_FILENAME
+    state_path = run_dir / "state.json"
+    if not pending_path.exists():
+        raise HTTPException(status_code=404, detail="No pending approval for this run.")
+
+    pending = _read_json(pending_path)
+    state: Dict[str, Any] = {}
+    if state_path.exists():
+        state = _read_json(state_path)
+
+    feedback = state.get("human_feedback_log") or []
+    trigger = None
+    if feedback:
+        last = feedback[-1]
+        if isinstance(last, dict):
+            trigger = last.get("trigger_reason")
+
+    failed_task_ids: List[str] = []
+    if isinstance(trigger, dict):
+        detail = trigger.get("detail")
+        if isinstance(detail, dict):
+            task_id = detail.get("task_id")
+            if task_id:
+                failed_task_ids.append(str(task_id))
+            task_ids = detail.get("task_ids")
+            if isinstance(task_ids, list):
+                failed_task_ids.extend(str(t) for t in task_ids if t)
+
+    errors = state.get("errors") or []
+    error_tail = ""
+    if isinstance(errors, list) and errors:
+        error_tail = str(errors[-1])[-500:]
+
+    debug_path = run_dir / "debug_report.md"
+    resume_log = run_dir / "resume.log"
+
+    return {
+        "run_id": run_dir.name,
+        "run_dir": str(run_dir),
+        "request": state.get("request") or pending.get("request"),
+        "gate": pending.get("gate"),
+        "stage": pending.get("stage") or state.get("last_stage"),
+        "revisions": pending.get("revisions", state.get("revisions")),
+        "max_revisions": state.get("max_revisions"),
+        "target_repo": pending.get("target_repo") or state.get("target_repo"),
+        "trigger_reason": trigger,
+        "failed_task_ids": failed_task_ids,
+        "error_tail": error_tail,
+        "has_debug_report": debug_path.is_file(),
+        "has_resume_log": resume_log.is_file(),
+        "status": state.get("status"),
+        "actions": ["continue", "abort"],
+    }
+
+
+def list_pending_approvals() -> List[Dict[str, Any]]:
+    runs_root = _require_runs_dir()
+    if not runs_root.is_dir():
+        return []
+    briefs: List[Dict[str, Any]] = []
+    for child in sorted(runs_root.iterdir(), key=lambda p: p.name, reverse=True):
+        if not child.is_dir():
+            continue
+        pending = child / PENDING_APPROVAL_FILENAME
+        state_path = child / "state.json"
+        if not pending.exists() or not state_path.exists():
+            continue
+        try:
+            state = _read_json(state_path)
+        except HTTPException:
+            continue
+        if state.get("status") != "aborted_by_human":
+            continue
+        try:
+            briefs.append(_approval_brief(child))
+        except HTTPException:
+            continue
+    return briefs
+
+
 def dashboard_launcher(argv: List[str], log_path: Path) -> subprocess.Popen[bytes]:
     """Custom launcher that stores the running Popen process in a global registry for cancellation."""
     proc = launch_run_subprocess(argv, log_path)
@@ -128,12 +252,46 @@ def get_jobs() -> Dict[str, List[Dict[str, Any]]]:
 @app.post("/api/jobs")
 def create_job(payload: EnqueueRequest) -> Dict[str, Any]:
     """Enqueue a new run request into the job queue."""
+    ticket = parse_jira_ticket_key(payload.request, strict=True)
+    if ticket is None:
+        raise HTTPException(
+            status_code=400,
+            detail="request must be an AS-#### ticket key or a Jira URL containing one",
+        )
+
+    target = Path(payload.target_repo)
+    if not target.is_dir():
+        raise HTTPException(
+            status_code=400,
+            detail=f"target_repo is not a directory: {payload.target_repo}",
+        )
+    if _is_webapi_reference_repo(target):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"target_repo is reference-only (not an edit target): {target.name}. "
+                "Use the portal UI repo instead."
+            ),
+        )
+
+    config_dir = payload.config_dir
+    if config_dir:
+        config_path = Path(config_dir)
+        if not config_path.is_dir():
+            raise HTTPException(
+                status_code=400,
+                detail=f"config_dir is not a directory: {config_dir}",
+            )
+
+    # Ticket → PR pack expects 3; FlowState/CLI fall back to 2 when omitted.
+    max_revisions = payload.max_revisions if payload.max_revisions is not None else 3
+
     try:
         job = new_job(
-            request=payload.request,
-            target_repo=payload.target_repo,
-            max_revisions=payload.max_revisions,
-            config_dir=payload.config_dir,
+            request=ticket,
+            target_repo=str(target.resolve()),
+            max_revisions=max_revisions,
+            config_dir=config_dir,
             overrides=payload.overrides,
         )
         enqueue_job(QUEUE_DIR, job)
@@ -206,18 +364,19 @@ def cancel_job(job_id: str) -> Dict[str, str]:
 
 @app.get("/api/target-repos")
 def get_target_repos() -> List[Dict[str, str]]:
-    """Scan and return potential target subdirectories in the user's workspace."""
+    """Scan and return potential target subdirectories under ``ASURE_BASE_DIR``."""
     base_dir_env = os.environ.get("ASURE_BASE_DIR")
-    base_dir = (
-        Path(base_dir_env) if base_dir_env else Path("/Users/rchoi/Developer/asure")
-    )
+    if not base_dir_env:
+        return []
+    base_dir = Path(base_dir_env)
     repos = []
 
     if base_dir.exists() and base_dir.is_dir():
         for item in sorted(base_dir.iterdir(), key=lambda x: x.name):
             if item.is_dir() and not item.name.startswith("."):
-                # Tag it as Portal or WebAPI based on folder name
-                role = "reference-only" if "webapi" in item.name.lower() else "editable"
+                role = (
+                    "reference-only" if _is_webapi_reference_repo(item) else "editable"
+                )
                 repos.append(
                     {"name": item.name, "path": str(item.resolve()), "role": role}
                 )
@@ -235,6 +394,113 @@ def get_config_packs() -> List[str]:
             if item.is_dir() and not item.name.startswith("."):
                 packs.append(item.name)
     return packs
+
+
+@app.get("/api/runs")
+def get_runs(pending_approval: bool = False) -> Dict[str, Any]:
+    """List runs; with pending_approval=true return parked HITL approvals only."""
+    if pending_approval:
+        return {"runs": list_pending_approvals()}
+    raise HTTPException(
+        status_code=400,
+        detail="Specify pending_approval=true (full run listing not implemented).",
+    )
+
+
+@app.get("/api/runs/{run_id}/approval")
+def get_run_approval(run_id: str) -> Dict[str, Any]:
+    """Return the dashboard HITL brief for a parked run."""
+    return _approval_brief(_run_dir_for(run_id))
+
+
+@app.get("/api/runs/{run_id}/debug")
+def get_run_debug(run_id: str) -> Dict[str, str]:
+    """Return debug_report.md (or resume.log) for a parked/resumed run."""
+    run_dir = _run_dir_for(run_id)
+    debug_path = run_dir / "debug_report.md"
+    resume_log = run_dir / "resume.log"
+    if debug_path.is_file():
+        return {
+            "name": "debug_report.md",
+            "content": debug_path.read_text(encoding="utf-8", errors="replace"),
+        }
+    if resume_log.is_file():
+        return {
+            "name": "resume.log",
+            "content": resume_log.read_text(encoding="utf-8", errors="replace"),
+        }
+    raise HTTPException(status_code=404, detail="No debug_report.md or resume.log.")
+
+
+@app.post("/api/runs/{run_id}/approval")
+def post_run_approval(run_id: str, payload: ApprovalAnswer) -> Dict[str, Any]:
+    """Write continue/abort answer into pending_approval.json."""
+    answer = payload.answer.strip().lower()
+    if answer in {"continue", "y", "yes"}:
+        normalized = "y"
+    elif answer in {"abort", "n", "no"}:
+        normalized = "n"
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail='answer must be "y"/"continue" or "n"/"abort"',
+        )
+
+    run_dir = _run_dir_for(run_id)
+    pending_path = run_dir / PENDING_APPROVAL_FILENAME
+    if not pending_path.exists():
+        raise HTTPException(status_code=404, detail="No pending approval for this run.")
+
+    pending = _read_json(pending_path)
+    pending["answer"] = normalized
+    pending_path.write_text(json.dumps(pending, indent=2) + "\n", encoding="utf-8")
+    return {"status": "answered", "answer": normalized, "run_id": run_id}
+
+
+@app.post("/api/runs/{run_id}/resume")
+def resume_run(run_id: str) -> Dict[str, Any]:
+    """Spawn ``run --resume-state-file`` for a parked approval."""
+    run_dir = _run_dir_for(run_id)
+    state_path = run_dir / "state.json"
+    if not state_path.exists():
+        raise HTTPException(status_code=404, detail="state.json missing for run.")
+
+    pending_path = run_dir / PENDING_APPROVAL_FILENAME
+    if pending_path.exists():
+        pending = _read_json(pending_path)
+        if not str(pending.get("answer") or "").strip():
+            raise HTTPException(
+                status_code=400,
+                detail="pending_approval.json has no answer; POST /approval first.",
+            )
+
+    runs_root = _require_runs_dir()
+    state = _read_json(state_path)
+    argv = [
+        sys.executable,
+        "-m",
+        "crewai_headless_flow",
+        "run",
+        "--resume-state-file",
+        str(state_path),
+        "--runs-dir",
+        str(runs_root),
+    ]
+    config_dir = state.get("config_dir")
+    if config_dir:
+        argv.extend(["--config-dir", str(config_dir)])
+
+    log_path = run_dir / "resume.log"
+    proc = launch_run_subprocess(argv, log_path)
+    resume_id = f"resume-{run_id}"
+    with ACTIVE_PROCESSES_LOCK:
+        ACTIVE_PROCESSES[resume_id] = proc
+    return {
+        "status": "resumed",
+        "run_id": run_id,
+        "pid": proc.pid,
+        "log_path": str(log_path),
+    }
 
 
 def start_dashboard(

@@ -707,6 +707,7 @@ def test_deliver_defaults_when_absent(sample_config_dir: Path):
         "commit": True,
         "push": False,
         "pr": False,
+        "draft": False,
         "remote": "origin",
         "protected_branches": ["main", "master"],
     }
@@ -1600,6 +1601,36 @@ def test_example_config_conditional_hitl_loads():
     assert triggers["approaching_max_revisions"] == {"enabled": True, "within": 1}
 
 
+def test_example_config_jira_workflow_loads():
+    config_dir = (
+        Path(__file__).resolve().parents[2] / "examples" / "configs" / "jira-workflow"
+    )
+
+    cfg = load_config(config_dir)
+
+    assert cfg.human_feedback["enabled"] is True
+    assert cfg.human_feedback["mode"] == "conditional"
+    assert cfg.human_feedback["escalation"]["channel"] == "file"
+    assert cfg.max_revisions == 3
+    triggers = cfg.human_feedback["conditional"]["triggers"]
+    assert triggers["repeated_task_failure"] == {"enabled": True, "min_attempts": 2}
+    assert triggers["approaching_max_revisions"] == {"enabled": True, "within": 1}
+    assert cfg.deliver["enabled"] is True
+    assert cfg.deliver["draft"] is True
+    assert cfg.deliver["push"] is True
+    assert cfg.deliver["pr"] is True
+    assert cfg.verify["mode"] == "gate"
+    assert cfg.verify["commands"] == [["bash", "{config_dir}/scripts/verify-round.sh"]]
+    assert cfg.verify["pre_delivery_commands"] == [
+        ["bash", "{config_dir}/scripts/verify-pre-delivery.sh"]
+    ]
+    assert (config_dir / "scripts" / "verify-round.sh").is_file()
+    assert (config_dir / "scripts" / "verify-pre-delivery.sh").is_file()
+    assert cfg.get_stage("plan").skill == "jira-ticket-plan"
+    assert cfg.get_stage("do_work").skill == "jira-ticket-implement"
+    assert cfg.get_stage("review").skill == "jira-ticket-plan-audit"
+
+
 def test_example_config_operator_review_gate_loads():
     config_dir = (
         Path(__file__).resolve().parents[2]
@@ -2325,7 +2356,12 @@ def test_example_config_implementation_crew_loads():
 def test_verify_defaults_when_absent(sample_config_dir: Path):
     cfg = load_config(sample_config_dir)
 
-    assert cfg.verify == {"commands": [], "mode": "gate", "timeout": 600}
+    assert cfg.verify == {
+        "commands": [],
+        "pre_delivery_commands": [],
+        "mode": "gate",
+        "timeout": 600,
+    }
 
 
 def test_verify_partial_override_merges_defaults(sample_config_dir: Path):

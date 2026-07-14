@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import subprocess
 
+from pathlib import Path
+
 import pytest
 
 from crewai_headless_flow.verification import (
     LAUNCH_FAILURE_EXIT_CODE,
     OUTPUT_TAIL_LIMIT,
     TIMEOUT_EXIT_CODE,
+    expand_config_dir_placeholders,
     run_verification,
 )
 
@@ -186,3 +189,14 @@ def test_advisory_mode_is_carried_on_the_report():
 
     assert report.mode == "advisory"
     assert report.passed is False
+
+
+def test_expand_config_dir_placeholders(tmp_path: Path):
+    root = tmp_path / "pack"
+    root.mkdir()
+    expanded = expand_config_dir_placeholders(
+        [["bash", "{config_dir}/scripts/verify-round.sh"], "echo {config_dir}"],
+        root,
+    )
+    assert expanded[0] == ["bash", f"{root.resolve()}/scripts/verify-round.sh"]
+    assert expanded[1] == f"echo {root.resolve()}"

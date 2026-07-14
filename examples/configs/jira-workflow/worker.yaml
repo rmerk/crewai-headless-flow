@@ -3,6 +3,9 @@ defaults:
   model: "sonnet"
   timeout: 300
 
+# Ticket → PR revise ceiling (CLI/dashboard honor this when --max-revisions omitted).
+max_revisions: 3
+
 stages:
   plan:
     worker: "claude"
@@ -18,5 +21,45 @@ stages:
   finalize:
     worker: "claude"
 
+# Ticket → PR: autonomous unless Phase 0 conditional HITL fires; park via file
+# so dashboard/queue jobs (stdin closed) can resume.
 human_feedback:
-  enabled: false
+  enabled: true
+  mode: "conditional"
+  before_plan: false
+  before_do_work: false
+  before_review: false
+  after_review: false
+  before_finalize: false
+  capture_instructions: false
+  advanced_actions: false
+  action_allowlist: {}
+  escalation:
+    channel: file
+  conditional:
+    triggers:
+      repeated_task_failure:
+        enabled: true
+        min_attempts: 2
+      approaching_max_revisions:
+        enabled: true
+        within: 1
+
+deliver:
+  enabled: true
+  branch_prefix: "flow/"
+  commit: true
+  push: true
+  pr: true
+  draft: true
+  remote: origin
+  protected_branches: [main, master]
+
+# Scripts live under this pack; `{config_dir}` is expanded by the Flow at run time.
+verify:
+  commands:
+    - ["bash", "{config_dir}/scripts/verify-round.sh"]
+  pre_delivery_commands:
+    - ["bash", "{config_dir}/scripts/verify-pre-delivery.sh"]
+  mode: gate
+  timeout: 600

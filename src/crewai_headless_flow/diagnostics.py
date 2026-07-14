@@ -657,24 +657,26 @@ def _check_conditional_human_feedback(
 def _check_verify(report: DiagnosticReport, cfg: FlowConfig) -> None:
     """Report the verify-gate configuration and flag unverified push/pr.
 
-    ``deliver.push``/``deliver.pr`` with no ``verify.commands`` means the
-    run would ship work no objective check ever ran against — legal (the
-    operator opted out) but worth a loud warning.
+    ``deliver.push``/``deliver.pr`` with no ``verify.commands`` and no
+    ``verify.pre_delivery_commands`` means the run would ship work no
+    objective check ever ran against — legal (the operator opted out) but
+    worth a loud warning.
     """
 
     verify = cfg.verify
     commands = verify.get("commands") or []
+    pre_delivery = verify.get("pre_delivery_commands") or []
     deliver = cfg.deliver
     shipping = [key for key in ("push", "pr") if deliver.get(key)]
+    total = len(commands) + len(pre_delivery)
 
-    if not commands:
+    if total == 0:
         if shipping:
             report.add_check(
                 "config.verify",
                 "warn",
-                "deliver."
-                + "/".join(shipping)
-                + " is enabled but verify.commands is empty; delivery would "
+                "deliver." + "/".join(shipping) + " is enabled but verify.commands and "
+                "verify.pre_delivery_commands are empty; delivery would "
                 "ship unverified work",
                 {"mode": verify.get("mode"), "commands": 0},
             )
@@ -692,8 +694,13 @@ def _check_verify(report: DiagnosticReport, cfg: FlowConfig) -> None:
         "config.verify",
         "pass",
         f"Verification enabled (mode: {verify.get('mode')}, "
-        f"{len(commands)} command(s))",
-        {"mode": verify.get("mode"), "commands": len(commands)},
+        f"{len(commands)} review command(s), "
+        f"{len(pre_delivery)} pre-delivery command(s))",
+        {
+            "mode": verify.get("mode"),
+            "commands": len(commands),
+            "pre_delivery_commands": len(pre_delivery),
+        },
     )
 
 
@@ -845,7 +852,7 @@ def _run_probe(cmd: tuple[str, ...], timeout: int = 3) -> ProbeResult:
         return ProbeResult(returncode=124, stdout="", stderr="timed out")
     except Exception as exc:
         return ProbeResult(returncode=1, stdout="", stderr=str(exc))
-    
+
     is_help = "--help" in cmd or "-h" in cmd
     return ProbeResult(
         returncode=proc.returncode,

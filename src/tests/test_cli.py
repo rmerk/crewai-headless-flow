@@ -77,6 +77,7 @@ def test_legacy_run_invocation_routes_to_flow_backend(
             "max_revisions": 2,
             "config": calls[0]["config"],
             "runs_dir": Path("./runs").resolve(),
+            "config_dir": config_dir.resolve(),
         }
     ]
 

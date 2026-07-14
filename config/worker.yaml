@@ -13,6 +13,10 @@ defaults:
   model: "claude-opus-4.8"
   timeout: 300
 
+# Optional pack-level revise ceiling. When set, `run` uses it if --max-revisions
+# is omitted (platform default remains 2). Example packs may set this explicitly.
+# max_revisions: 3
+
 stages:
   plan:
     # Planning is read-only and now goes through the configured worker by default
@@ -205,6 +209,7 @@ deliver:
   commit: true
   push: false
   pr: false
+  draft: false  # when pr: true, open as a GitHub draft PR (`gh pr create --draft`)
   remote: origin
   protected_branches: [main, master]
 
@@ -222,6 +227,8 @@ deliver:
 # (e.g. --override-verify 'commands=["uv run pytest -q"]').
 verify:
   commands: []
+  # Optional second bar run once after finalize, before push/pr (Ticket → PR).
+  # pre_delivery_commands: []
   mode: gate
   timeout: 600
 

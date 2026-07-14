@@ -105,16 +105,18 @@ DEFAULT_DELIVER: dict[str, Any] = {
     "commit": True,
     "push": False,  # ships the branch; requires the latest verification to pass
     "pr": False,  # opens a PR via `gh` after a successful push
+    "draft": False,  # pass --draft to `gh pr create` when pr is true
     "remote": "origin",
     "protected_branches": ["main", "master"],
 }
-_DELIVER_BOOLEAN_KEYS = ("enabled", "commit", "push", "pr")
+_DELIVER_BOOLEAN_KEYS = ("enabled", "commit", "push", "pr", "draft")
 _BRANCH_PREFIX_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
 _REMOTE_PATTERN = re.compile(r"^[^\s-][^\s]*$")
 
 VERIFY_MODES = ("gate", "advisory")
 DEFAULT_VERIFY: dict[str, Any] = {
     "commands": [],
+    "pre_delivery_commands": [],
     "mode": "gate",
     "timeout": 600,
 }
@@ -352,6 +354,18 @@ def _validate_conditional(raw: Any) -> dict[str, Any]:
     return {"triggers": triggers}
 
 
+def _validate_max_revisions(raw: Any) -> int | None:
+    """Optional pack-level revise ceiling (worker.yaml ``max_revisions``)."""
+    if raw is None:
+        return None
+    if not _is_positive_int(raw):
+        value_type = type(raw).__name__
+        raise ValueError(
+            f"worker.yaml max_revisions must be a positive integer, got {value_type}"
+        )
+    return int(raw)
+
+
 def _validate_human_feedback(raw: dict[str, Any] | None) -> dict[str, Any]:
     human_feedback = {**DEFAULT_HUMAN_FEEDBACK, **(raw or {})}
     for key in HUMAN_FEEDBACK_BOOLEAN_KEYS:
@@ -502,6 +516,36 @@ def _validate_deliver(raw: Any) -> dict[str, Any]:
     return deliver
 
 
+def _validate_command_list(commands: Any, *, field_name: str) -> None:
+    if not isinstance(commands, list):
+        value_type = type(commands).__name__
+        raise ValueError(f"{field_name} must be a list, got {value_type}")
+    for command in commands:
+        if isinstance(command, str) and command.strip():
+            try:
+                argv = shlex.split(command)
+            except ValueError as exc:
+                raise ValueError(
+                    f"{field_name} entry {command!r} is not parseable as a "
+                    f"command line: {exc}. Fix the quoting or use the list form."
+                ) from exc
+            if not argv:
+                raise ValueError(
+                    f"{field_name} entry {command!r} parses to an empty command line."
+                )
+            continue
+        if (
+            isinstance(command, list)
+            and command
+            and all(isinstance(part, str) and part for part in command)
+        ):
+            continue
+        raise ValueError(
+            f"{field_name} entries must be non-empty strings or non-empty "
+            f"lists of non-empty strings, got {command!r}"
+        )
+
+
 def _validate_verify(raw: Any) -> dict[str, Any]:
     if raw is None:
         raw = {}
@@ -519,35 +563,11 @@ def _validate_verify(raw: Any) -> dict[str, Any]:
 
     verify = {**DEFAULT_VERIFY, **raw}
 
-    commands = verify["commands"]
-    if not isinstance(commands, list):
-        value_type = type(commands).__name__
-        raise ValueError(f"verify.commands must be a list, got {value_type}")
-    for command in commands:
-        if isinstance(command, str) and command.strip():
-            try:
-                argv = shlex.split(command)
-            except ValueError as exc:
-                raise ValueError(
-                    f"verify.commands entry {command!r} is not parseable as a "
-                    f"command line: {exc}. Fix the quoting or use the list form."
-                ) from exc
-            if not argv:
-                raise ValueError(
-                    f"verify.commands entry {command!r} parses to an empty "
-                    "command line."
-                )
-            continue
-        if (
-            isinstance(command, list)
-            and command
-            and all(isinstance(part, str) and part for part in command)
-        ):
-            continue
-        raise ValueError(
-            "verify.commands entries must be non-empty strings or non-empty "
-            f"lists of non-empty strings, got {command!r}"
-        )
+    _validate_command_list(verify["commands"], field_name="verify.commands")
+    _validate_command_list(
+        verify["pre_delivery_commands"],
+        field_name="verify.pre_delivery_commands",
+    )
 
     mode = verify["mode"]
     if mode not in VERIFY_MODES:
@@ -934,6 +954,7 @@ class FlowConfig:
         verify: dict[str, Any] | None = None,
         paths: dict[str, Any] | None = None,
         worker_settings: dict[str, Any] | None = None,
+        max_revisions: int | None = None,
     ) -> None:
         self.skills = skills
         # NOTE: ``workers`` is the legacy per-stage mapping (worker.yaml's
@@ -946,6 +967,7 @@ class FlowConfig:
         self.verify = _validate_verify(verify)
         self.paths = _validate_paths(paths)
         self.worker_settings = _validate_workers_block(worker_settings)
+        self.max_revisions = _validate_max_revisions(max_revisions)
         self._stage_cache: dict[str, StageConfig] = {}
 
     def get_stage(self, stage: str) -> StageConfig:
@@ -1054,6 +1076,7 @@ def load_config(config_dir: Optional[Path] = None) -> FlowConfig:
     verify = worker_raw.get("verify", {})
     paths = worker_raw.get("paths", {})
     worker_settings = worker_raw.get("workers", {})
+    max_revisions = worker_raw.get("max_revisions")
 
     return FlowConfig(
         skills=skills,
@@ -1064,6 +1087,7 @@ def load_config(config_dir: Optional[Path] = None) -> FlowConfig:
         verify=verify,
         paths=paths,
         worker_settings=worker_settings,
+        max_revisions=max_revisions,
     )
 
 
