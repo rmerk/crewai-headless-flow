@@ -380,8 +380,8 @@ def test_file_channel_parks_then_resume_consumes_answer(
 
     # 3. Resume replays the gate; the handler consumes the answer.
     class StubbedFlow(CrewAIHeadlessFlow):
-        def __init__(self, config=None):
-            super().__init__(config=config)
+        def __init__(self, config=None, run_store=None):
+            super().__init__(config=config, run_store=run_store)
             self._workers = {  # type: ignore[assignment]
                 stage: AllStagesStubWorker() for stage in self._workers
             }

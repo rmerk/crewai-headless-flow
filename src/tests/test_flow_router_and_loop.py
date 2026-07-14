@@ -2409,8 +2409,9 @@ def test_resume_headless_flow_restarts_from_aborted_do_work(monkeypatch):
     calls: list[tuple[str, str]] = []
 
     class FakeFlow:
-        def __init__(self, config=None):
+        def __init__(self, config=None, run_store=None):
             self.config = config
+            self._run_store = run_store
             self._state = None
 
         @property
@@ -2436,7 +2437,10 @@ def test_resume_headless_flow_restarts_from_aborted_do_work(monkeypatch):
             self.state.status = "completed"
             return "done"
 
-    monkeypatch.setattr(flow_module, "CrewAIHeadlessFlow", FakeFlow)
+    def _fake_build(*, config=None, run_store=None, config_dir=None):
+        return FakeFlow(config=config, run_store=run_store)
+
+    monkeypatch.setattr(flow_module, "build_headless_flow", _fake_build)
 
     state = FlowState(
         request="resume it",
@@ -2467,8 +2471,9 @@ def test_resume_headless_flow_restarts_from_aborted_finalize(monkeypatch):
     calls: list[tuple[str, str]] = []
 
     class FakeFlow:
-        def __init__(self, config=None):
+        def __init__(self, config=None, run_store=None):
             self.config = config
+            self._run_store = run_store
             self._state = None
 
         @property
@@ -2485,7 +2490,10 @@ def test_resume_headless_flow_restarts_from_aborted_finalize(monkeypatch):
             self.state.status = "completed"
             return "done"
 
-    monkeypatch.setattr(flow_module, "CrewAIHeadlessFlow", FakeFlow)
+    def _fake_build(*, config=None, run_store=None, config_dir=None):
+        return FakeFlow(config=config, run_store=run_store)
+
+    monkeypatch.setattr(flow_module, "build_headless_flow", _fake_build)
 
     state = FlowState(
         request="resume it",
@@ -2579,8 +2587,9 @@ def test_resume_headless_flow_restarts_revision_loop_from_aborted_finalize(monke
     calls: list[tuple[str, str]] = []
 
     class FakeFlow:
-        def __init__(self, config=None):
+        def __init__(self, config=None, run_store=None):
             self.config = config
+            self._run_store = run_store
             self._state = None
 
         @property
@@ -2611,7 +2620,10 @@ def test_resume_headless_flow_restarts_revision_loop_from_aborted_finalize(monke
             calls.append(("review", work_summary))
             return "pass"
 
-    monkeypatch.setattr(flow_module, "CrewAIHeadlessFlow", FakeFlow)
+    def _fake_build(*, config=None, run_store=None, config_dir=None):
+        return FakeFlow(config=config, run_store=run_store)
+
+    monkeypatch.setattr(flow_module, "build_headless_flow", _fake_build)
 
     state = FlowState(
         request="resume it",
@@ -2636,8 +2648,9 @@ def test_resume_headless_flow_stops_when_revise_marks_flow_failed(monkeypatch):
     calls: list[tuple[str, str]] = []
 
     class FakeFlow:
-        def __init__(self, config=None):
+        def __init__(self, config=None, run_store=None):
             self.config = config
+            self._run_store = run_store
             self._state = None
 
         @property
@@ -2666,7 +2679,10 @@ def test_resume_headless_flow_stops_when_revise_marks_flow_failed(monkeypatch):
                 "finalize should not run after revise marks the flow failed"
             )
 
-    monkeypatch.setattr(flow_module, "CrewAIHeadlessFlow", FakeFlow)
+    def _fake_build(*, config=None, run_store=None, config_dir=None):
+        return FakeFlow(config=config, run_store=run_store)
+
+    monkeypatch.setattr(flow_module, "build_headless_flow", _fake_build)
 
     state = FlowState(
         request="resume it",
@@ -2686,8 +2702,9 @@ def test_resume_headless_flow_restarts_from_aborted_plan(monkeypatch):
     calls: list[tuple[str, str | None]] = []
 
     class FakeFlow:
-        def __init__(self, config=None):
+        def __init__(self, config=None, run_store=None):
             self.config = config
+            self._run_store = run_store
             self._state = None
 
         @property
@@ -2716,7 +2733,10 @@ def test_resume_headless_flow_restarts_from_aborted_plan(monkeypatch):
             self.state.status = "completed"
             return "done"
 
-    monkeypatch.setattr(flow_module, "CrewAIHeadlessFlow", FakeFlow)
+    def _fake_build(*, config=None, run_store=None, config_dir=None):
+        return FakeFlow(config=config, run_store=run_store)
+
+    monkeypatch.setattr(flow_module, "build_headless_flow", _fake_build)
 
     state = FlowState(
         request="resume it",
@@ -2740,8 +2760,9 @@ def test_resume_headless_flow_restarts_from_aborted_review(monkeypatch):
     calls: list[tuple[str, str]] = []
 
     class FakeFlow:
-        def __init__(self, config=None):
+        def __init__(self, config=None, run_store=None):
             self.config = config
+            self._run_store = run_store
             self._state = None
 
         @property
@@ -2762,7 +2783,10 @@ def test_resume_headless_flow_restarts_from_aborted_review(monkeypatch):
             self.state.status = "completed"
             return "done"
 
-    monkeypatch.setattr(flow_module, "CrewAIHeadlessFlow", FakeFlow)
+    def _fake_build(*, config=None, run_store=None, config_dir=None):
+        return FakeFlow(config=config, run_store=run_store)
+
+    monkeypatch.setattr(flow_module, "build_headless_flow", _fake_build)
 
     state = FlowState(
         request="resume it",
@@ -2784,8 +2808,9 @@ def test_resume_headless_flow_reopens_aborted_after_review_gate_without_rerunnin
     calls: list[tuple[str, str]] = []
 
     class FakeFlow:
-        def __init__(self, config=None):
+        def __init__(self, config=None, run_store=None):
             self.config = config
+            self._run_store = run_store
             self._state = None
 
         @property
@@ -2821,7 +2846,10 @@ def test_resume_headless_flow_reopens_aborted_after_review_gate_without_rerunnin
             self.state.status = "completed"
             return "done"
 
-    monkeypatch.setattr(flow_module, "CrewAIHeadlessFlow", FakeFlow)
+    def _fake_build(*, config=None, run_store=None, config_dir=None):
+        return FakeFlow(config=config, run_store=run_store)
+
+    monkeypatch.setattr(flow_module, "build_headless_flow", _fake_build)
 
     state = FlowState(
         request="resume it",

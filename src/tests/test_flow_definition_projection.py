@@ -1,4 +1,4 @@
-"""Phase 0: FlowDefinition projection and declarative seam smokes (offline)."""
+"""Phase 0/3: FlowDefinition declarative seam smokes + canonical topology (offline)."""
 
 from __future__ import annotations
 
@@ -8,13 +8,13 @@ from typing import Any
 import pytest
 from crewai.flow.flow import Flow
 from crewai.flow.flow_definition import FlowDefinition
-from crewai.flow.runtime import FlowScriptExecutionDisabledError, build_flow_definition
+from crewai.flow.runtime import FlowScriptExecutionDisabledError
 
-from crewai_headless_flow.flow import CrewAIHeadlessFlow
+from crewai_headless_flow.flow_topology import load_flow_definition
 
 pytestmark = pytest.mark.offline
 
-# Canonical topology projected from the decorator Flow (source of truth until cutover flip).
+# Canonical topology from config/flow.yaml (SoT after Phase 3 entrypoint flip).
 EXPECTED_METHODS = {
     "plan": {
         "start": True,
@@ -60,14 +60,26 @@ EXPECTED_METHODS = {
     },
 }
 
+STAGE_REFS = {
+    "plan": "crewai_headless_flow.stages.plan:execute_plan",
+    "do_work": "crewai_headless_flow.stages.do_work:execute_do_work",
+    "review": "crewai_headless_flow.stages.review:execute_review",
+    "process_revision": (
+        "crewai_headless_flow.stages.revision:execute_process_revision"
+    ),
+    "finalize": "crewai_headless_flow.stages.finalize:execute_finalize",
+    "handle_aborted": ("crewai_headless_flow.stages.terminal:execute_handle_aborted"),
+    "handle_failed": ("crewai_headless_flow.stages.terminal:execute_handle_failed"),
+}
+
 
 def _double_bound_value(self: Any, value: int) -> int:
     """Code-action helper: unbound callables are bound to the Flow as methods."""
     return value * 2
 
 
-def test_build_flow_definition_projects_canonical_topology():
-    definition = build_flow_definition(CrewAIHeadlessFlow)
+def test_load_flow_definition_is_canonical_topology_source_of_truth():
+    definition = load_flow_definition()
 
     assert definition.name == "CrewAIHeadlessFlow"
     assert set(definition.methods) == set(EXPECTED_METHODS)
@@ -79,9 +91,7 @@ def test_build_flow_definition_projects_canonical_topology():
         assert method.router is expected["router"], name
         assert method.emit == expected["emit"], name
         assert method.do.call == "code", name
-        assert method.do.ref == (
-            f"crewai_headless_flow.flow:CrewAIHeadlessFlow.{name}"
-        ), name
+        assert method.do.ref == STAGE_REFS[name], name
 
 
 def test_flow_definition_accepts_call_code_declaration():

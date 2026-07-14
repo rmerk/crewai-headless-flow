@@ -22,8 +22,9 @@ pytestmark = pytest.mark.offline
 
 def _make_fake_flow(calls: list[tuple[str, str | None]]):
     class FakeFlow:
-        def __init__(self, config=None):
+        def __init__(self, config=None, run_store=None):
             self.config = config
+            self._run_store = run_store
             self._state = None
 
         @property
@@ -74,7 +75,10 @@ def _tasks() -> list[TaskItem]:
 
 def test_crash_before_plan_replays_from_plan(monkeypatch):
     calls: list[tuple[str, str | None]] = []
-    monkeypatch.setattr(flow_module, "CrewAIHeadlessFlow", _make_fake_flow(calls))
+    def _fake_build(*, config=None, run_store=None, config_dir=None):
+        return _make_fake_flow(calls)(config=config, run_store=run_store)
+
+    monkeypatch.setattr(flow_module, "build_headless_flow", _fake_build)
     state = _crashed_state(last_stage=None)
 
     resumed = flow_module.resume_headless_flow(state)
@@ -85,7 +89,10 @@ def test_crash_before_plan_replays_from_plan(monkeypatch):
 
 def test_crash_after_plan_resumes_do_work_with_rebuilt_plan(monkeypatch):
     calls: list[tuple[str, str | None]] = []
-    monkeypatch.setattr(flow_module, "CrewAIHeadlessFlow", _make_fake_flow(calls))
+    def _fake_build(*, config=None, run_store=None, config_dir=None):
+        return _make_fake_flow(calls)(config=config, run_store=run_store)
+
+    monkeypatch.setattr(flow_module, "build_headless_flow", _fake_build)
     state = _crashed_state(
         last_stage="plan",
         spec="Implement the feature.",
@@ -102,7 +109,10 @@ def test_crash_after_plan_resumes_do_work_with_rebuilt_plan(monkeypatch):
 
 def test_crash_mid_do_work_reruns_do_work_and_resets_in_progress_tasks(monkeypatch):
     calls: list[tuple[str, str | None]] = []
-    monkeypatch.setattr(flow_module, "CrewAIHeadlessFlow", _make_fake_flow(calls))
+    def _fake_build(*, config=None, run_store=None, config_dir=None):
+        return _make_fake_flow(calls)(config=config, run_store=run_store)
+
+    monkeypatch.setattr(flow_module, "build_headless_flow", _fake_build)
     state = _crashed_state(
         last_stage="do_work", spec="Implement the feature.", tasks=_tasks()
     )
@@ -117,7 +127,10 @@ def test_crash_mid_do_work_reruns_do_work_and_resets_in_progress_tasks(monkeypat
 
 def test_crash_mid_review_reruns_review_from_saved_work_summary(monkeypatch):
     calls: list[tuple[str, str | None]] = []
-    monkeypatch.setattr(flow_module, "CrewAIHeadlessFlow", _make_fake_flow(calls))
+    def _fake_build(*, config=None, run_store=None, config_dir=None):
+        return _make_fake_flow(calls)(config=config, run_store=run_store)
+
+    monkeypatch.setattr(flow_module, "build_headless_flow", _fake_build)
     state = _crashed_state(
         last_stage="review", latest_work_summary="the saved work summary"
     )
@@ -133,7 +146,10 @@ def test_crash_mid_review_reruns_review_from_saved_work_summary(monkeypatch):
 
 def test_crash_mid_review_without_summary_falls_back_to_do_work(monkeypatch):
     calls: list[tuple[str, str | None]] = []
-    monkeypatch.setattr(flow_module, "CrewAIHeadlessFlow", _make_fake_flow(calls))
+    def _fake_build(*, config=None, run_store=None, config_dir=None):
+        return _make_fake_flow(calls)(config=config, run_store=run_store)
+
+    monkeypatch.setattr(flow_module, "build_headless_flow", _fake_build)
     state = _crashed_state(
         last_stage="review",
         latest_work_summary=None,
@@ -149,7 +165,10 @@ def test_crash_mid_review_without_summary_falls_back_to_do_work(monkeypatch):
 
 def test_crash_after_force_revise_before_finalize_continues_revise_loop(monkeypatch):
     calls: list[tuple[str, str | None]] = []
-    monkeypatch.setattr(flow_module, "CrewAIHeadlessFlow", _make_fake_flow(calls))
+    def _fake_build(*, config=None, run_store=None, config_dir=None):
+        return _make_fake_flow(calls)(config=config, run_store=run_store)
+
+    monkeypatch.setattr(flow_module, "build_headless_flow", _fake_build)
     state = _crashed_state(
         last_stage="finalize",
         review_status="revise",
@@ -164,7 +183,10 @@ def test_crash_after_force_revise_before_finalize_continues_revise_loop(monkeypa
 
 def test_crash_mid_finalize_reruns_finalize(monkeypatch):
     calls: list[tuple[str, str | None]] = []
-    monkeypatch.setattr(flow_module, "CrewAIHeadlessFlow", _make_fake_flow(calls))
+    def _fake_build(*, config=None, run_store=None, config_dir=None):
+        return _make_fake_flow(calls)(config=config, run_store=run_store)
+
+    monkeypatch.setattr(flow_module, "build_headless_flow", _fake_build)
     state = _crashed_state(last_stage="finalize", review_status="pass")
 
     resumed = flow_module.resume_headless_flow(state)

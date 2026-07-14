@@ -178,7 +178,10 @@ def test_run_headless_flow_stamps_run_identity_before_kickoff(
             captured["run_store"] = self.run_store
             self._state = FlowState.model_validate(inputs)
 
-    monkeypatch.setattr(flow_module, "CrewAIHeadlessFlow", FakeFlow)
+    def _fake_build(*, config=None, run_store=None, config_dir=None):
+        return FakeFlow(config=config, run_store=run_store)
+
+    monkeypatch.setattr(flow_module, "build_headless_flow", _fake_build)
 
     result = flow_module.run_headless_flow(
         request="stamp identity",
@@ -215,7 +218,10 @@ def test_run_headless_flow_without_runs_dir_has_no_identity(
             self._state = FlowState.model_validate(inputs)
             assert self.run_store is None
 
-    monkeypatch.setattr(flow_module, "CrewAIHeadlessFlow", FakeFlow)
+    def _fake_build(*, config=None, run_store=None, config_dir=None):
+        return FakeFlow(config=config, run_store=run_store)
+
+    monkeypatch.setattr(flow_module, "build_headless_flow", _fake_build)
 
     result = flow_module.run_headless_flow(
         request="no identity",

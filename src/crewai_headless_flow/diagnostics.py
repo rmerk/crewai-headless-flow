@@ -19,6 +19,7 @@ from .config import (
     load_config,
 )
 from .crew_defs import resolve_crew_bundle_dir
+from .flow_topology import IncompleteFlowTopologyError, load_flow_definition
 from .runtime_overrides import load_runtime_config
 from .workers import WORKER_SPECS
 
@@ -158,6 +159,7 @@ def run_doctor(
     worker_path = config_path / "worker.yaml"
     skills_raw = _read_yaml_mapping(skills_path, report, "skills.yaml")
     worker_raw = _read_yaml_mapping(worker_path, report, "worker.yaml")
+    _check_flow_topology(report, config_path)
 
     required_workers: set[str] = set()
     runtime_config: FlowConfig | None = None
@@ -253,6 +255,30 @@ def run_preflight(
 
     _check_git(report, target)
     return report
+
+
+def _check_flow_topology(report: DiagnosticReport, config_path: Path) -> None:
+    """Validate ``flow.yaml`` (crew-bundle fallback; present-but-invalid fails closed)."""
+    try:
+        definition = load_flow_definition(config_dir=config_path)
+    except FileNotFoundError as exc:
+        report.add_check("config.flow_topology", "fail", str(exc))
+        return
+    except (IncompleteFlowTopologyError, OSError, ValueError, TypeError) as exc:
+        # Fail closed on present-but-invalid / unparseable topology (ADR-0012).
+        report.add_check(
+            "config.flow_topology",
+            "fail",
+            f"Invalid flow topology: {exc}",
+        )
+        return
+
+    report.add_check(
+        "config.flow_topology",
+        "pass",
+        f"flow.yaml topology ok ({len(definition.methods)} methods)",
+        {"methods": sorted(definition.methods)},
+    )
 
 
 def _validate_config_files(

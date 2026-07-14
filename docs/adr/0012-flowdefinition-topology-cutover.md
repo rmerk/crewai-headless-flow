@@ -26,7 +26,7 @@ Adopt a **hybrid cutover**:
 - Phase 0: offline projection snapshot of `CrewAIHeadlessFlow` plus declarative `call: code` / script-disabled smokes (`src/tests/test_flow_definition_projection.py`). No entrypoint change.
 - Phase 1 (landed): stage bodies and stage-private helpers live under `src/crewai_headless_flow/stages/`; `CrewAIHeadlessFlow` keeps thin decorator wrappers so topology projection and offline tests stay unchanged. No HITL engine swap.
 - Phase 2 (landed): canonical `config/flow.yaml` twin (`schema: crewai.flow/v1`, `do.ref` → `stages.*:execute_*`); `flow_topology.load_flow_definition` / `build_topology_twin_flow`; kickoff equivalence suite (`src/tests/test_flow_topology_equivalence.py`). CLI / `run_headless_flow` still use the decorator class.
-- Phase 3 (separate work): flip library/CLI construction to the declarative definition; then retire decorator topology wiring.
+- Phase 3 (landed): library/CLI construction uses `build_headless_flow` (YAML-bound `_methods`); decorator `@start`/`@listen`/`@router` wiring retired; doctor validates `flow.yaml` (fail closed on present-but-invalid).
 - **Explicitly deferred:** replacing this repo’s HITL with CrewAI `human_feedback` (only reconsider with a custom `HumanFeedbackProvider`); migrating optional crews from CrewBase hybrid / `run_*_crew` to native `call: crew` declarations; expressing verify/deny/delivery in CEL or agents.
 
 ## Alternatives considered

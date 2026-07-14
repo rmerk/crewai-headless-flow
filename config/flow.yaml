@@ -1,6 +1,6 @@
 # Canonical headless-flow topology (crewai.flow/v1).
 # Stage bodies stay in Python behind call: code refs (ADR-0012).
-# CLI still uses the decorator CrewAIHeadlessFlow until Phase 3 flip.
+# Library/CLI construction binds this file via build_headless_flow.
 schema: crewai.flow/v1
 name: CrewAIHeadlessFlow
 description: >

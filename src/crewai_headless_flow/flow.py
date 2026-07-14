@@ -1,12 +1,14 @@
 """
 The main reusable CrewAI Flow for multi-agent headless coding with pluggable workers.
 
-Topology (as specified):
-- @start plan          → structured planning via configured worker or optional Planning Crew
-- @listen do_work      → configured worker (edit mode) + implementation skill
-- @router review       → configured worker (inspect mode) + review + doubt skills → "pass" | "revise"
-- @listen("revise")    → bounded loop back to do_work
-- @listen("pass")      → finalize with documentation skill
+Canonical topology lives in ``config/flow.yaml`` (``schema: crewai.flow/v1``) and
+is bound at construction by ``build_headless_flow`` (ADR-0012). Stage bodies stay
+in Python behind ``call: code`` refs into ``stages.*``.
+
+Graph:
+- plan (start) → do_work → review (router: pass|revise|aborted)
+- revise → process_revision → do_work
+- pass → finalize; aborted/failed → terminal handlers
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Literal, cast
 
-from crewai.flow.flow import Flow, listen, router, start, or_
+from crewai.flow.flow import Flow
 
 from .config import (
     FlowConfig,
@@ -28,6 +30,7 @@ from .config import (
     classify_stage_extra,
     get_default_config,
 )
+from .flow_topology import load_flow_definition
 from .human_feedback_actions import (
     default_human_feedback_gate,
     human_feedback_action_prompt_token,
@@ -936,7 +939,6 @@ Optional instructions after approval: {"enabled" if capture_instructions else "d
             replanning_reason=replanning_reason,
         )
 
-    @start()
     def plan(self) -> str:
         return plan_stage.execute_plan(self)
 
@@ -1472,15 +1474,12 @@ Optional instructions after approval: {"enabled" if capture_instructions else "d
             execution_target_task_ids,
         )
 
-    @listen(or_("plan", "process_revision"))
     def do_work(self, plan_output: str) -> str:
         return do_work_stage.execute_do_work(self, plan_output)
 
-    @router("do_work")
     def review(self, work_summary: str) -> Literal["pass", "revise", "aborted"]:
         return review_stage.execute_review(self, work_summary)
 
-    @listen("revise")
     def process_revision(self, decision: str) -> str:
         return revision_stage.execute_process_revision(self, decision)
 
@@ -1533,7 +1532,6 @@ Optional instructions after approval: {"enabled" if capture_instructions else "d
     def _expand_dependent_task_ids(self, seed_ids: set[int]) -> set[int]:
         return revision_stage.expand_dependent_task_ids(self, seed_ids)
 
-    @listen("pass")
     def finalize(self, _decision: str) -> str:
         return finalize_stage.execute_finalize(self, _decision)
 
@@ -1549,13 +1547,39 @@ Optional instructions after approval: {"enabled" if capture_instructions else "d
     def _maybe_deliver(self, extra_changed: list[str]) -> None:
         return finalize_stage.maybe_deliver(self, extra_changed)
 
-    @listen("aborted")
     def handle_aborted(self, _decision: str) -> str:
         return terminal_stage.execute_handle_aborted(self, _decision)
 
-    @listen("failed")
     def handle_failed(self, _decision: str) -> str:
         return terminal_stage.execute_handle_failed(self, _decision)
+
+
+def build_headless_flow(
+    *,
+    config: FlowConfig | None = None,
+    run_store: RunStore | None = None,
+    config_dir: Path | str | None = None,
+) -> CrewAIHeadlessFlow:
+    """Build a Flow whose topology comes from ``config/flow.yaml``.
+
+    Constructs ``CrewAIHeadlessFlow`` (workers/HITL/verify helpers intact), then
+    rebinds stage bodies from the declarative definition (ADR-0012 Phase 3).
+    """
+    flow = CrewAIHeadlessFlow(config=config, run_store=run_store)
+    definition = load_flow_definition(config_dir=config_dir)
+    flow._definition = definition
+    flow._methods = flow._action_bound_methods()
+    for name, method in flow._methods.items():
+        setattr(flow, name, method)
+    flow._skip_auto_memory = True
+    flow.suppress_flow_events = True
+    if definition.config.max_method_calls is not None:
+        flow.max_method_calls = definition.config.max_method_calls
+    return flow
+
+
+# Back-compat alias for Phase 2 equivalence helpers / older imports.
+build_topology_twin_flow = build_headless_flow
 
 
 # Convenience runner for demos / CLI
@@ -1584,7 +1608,9 @@ def run_headless_flow(
         state.run_dir = str(run_store.run_dir)
         state.created_at = datetime.now().isoformat(timespec="seconds")
 
-    flow = CrewAIHeadlessFlow(config=config, run_store=run_store)
+    flow = build_headless_flow(
+        config=config, run_store=run_store, config_dir=config_dir
+    )
     flow.kickoff(inputs=state.model_dump())
 
     return flow.state
@@ -1693,8 +1719,11 @@ def resume_headless_flow(
                 break
 
     run_store = _resolve_resume_run_store(state, runs_dir)
-    flow = CrewAIHeadlessFlow(config=config)
-    flow._run_store = run_store  # type: ignore[attr-defined]
+    flow = build_headless_flow(
+        config=config,
+        run_store=run_store,
+        config_dir=state.config_dir,
+    )
     flow._state = state  # type: ignore[attr-defined]
     flow.state.status = "running"
     flow.state.clear_aborted_checkpoint()

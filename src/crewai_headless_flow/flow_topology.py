@@ -1,10 +1,8 @@
-"""Declarative FlowDefinition topology twin (Phase 2).
+"""Declarative FlowDefinition topology (Phase 3).
 
-Loads ``config/flow.yaml`` (``schema: crewai.flow/v1``) and can rebind a
-``CrewAIHeadlessFlow`` instance to stage ``execute_*`` callables so tests
-prove kickoff equivalence against the decorator Flow.
-
-CLI / ``run_headless_flow`` still use the decorator class until Phase 3.
+Loads and validates ``config/flow.yaml`` (``schema: crewai.flow/v1``). The
+library/CLI constructor that binds stage ``execute_*`` callables onto a
+``CrewAIHeadlessFlow`` shell lives in ``flow.build_headless_flow``.
 """
 
 from __future__ import annotations
@@ -13,9 +11,7 @@ from pathlib import Path
 
 from crewai.flow.flow_definition import FlowDefinition
 
-from .config import DEFAULT_CONFIG_DIR, FlowConfig
-from .flow import CrewAIHeadlessFlow
-from .run_store import RunStore
+from .config import DEFAULT_CONFIG_DIR
 
 REQUIRED_METHODS = frozenset(
     {
@@ -88,28 +84,3 @@ def _validate_canonical_topology(definition: FlowDefinition, *, path: Path) -> N
         raise IncompleteFlowTopologyError(
             f"Incomplete flow topology in {path}: plan must be start=true"
         )
-
-
-def build_topology_twin_flow(
-    *,
-    config: FlowConfig | None = None,
-    run_store: RunStore | None = None,
-    config_dir: Path | str | None = None,
-) -> CrewAIHeadlessFlow:
-    """Build a ``CrewAIHeadlessFlow`` whose ``_methods`` come from ``flow.yaml``.
-
-    Constructs the class normally (workers/HITL/verify helpers intact), then
-    rebinds stage bodies from the declarative definition. Used by Phase 2
-    equivalence tests; not the CLI entrypoint.
-    """
-    flow = CrewAIHeadlessFlow(config=config, run_store=run_store)
-    definition = load_flow_definition(config_dir=config_dir)
-    flow._definition = definition
-    flow._methods = flow._action_bound_methods()
-    for name, method in flow._methods.items():
-        setattr(flow, name, method)
-    flow._skip_auto_memory = True
-    flow.suppress_flow_events = True
-    if definition.config.max_method_calls is not None:
-        flow.max_method_calls = definition.config.max_method_calls
-    return flow

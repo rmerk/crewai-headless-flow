@@ -52,6 +52,65 @@ def test_doctor_fails_missing_yaml_file(config_dir: Path, monkeypatch):
     assert any("worker.yaml" in failure for failure in report.failures)
 
 
+def test_doctor_passes_flow_topology_via_default_fallback(
+    config_dir: Path, monkeypatch
+):
+    """Override packs without flow.yaml fall back to the default pack (ADR-0012)."""
+    from crewai_headless_flow.diagnostics import run_doctor
+
+    monkeypatch.setattr(
+        "crewai_headless_flow.diagnostics.shutil.which", lambda name: None
+    )
+    # Avoid failing on missing CLIs / skills so topology check can pass.
+    monkeypatch.setattr(
+        "crewai_headless_flow.diagnostics._validate_config_files",
+        lambda **kwargs: set(),
+    )
+    monkeypatch.setattr(
+        "crewai_headless_flow.diagnostics._check_worker_cli",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "crewai_headless_flow.diagnostics._check_cursor_auth",
+        lambda *args, **kwargs: None,
+    )
+
+    report = run_doctor(config_dir=config_dir)
+
+    assert any(
+        c.name == "config.flow_topology" and c.status == "pass" for c in report.checks
+    )
+    assert not any("flow topology" in f.lower() for f in report.failures)
+
+
+def test_doctor_fails_closed_on_incomplete_flow_yaml(config_dir: Path, monkeypatch):
+    from crewai_headless_flow.diagnostics import run_doctor
+
+    incomplete = {
+        "schema": "crewai.flow/v1",
+        "name": "Incomplete",
+        "state": {"type": "dict", "default": {}},
+        "methods": {
+            "plan": {
+                "start": True,
+                "do": {
+                    "call": "code",
+                    "ref": "crewai_headless_flow.stages.plan:execute_plan",
+                },
+            }
+        },
+    }
+    (config_dir / "flow.yaml").write_text(yaml.safe_dump(incomplete), encoding="utf-8")
+    monkeypatch.setattr(
+        "crewai_headless_flow.diagnostics.shutil.which", lambda name: None
+    )
+
+    report = run_doctor(config_dir=config_dir)
+
+    assert report.status == "fail"
+    assert any("flow topology" in failure.lower() for failure in report.failures)
+
+
 def test_doctor_fails_malformed_yaml_type(config_dir: Path, monkeypatch):
     from crewai_headless_flow.diagnostics import run_doctor
 

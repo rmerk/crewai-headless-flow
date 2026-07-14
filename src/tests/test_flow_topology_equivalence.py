@@ -1,4 +1,4 @@
-"""Phase 2: declarative topology twin load/resolve + kickoff equivalence."""
+"""Phase 3: declarative topology load/resolve + YAML-bound kickoff scenarios."""
 
 from __future__ import annotations
 
@@ -11,29 +11,16 @@ import pytest
 import yaml
 
 from crewai_headless_flow.config import FlowConfig
-from crewai_headless_flow.flow import CrewAIHeadlessFlow
+from crewai_headless_flow.flow import CrewAIHeadlessFlow, build_headless_flow
 from crewai_headless_flow.flow_topology import (
-    build_topology_twin_flow,
     load_flow_definition,
     resolve_flow_yaml_path,
 )
 from crewai_headless_flow.state import FlowState
 from crewai_headless_flow.workers.base import CoderResult
-from tests.test_flow_definition_projection import EXPECTED_METHODS
+from tests.test_flow_definition_projection import EXPECTED_METHODS, STAGE_REFS
 
 pytestmark = pytest.mark.offline
-
-STAGE_REFS = {
-    "plan": "crewai_headless_flow.stages.plan:execute_plan",
-    "do_work": "crewai_headless_flow.stages.do_work:execute_do_work",
-    "review": "crewai_headless_flow.stages.review:execute_review",
-    "process_revision": (
-        "crewai_headless_flow.stages.revision:execute_process_revision"
-    ),
-    "finalize": "crewai_headless_flow.stages.finalize:execute_finalize",
-    "handle_aborted": ("crewai_headless_flow.stages.terminal:execute_handle_aborted"),
-    "handle_failed": ("crewai_headless_flow.stages.terminal:execute_handle_failed"),
-}
 
 PLAN_JSON = json.dumps(
     {
@@ -288,117 +275,77 @@ def test_resolve_flow_yaml_path_falls_back_when_config_dir_missing_flow_yaml(
     assert path == resolve_flow_yaml_path()
 
 
-def test_build_topology_twin_flow_binds_stage_callables():
-    twin = build_topology_twin_flow()
+def test_build_headless_flow_binds_stage_callables():
+    flow = build_headless_flow()
 
-    assert twin.__class__.__name__ == "CrewAIHeadlessFlow"
-    assert set(twin._methods) == set(STAGE_REFS)
+    assert flow.__class__.__name__ == "CrewAIHeadlessFlow"
+    assert set(flow._methods) == set(STAGE_REFS)
     for name, expected_ref in STAGE_REFS.items():
-        assert callable(getattr(twin, name)), name
-        # Twin definition (and therefore CodeAction refs) point at stage bodies,
-        # not CrewAIHeadlessFlow.<method> class wrappers.
-        assert twin._definition.methods[name].do.ref == expected_ref, name
-        assert twin._definition.methods[name].do.call == "code", name
-        action = twin._methods[name].__closure__[0].cell_contents
+        assert callable(getattr(flow, name)), name
+        assert flow._definition.methods[name].do.ref == expected_ref, name
+        assert flow._definition.methods[name].do.call == "code", name
+        action = flow._methods[name].__closure__[0].cell_contents
         assert action.definition.ref == expected_ref, name
         assert action.definition.call == "code", name
 
 
-def test_class_vs_twin_kickoff_plan_to_pass(tmp_path: Path):
-    cfg = _base_config()
-    class_snap = _kickoff_snapshot(
-        CrewAIHeadlessFlow,
-        tmp_path=tmp_path / "class",
-        config=cfg,
-        review_outcomes=["pass"],
-    )
-    twin_snap = _kickoff_snapshot(
-        build_topology_twin_flow,
-        tmp_path=tmp_path / "twin",
+def test_yaml_kickoff_plan_to_pass(tmp_path: Path):
+    snap = _kickoff_snapshot(
+        build_headless_flow,
+        tmp_path=tmp_path,
         config=_base_config(),
         review_outcomes=["pass"],
     )
 
-    assert class_snap == twin_snap
-    assert class_snap["status"] == "completed"
-    assert class_snap["review_status"] == "pass"
-    assert class_snap["revisions"] == 0
-    assert class_snap["last_stage"] == "finalize"
-    assert class_snap["task_statuses"] == [(1, "done")]
+    assert snap["status"] == "completed"
+    assert snap["review_status"] == "pass"
+    assert snap["revisions"] == 0
+    assert snap["last_stage"] == "finalize"
+    assert snap["task_statuses"] == [(1, "done")]
 
 
-def test_class_vs_twin_kickoff_revise_once_then_pass(tmp_path: Path):
-    class_snap = _kickoff_snapshot(
-        CrewAIHeadlessFlow,
-        tmp_path=tmp_path / "class",
-        config=_base_config(),
-        review_outcomes=["revise", "pass"],
-        continue_revise_cycle=True,
-    )
-    twin_snap = _kickoff_snapshot(
-        build_topology_twin_flow,
-        tmp_path=tmp_path / "twin",
+def test_yaml_kickoff_revise_once_then_pass(tmp_path: Path):
+    snap = _kickoff_snapshot(
+        build_headless_flow,
+        tmp_path=tmp_path,
         config=_base_config(),
         review_outcomes=["revise", "pass"],
         continue_revise_cycle=True,
     )
 
-    assert class_snap == twin_snap
-    assert class_snap["status"] == "completed"
-    assert class_snap["review_status"] == "pass"
-    assert class_snap["revisions"] == 1
-    assert class_snap["last_stage"] == "finalize"
-    assert class_snap["review_calls"] == 2
+    assert snap["status"] == "completed"
+    assert snap["review_status"] == "pass"
+    assert snap["revisions"] == 1
+    assert snap["last_stage"] == "finalize"
+    assert snap["review_calls"] == 2
 
 
-def test_class_vs_twin_kickoff_abort_before_plan(tmp_path: Path):
-    cfg = _base_config(
-        human_feedback={"enabled": True, "before_plan": True},
-    )
-    class_snap = _kickoff_snapshot(
-        CrewAIHeadlessFlow,
-        tmp_path=tmp_path / "class",
-        config=cfg,
-        review_outcomes=["pass"],
-        abort_before_plan=True,
-    )
-    twin_snap = _kickoff_snapshot(
-        build_topology_twin_flow,
-        tmp_path=tmp_path / "twin",
-        config=_base_config(
-            human_feedback={"enabled": True, "before_plan": True},
-        ),
+def test_yaml_kickoff_abort_before_plan(tmp_path: Path):
+    snap = _kickoff_snapshot(
+        build_headless_flow,
+        tmp_path=tmp_path,
+        config=_base_config(human_feedback={"enabled": True, "before_plan": True}),
         review_outcomes=["pass"],
         abort_before_plan=True,
     )
 
-    assert class_snap == twin_snap
-    assert class_snap["status"] == "aborted_by_human"
-    assert class_snap["last_stage"] == "plan"
-    assert class_snap["review_calls"] == 0
-    assert any("Aborted by human before plan" in err for err in class_snap["errors"])
+    assert snap["status"] == "aborted_by_human"
+    assert snap["last_stage"] == "plan"
+    assert snap["review_calls"] == 0
+    assert any("Aborted by human before plan" in err for err in snap["errors"])
 
 
-def test_class_vs_twin_kickoff_verify_fail_routes_to_revise(tmp_path: Path):
-    cfg = _base_config(verify={"commands": ["pytest -q"], "mode": "gate"})
-    class_snap = _kickoff_snapshot(
-        CrewAIHeadlessFlow,
-        tmp_path=tmp_path / "class",
-        config=cfg,
-        review_outcomes=["pass"],
-        verification_runner=FakeVerifyRunner(exit_code=1),
-    )
-    twin_snap = _kickoff_snapshot(
-        build_topology_twin_flow,
-        tmp_path=tmp_path / "twin",
+def test_yaml_kickoff_verify_fail_routes_to_revise(tmp_path: Path):
+    snap = _kickoff_snapshot(
+        build_headless_flow,
+        tmp_path=tmp_path,
         config=_base_config(verify={"commands": ["pytest -q"], "mode": "gate"}),
         review_outcomes=["pass"],
         verification_runner=FakeVerifyRunner(exit_code=1),
     )
 
-    assert class_snap == twin_snap
-    assert class_snap["review_calls"] == 0
-    assert class_snap["verification_passed"] == [False]
-    assert class_snap["revisions"] == 1
-    assert class_snap["issues_prefix"]
-    assert "pytest -q" in class_snap["issues_prefix"][0]
+    assert snap["review_calls"] == 0
+    assert snap["verification_passed"] == [False]
+    assert snap["revisions"] == 1
+    assert snap["issues_prefix"]
+    assert "pytest -q" in snap["issues_prefix"][0]
