@@ -239,6 +239,106 @@ def test_doctor_warns_when_do_work_crew_is_enabled(config_dir: Path, monkeypatch
 
     assert any(check.name == "config.do_work_crew" for check in report.checks)
     assert any(check.name == "cli.ollama" for check in report.checks)
+    assert any(
+        check.name == "config.crew_bundles" and check.status == "pass"
+        for check in report.checks
+    )
+
+
+def test_doctor_fails_when_enabled_crew_bundle_is_incomplete(
+    config_dir: Path, monkeypatch
+):
+    from crewai_headless_flow.diagnostics import ProbeResult, run_doctor
+
+    worker_data = yaml.safe_load((config_dir / "worker.yaml").read_text())
+    worker_data["stages"]["plan"] = {
+        "worker": "codex",
+        "crew": {"enabled": True, "process": "sequential"},
+    }
+    (config_dir / "worker.yaml").write_text(yaml.safe_dump(worker_data))
+
+    # Pack declares crews/ but omits tasks.yaml → fail closed (no silent fallback).
+    incomplete = config_dir / "crews" / "plan"
+    incomplete.mkdir(parents=True)
+    (incomplete / "agents.yaml").write_text(
+        yaml.safe_dump({"researcher": {"role": "R", "goal": "G", "backstory": "B"}})
+    )
+
+    monkeypatch.setattr(
+        "crewai_headless_flow.diagnostics.shutil.which", lambda name: f"/bin/{name}"
+    )
+
+    def fake_probe(cmd, timeout=3):
+        if cmd[0] == "ollama":
+            return ProbeResult(returncode=0, stdout="llama3.2", stderr="")
+        return ProbeResult(
+            returncode=0,
+            stdout="--sandbox --output-schema --always-approve --json-schema",
+            stderr="",
+        )
+
+    monkeypatch.setattr("crewai_headless_flow.diagnostics._run_probe", fake_probe)
+
+    report = run_doctor(config_dir=config_dir)
+
+    assert report.status == "fail"
+    assert any(
+        check.name == "config.crew_bundles" and check.status == "fail"
+        for check in report.checks
+    )
+    assert any(
+        "plan" in failure and "crew bundle" in failure for failure in report.failures
+    )
+
+
+def test_doctor_fails_when_decomposition_crew_bundle_is_incomplete(
+    config_dir: Path, monkeypatch
+):
+    from crewai_headless_flow.diagnostics import ProbeResult, run_doctor
+
+    worker_data = yaml.safe_load((config_dir / "worker.yaml").read_text())
+    worker_data["stages"]["do_work"] = {
+        "worker": "codex",
+        "crew": {
+            "enabled": True,
+            "process": "sequential",
+            "decomposition": {"enabled": True, "max_subtasks": 3},
+        },
+    }
+    (config_dir / "worker.yaml").write_text(yaml.safe_dump(worker_data))
+
+    crews = config_dir / "crews"
+    for name in ("do_work_round", "do_work_decomposition"):
+        bundle = crews / name
+        bundle.mkdir(parents=True)
+        (bundle / "agents.yaml").write_text(
+            yaml.safe_dump({"researcher": {"role": "R", "goal": "G", "backstory": "B"}})
+        )
+        if name == "do_work_round":
+            (bundle / "tasks.yaml").write_text(
+                yaml.safe_dump({"t": {"description": "d", "expected_output": "o"}})
+            )
+        # decomposition intentionally missing tasks.yaml
+
+    monkeypatch.setattr(
+        "crewai_headless_flow.diagnostics.shutil.which", lambda name: f"/bin/{name}"
+    )
+
+    def fake_probe(cmd, timeout=3):
+        if cmd[0] == "ollama":
+            return ProbeResult(returncode=0, stdout="llama3.2", stderr="")
+        return ProbeResult(
+            returncode=0,
+            stdout="--sandbox --output-schema --always-approve --json-schema",
+            stderr="",
+        )
+
+    monkeypatch.setattr("crewai_headless_flow.diagnostics._run_probe", fake_probe)
+
+    report = run_doctor(config_dir=config_dir)
+
+    assert report.status == "fail"
+    assert any("do_work_decomposition" in failure for failure in report.failures)
 
 
 def test_doctor_skips_ollama_for_custom_crew_provider(config_dir: Path, monkeypatch):

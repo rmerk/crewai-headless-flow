@@ -164,11 +164,11 @@ def delegation_enabled(crew_config: dict[str, Any]) -> bool:
 
 def tool_agent_map(
     *assignments: tuple[str, list[BaseTool]],
-) -> tuple[dict[str, list[BaseTool]], frozenset[str]]:
-    """Build ``tools_by_agent`` and ``agents_requiring_tools`` from one list.
+) -> dict[str, list[BaseTool]]:
+    """Build ``tools_by_agent`` from one assignment list.
 
-    Keeps the reverse-miss contract as a single source of truth so call sites
-    cannot drift the two collections apart.
+    Keys of the returned mapping are the agents that must receive non-empty
+    tool lists in ``build_agents_from_yaml``.
     """
     mapping: dict[str, list[BaseTool]] = {}
     for name, tools in assignments:
@@ -179,7 +179,7 @@ def tool_agent_map(
         if name in mapping:
             raise ValueError(f"tool_agent_map has duplicate agent key {name!r}")
         mapping[name] = list(tools)
-    return mapping, frozenset(mapping)
+    return mapping
 
 
 def build_agents_from_yaml(
@@ -187,32 +187,23 @@ def build_agents_from_yaml(
     *,
     llm: LLM,
     tools_by_agent: dict[str, list[BaseTool]] | None = None,
-    agents_requiring_tools: set[str] | frozenset[str] = frozenset(),
     delegation_agent_keys: set[str] | frozenset[str] = frozenset(),
     allow_delegation: bool = False,
 ) -> dict[str, Agent]:
     """Build agents from CrewBase-style agents.yaml, injecting tools/LLM.
 
-    ``agents_requiring_tools`` must all appear in ``tools_by_agent`` with a
-    non-empty tool list, so forgetting to attach tools to a YAML agent fails
-    closed instead of silently running tool-less.
+    Every key in ``tools_by_agent`` must exist in ``agents.yaml`` and map to a
+    non-empty tool list. Agents omitted from ``tools_by_agent`` receive no tools;
+    callers that need fail-closed tool assignment should build the map via
+    ``tool_agent_map`` so required agents are listed explicitly.
     """
     tools_by_agent = tools_by_agent or {}
-    if tools_by_agent and not agents_requiring_tools:
-        raise ValueError(
-            "tools_by_agent was provided without agents_requiring_tools; "
-            "pass the agent keys that must receive non-empty tool lists"
-        )
-    missing_tool_maps = sorted(set(agents_requiring_tools) - set(tools_by_agent))
     empty_tool_maps = sorted(
-        name
-        for name in agents_requiring_tools
-        if name in tools_by_agent and not tools_by_agent[name]
+        name for name, tools in tools_by_agent.items() if not tools
     )
-    if missing_tool_maps or empty_tool_maps:
+    if empty_tool_maps:
         raise KeyError(
-            "agents_requiring_tools must map to non-empty tools_by_agent entries; "
-            f"missing={missing_tool_maps} empty={empty_tool_maps}"
+            f"tools_by_agent entries must be non-empty; empty={empty_tool_maps}"
         )
 
     required_keys = set(tools_by_agent) | set(delegation_agent_keys)

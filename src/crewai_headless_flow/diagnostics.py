@@ -18,6 +18,7 @@ from .config import (
     crew_llm_requires_ollama,
     load_config,
 )
+from .crew_defs import resolve_crew_bundle_dir
 from .runtime_overrides import load_runtime_config
 from .workers import WORKER_SPECS
 
@@ -425,6 +426,7 @@ def _validate_config_files(
             )
             ollama_required = ollama_required or review_requires_ollama
 
+        _check_crew_bundles(report, cfg, config_path)
         _check_conditional_human_feedback(report, cfg)
         _check_verify(report, cfg)
         _check_deliver_pr_tooling(report, cfg)
@@ -782,6 +784,57 @@ def _crew_enabled(cfg, stage: str) -> bool:
         return False
     crew_cfg = cfg.get_stage(stage).extra.get("crew", {})
     return isinstance(crew_cfg, dict) and bool(crew_cfg.get("enabled", False))
+
+
+def _required_crew_bundle_names(cfg: FlowConfig) -> list[str]:
+    """Crew YAML bundle names needed by enabled optional crew stages."""
+    names: list[str] = []
+    if _crew_enabled(cfg, "plan"):
+        names.append("plan")
+    if _crew_enabled(cfg, "do_work"):
+        names.append("do_work_round")
+        crew_cfg = cfg.get_stage("do_work").extra.get("crew", {}) or {}
+        decomposition = crew_cfg.get("decomposition", {}) or {}
+        if bool(decomposition.get("enabled", False)):
+            names.append("do_work_decomposition")
+    if _crew_enabled(cfg, "review"):
+        names.append("review")
+    return names
+
+
+def _check_crew_bundles(
+    report: DiagnosticReport, cfg: FlowConfig, config_dir: Path
+) -> None:
+    required = _required_crew_bundle_names(cfg)
+    if not required:
+        return
+
+    resolved: dict[str, str] = {}
+    failures: list[str] = []
+    for crew_name in required:
+        try:
+            bundle = resolve_crew_bundle_dir(crew_name, config_dir=config_dir)
+        except FileNotFoundError as exc:
+            failures.append(str(exc))
+            continue
+        resolved[crew_name] = str(bundle)
+
+    if failures:
+        report.add_check(
+            "config.crew_bundles",
+            "fail",
+            "Enabled crew stages are missing complete YAML bundles; "
+            + "; ".join(failures),
+            {"required": required, "resolved": resolved, "failures": failures},
+        )
+        return
+
+    report.add_check(
+        "config.crew_bundles",
+        "pass",
+        "Enabled crew stages resolve complete agents.yaml/tasks.yaml bundles",
+        {"required": required, "resolved": resolved},
+    )
 
 
 def _check_git(report: DiagnosticReport, target: Path) -> None:

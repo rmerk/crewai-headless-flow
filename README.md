@@ -682,10 +682,12 @@ uv run python -m crewai_headless_flow run \
 ### 3. Check readiness without running a model
 
 `doctor` is detect-only: it checks config, referenced skills, configured CLIs,
-required CLI flags, and optional target-repo preflight. When a crew-backed stage
-is still configured for the default Ollama-style local LLM, it also checks
-Ollama readiness. It does not send model prompts, consume auth, construct the
-Flow, or run worker adapters.
+required CLI flags, and optional target-repo preflight. When optional crews are
+enabled, it also verifies each required `config/crews/<name>/{agents,tasks}.yaml`
+bundle resolves (pack-local when `crews/` is present; otherwise the default pack).
+When a crew-backed stage is still configured for the default Ollama-style local
+LLM, it also checks Ollama readiness. It does not send model prompts, consume
+auth, construct the Flow, or run worker adapters.
 
 Text mode now also prints the resolved per-stage runtime summary plus resolved
 HITL settings, so one-run overrides are visible without switching to JSON.

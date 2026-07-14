@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from textwrap import dedent
+from typing import cast
 
 import pytest
 from crewai import LLM, Process
@@ -16,6 +17,7 @@ from crewai_headless_flow.crew_defs import (
 )
 from crewai_headless_flow.plan_contract import PlanOutput
 from crewai_headless_flow.plan_crew import build_plan_crew
+from crewai_headless_flow.tools.coder_tool import HeadlessCoderTool
 from crewai_headless_flow.workers.base import CoderResult
 
 
@@ -166,7 +168,7 @@ def test_build_plan_crew_uses_config_dir_agent_roles(tmp_path: Path):
 
     crew = build_plan_crew(
         planning_context="Plan it.",
-        worker_tool=RecordingWorkerTool(),
+        worker_tool=cast(HeadlessCoderTool, RecordingWorkerTool()),
         cwd="/tmp/repo",
         timeout=17,
         config_dir=tmp_path,
@@ -175,15 +177,14 @@ def test_build_plan_crew_uses_config_dir_agent_roles(tmp_path: Path):
     assert any(a.role == "Pack-Local Researcher" for a in crew.agents)
 
 
-def test_tool_agent_map_builds_mapping_and_required_set():
+def test_tool_agent_map_builds_mapping():
     tools = {"a": [object()], "b": [object()]}  # type: ignore[list-item]
-    mapping, required = tool_agent_map(
+    mapping = tool_agent_map(
         ("a", tools["a"]),
         ("b", tools["b"]),
     )
 
     assert mapping == tools
-    assert required == frozenset({"a", "b"})
 
 
 def test_tool_agent_map_rejects_empty_tool_list():
@@ -191,19 +192,12 @@ def test_tool_agent_map_rejects_empty_tool_list():
         tool_agent_map(("researcher", []))
 
 
-def test_build_agents_from_yaml_rejects_tools_without_required_set():
-    agents_config, _tasks = load_crew_yaml("plan")
-    llm = LLM(
-        model="ollama/llama3.2",
-        base_url="http://localhost:11434",
-        temperature=0.2,
-    )
-
-    with pytest.raises(ValueError, match="agents_requiring_tools"):
-        build_agents_from_yaml(
-            agents_config,
-            llm=llm,
-            tools_by_agent={"researcher": [object()]},  # type: ignore[list-item]
+def test_tool_agent_map_rejects_duplicate_agent_key():
+    tools = [object()]  # type: ignore[list-item]
+    with pytest.raises(ValueError, match="duplicate"):
+        tool_agent_map(
+            ("researcher", tools),
+            ("researcher", tools),
         )
 
 
@@ -221,29 +215,10 @@ def test_build_agents_from_yaml_rejects_missing_tool_agent_keys():
             agents_config,
             llm=llm,
             tools_by_agent={"researcher": [object()]},  # type: ignore[list-item]
-            agents_requiring_tools={"researcher"},
         )
 
 
-def test_build_agents_from_yaml_rejects_omitted_required_tool_agent():
-    """Reverse miss: YAML has the agent, Python forgets to attach tools."""
-    agents_config, _tasks = load_crew_yaml("plan")
-    llm = LLM(
-        model="ollama/llama3.2",
-        base_url="http://localhost:11434",
-        temperature=0.2,
-    )
-
-    with pytest.raises(KeyError, match="researcher"):
-        build_agents_from_yaml(
-            agents_config,
-            llm=llm,
-            tools_by_agent={"planner": [object()]},  # type: ignore[list-item]
-            agents_requiring_tools={"researcher", "planner"},
-        )
-
-
-def test_build_agents_from_yaml_rejects_empty_required_tool_list():
+def test_build_agents_from_yaml_rejects_empty_tool_list():
     agents_config, _tasks = load_crew_yaml("plan")
     llm = LLM(
         model="ollama/llama3.2",
@@ -256,7 +231,6 @@ def test_build_agents_from_yaml_rejects_empty_required_tool_list():
             agents_config,
             llm=llm,
             tools_by_agent={"researcher": [], "planner": [object()]},  # type: ignore[list-item]
-            agents_requiring_tools={"researcher", "planner"},
         )
 
 

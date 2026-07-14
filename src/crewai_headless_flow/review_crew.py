@@ -99,7 +99,7 @@ def build_review_crew(
         model=model,
     )
     agents_config, tasks_config = load_crew_yaml("review", config_dir=config_dir)
-    tools_by_agent, agents_requiring_tools = tool_agent_map(
+    tools_by_agent = tool_agent_map(
         ("evidence", [inspect_tool]),
         ("correctness", [inspect_tool]),
         ("test", [inspect_tool]),
@@ -109,7 +109,6 @@ def build_review_crew(
         agents_config,
         llm=llm,
         tools_by_agent=tools_by_agent,
-        agents_requiring_tools=agents_requiring_tools,
         delegation_agent_keys={"coordinator"},
         allow_delegation=delegation_enabled(crew_config),
     )
