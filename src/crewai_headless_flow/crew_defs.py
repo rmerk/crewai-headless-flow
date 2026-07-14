@@ -167,11 +167,34 @@ def build_agents_from_yaml(
     *,
     llm: LLM,
     tools_by_agent: dict[str, list[BaseTool]] | None = None,
+    agents_requiring_tools: set[str] | frozenset[str] = frozenset(),
     delegation_agent_keys: set[str] | frozenset[str] = frozenset(),
     allow_delegation: bool = False,
 ) -> dict[str, Agent]:
-    """Build agents from CrewBase-style agents.yaml, injecting tools/LLM."""
+    """Build agents from CrewBase-style agents.yaml, injecting tools/LLM.
+
+    ``agents_requiring_tools`` must all appear in ``tools_by_agent`` with a
+    non-empty tool list, so forgetting to attach tools to a YAML agent fails
+    closed instead of silently running tool-less.
+    """
     tools_by_agent = tools_by_agent or {}
+    if tools_by_agent and not agents_requiring_tools:
+        raise ValueError(
+            "tools_by_agent was provided without agents_requiring_tools; "
+            "pass the agent keys that must receive non-empty tool lists"
+        )
+    missing_tool_maps = sorted(set(agents_requiring_tools) - set(tools_by_agent))
+    empty_tool_maps = sorted(
+        name
+        for name in agents_requiring_tools
+        if name in tools_by_agent and not tools_by_agent[name]
+    )
+    if missing_tool_maps or empty_tool_maps:
+        raise KeyError(
+            "agents_requiring_tools must map to non-empty tools_by_agent entries; "
+            f"missing={missing_tool_maps} empty={empty_tool_maps}"
+        )
+
     required_keys = set(tools_by_agent) | set(delegation_agent_keys)
     missing = sorted(required_keys - set(agents_config))
     if missing:

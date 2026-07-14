@@ -62,6 +62,7 @@ def build_plan_crew(
             "researcher": [inspect_tool],
             "planner": [inspect_tool],
         },
+        agents_requiring_tools={"researcher", "planner"},
         delegation_agent_keys={"coordinator"},
         allow_delegation=delegation_enabled(crew_config),
     )

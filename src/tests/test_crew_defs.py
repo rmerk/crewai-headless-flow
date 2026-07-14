@@ -174,6 +174,22 @@ def test_build_plan_crew_uses_config_dir_agent_roles(tmp_path: Path):
     assert any(a.role == "Pack-Local Researcher" for a in crew.agents)
 
 
+def test_build_agents_from_yaml_rejects_tools_without_required_set():
+    agents_config, _tasks = load_crew_yaml("plan")
+    llm = LLM(
+        model="ollama/llama3.2",
+        base_url="http://localhost:11434",
+        temperature=0.2,
+    )
+
+    with pytest.raises(ValueError, match="agents_requiring_tools"):
+        build_agents_from_yaml(
+            agents_config,
+            llm=llm,
+            tools_by_agent={"researcher": [object()]},  # type: ignore[list-item]
+        )
+
+
 def test_build_agents_from_yaml_rejects_missing_tool_agent_keys():
     agents_config, _tasks = load_crew_yaml("plan")
     agents_config = {k: v for k, v in agents_config.items() if k != "researcher"}
@@ -187,7 +203,43 @@ def test_build_agents_from_yaml_rejects_missing_tool_agent_keys():
         build_agents_from_yaml(
             agents_config,
             llm=llm,
-            tools_by_agent={"researcher": []},
+            tools_by_agent={"researcher": [object()]},  # type: ignore[list-item]
+            agents_requiring_tools={"researcher"},
+        )
+
+
+def test_build_agents_from_yaml_rejects_omitted_required_tool_agent():
+    """Reverse miss: YAML has the agent, Python forgets to attach tools."""
+    agents_config, _tasks = load_crew_yaml("plan")
+    llm = LLM(
+        model="ollama/llama3.2",
+        base_url="http://localhost:11434",
+        temperature=0.2,
+    )
+
+    with pytest.raises(KeyError, match="researcher"):
+        build_agents_from_yaml(
+            agents_config,
+            llm=llm,
+            tools_by_agent={"planner": [object()]},  # type: ignore[list-item]
+            agents_requiring_tools={"researcher", "planner"},
+        )
+
+
+def test_build_agents_from_yaml_rejects_empty_required_tool_list():
+    agents_config, _tasks = load_crew_yaml("plan")
+    llm = LLM(
+        model="ollama/llama3.2",
+        base_url="http://localhost:11434",
+        temperature=0.2,
+    )
+
+    with pytest.raises(KeyError, match="researcher"):
+        build_agents_from_yaml(
+            agents_config,
+            llm=llm,
+            tools_by_agent={"researcher": [], "planner": [object()]},  # type: ignore[list-item]
+            agents_requiring_tools={"researcher", "planner"},
         )
 
 

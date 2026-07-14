@@ -270,6 +270,7 @@ def build_do_work_round_crew(
             "implementer": [edit_tool],
             "verifier": [inspect_tool],
         },
+        agents_requiring_tools={"evidence", "implementer", "verifier"},
         delegation_agent_keys={"coordinator"},
         allow_delegation=delegation_enabled(crew_config),
     )
@@ -391,6 +392,7 @@ def build_do_work_decomposition_crew(
         agents_config,
         llm=llm,
         tools_by_agent={"researcher": [inspect_tool]},
+        agents_requiring_tools={"researcher"},
         delegation_agent_keys={"validator"},
         allow_delegation=delegation_enabled(crew_config),
     )

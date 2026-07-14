@@ -107,6 +107,7 @@ def build_review_crew(
             "test": [inspect_tool],
             "scope": [inspect_tool],
         },
+        agents_requiring_tools={"evidence", "correctness", "test", "scope"},
         delegation_agent_keys={"coordinator"},
         allow_delegation=delegation_enabled(crew_config),
     )
