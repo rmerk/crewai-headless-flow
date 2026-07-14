@@ -84,6 +84,33 @@ def test_create_job_rejects_non_ticket_request(client, tmp_path):
     assert "AS-####" in response.json()["detail"]
 
 
+def test_create_job_rejects_webapi_reference_only_target(client, tmp_path):
+    repo = tmp_path / "asure.ptm.webapi"
+    repo.mkdir()
+    response = client.post(
+        "/api/jobs",
+        json={"request": "AS-5245", "target_repo": str(repo)},
+    )
+    assert response.status_code == 400
+    assert "reference-only" in response.json()["detail"]
+
+
+def test_create_job_normalizes_jira_url_and_defaults_max_revisions(client, tmp_path):
+    repo = tmp_path / "target"
+    repo.mkdir()
+    response = client.post(
+        "/api/jobs",
+        json={
+            "request": "https://example.atlassian.net/browse/AS-5245",
+            "target_repo": str(repo),
+        },
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["request"] == "AS-5245"
+    assert data["max_revisions"] == 3
+
+
 def test_get_job_logs(client):
     job_id = "test-job-123"
 
@@ -126,28 +153,15 @@ def test_cancel_job_active(client, mocker):
     mock_proc.wait.assert_called_once()
 
 
-def test_get_target_repos(client, mocker):
-    mocker.patch("crewai_headless_flow.dashboard.Path.exists", return_value=True)
-    mocker.patch("crewai_headless_flow.dashboard.Path.is_dir", return_value=True)
+def test_get_target_repos(client, mocker, monkeypatch, tmp_path):
+    base = tmp_path / "asure"
+    base.mkdir()
+    monkeypatch.setenv("ASURE_BASE_DIR", str(base))
 
-    mock_item_portal = mocker.Mock(spec=Path)
-    mock_item_portal.is_dir.return_value = True
-    mock_item_portal.name = "asure.ptm.portal"
-    mock_item_portal.resolve.return_value = (
-        "/Users/rchoi/Developer/asure/asure.ptm.portal"
-    )
-
-    mock_item_webapi = mocker.Mock(spec=Path)
-    mock_item_webapi.is_dir.return_value = True
-    mock_item_webapi.name = "asure.ptm.webapi"
-    mock_item_webapi.resolve.return_value = (
-        "/Users/rchoi/Developer/asure/asure.ptm.webapi"
-    )
-
-    mocker.patch(
-        "crewai_headless_flow.dashboard.Path.iterdir",
-        return_value=[mock_item_portal, mock_item_webapi],
-    )
+    portal = base / "asure.ptm.portal"
+    portal.mkdir()
+    webapi = base / "asure.ptm.webapi"
+    webapi.mkdir()
 
     response = client.get("/api/target-repos")
     assert response.status_code == 200
@@ -158,6 +172,13 @@ def test_get_target_repos(client, mocker):
     assert repos[0]["role"] == "editable"
     assert repos[1]["name"] == "asure.ptm.webapi"
     assert repos[1]["role"] == "reference-only"
+
+
+def test_get_target_repos_empty_without_asure_base_dir(client, monkeypatch):
+    monkeypatch.delenv("ASURE_BASE_DIR", raising=False)
+    response = client.get("/api/target-repos")
+    assert response.status_code == 200
+    assert response.json() == []
 
 
 def test_get_config_packs(client, mocker):
@@ -217,6 +238,9 @@ def test_pending_approval_list_and_continue_abort(client, tmp_path, mocker):
         ),
         encoding="utf-8",
     )
+    (run_dir / "debug_report.md").write_text(
+        "# Debug\nparked for HITL\n", encoding="utf-8"
+    )
 
     listed = client.get("/api/runs?pending_approval=true")
     assert listed.status_code == 200
@@ -225,11 +249,20 @@ def test_pending_approval_list_and_continue_abort(client, tmp_path, mocker):
     assert runs[0]["run_id"] == run_id
     assert runs[0]["request"] == "AS-5245"
     assert runs[0]["actions"] == ["continue", "abort"]
+    assert runs[0]["failed_task_ids"] == ["t1"]
+    assert runs[0]["run_dir"]
+    assert runs[0]["has_debug_report"] is True
 
     brief = client.get(f"/api/runs/{run_id}/approval")
     assert brief.status_code == 200
     assert brief.json()["gate"] == "before_do_work"
     assert "boom" in brief.json()["error_tail"]
+    assert brief.json()["failed_task_ids"] == ["t1"]
+
+    debug = client.get(f"/api/runs/{run_id}/debug")
+    assert debug.status_code == 200
+    assert debug.json()["name"] == "debug_report.md"
+    assert "parked" in debug.json()["content"]
 
     answered = client.post(f"/api/runs/{run_id}/approval", json={"answer": "continue"})
     assert answered.status_code == 200

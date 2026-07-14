@@ -151,7 +151,7 @@ want a narrower, precomposed lane without editing YAML:
 | `config/` | You want the default direct-worker path: Codex for plan/review/finalize and Grok for `do_work`. |
 | `examples/configs/claude-do-work` | You want Claude Code on the edit stage with the rest of the flow unchanged. |
 | `examples/configs/gemini-do-work` | You want Gemini CLI on the edit stage with the rest of the flow unchanged. |
-| `examples/configs/jira-workflow` | You want to run the flow against Jira tickets using custom Jira planning and implementation skills. |
+| `examples/configs/jira-workflow` | Ticket → PR: Jira `AS-####` via dashboard/queue with draft delivery, conditional HITL + file escalation, and portal verify scripts. |
 | `examples/configs/cursor-do-work` | You want Cursor Agent CLI on all stages with a single model lane. |
 | `examples/configs/plan-gate` | You want an operator checkpoint before repository-wide planning starts. |
 | `examples/configs/planning-crew` | You want the optional planning Crew without changing implementation/review topology. |
@@ -1063,7 +1063,7 @@ One-run override: `--override-human-feedback escalation.channel=file`.
 
 ### Git delivery
 
-With `deliver.enabled: true` (or `--override-deliver enabled=true`), a completed run commits the flow's own changed files onto a fresh `flow/<run_id>` branch instead of leaving a dirty tree. Guardrails: never commits on the branch you were on, refuses `protected_branches`, stages only the flow's files per-path (pre-existing dirt stays yours, uncommitted), and never force-pushes. With `deliver.push: true` the branch is pushed to `deliver.remote` (default `origin`), and `deliver.pr: true` opens a PR via the `gh` CLI after a successful push — both require the latest verification round to have passed whenever `verify.commands` is configured (see below). A delivery/push/PR failure records an error but does not fail the run or demote the local commit. Note a delivered run ends checked out on the `flow/<run_id>` branch.
+With `deliver.enabled: true` (or `--override-deliver enabled=true`), a completed run commits the flow's own changed files onto a fresh `flow/<run_id>` branch (or `flow/<TICKET>-<run_id>` when the request contains a Jira `AS-####` key) instead of leaving a dirty tree. Guardrails: never commits on the branch you were on, refuses `protected_branches`, stages only the flow's files per-path (pre-existing dirt stays yours, uncommitted), and never force-pushes. With `deliver.push: true` the branch is pushed to `deliver.remote` (default `origin`), and `deliver.pr: true` opens a PR via the `gh` CLI after a successful push — set `deliver.draft: true` to pass `--draft`. Both push and PR require the latest verification round to have passed whenever `verify.commands` / `verify.pre_delivery_commands` are configured (see below). A delivery/push/PR failure records an error but does not fail the run or demote the local commit. Note a delivered run ends checked out on the delivery branch.
 
 ### Worker retry & fallback
 
@@ -1093,7 +1093,7 @@ verify:
   timeout: 600    # per command, seconds
 ```
 
-The Flow runs them in the target repo at the top of **every** review round (fail-fast, argv with no shell — wrap pipes in a script). Under `mode: gate` a failure skips the LLM review entirely and feeds the command output tails into the revise loop as concrete issues; `mode: advisory` appends the results to the review prompt as evidence instead. Either way, `deliver.push`/`deliver.pr` only ship when the latest verification round passed (empty `commands` = you opted out and own the risk; `doctor` warns if push/pr is enabled unverified). Results are recorded on `state.verification_runs` and in the debug report's `## Verification` section. One-run override: `--override-verify 'commands=["uv run pytest -q"]'` (`commands=[]` is refused — disabling the gate is a `worker.yaml` decision, not a per-run flag).
+The Flow runs them in the target repo at the top of **every** review round (fail-fast, argv with no shell — wrap pipes in a script). Optional `verify.pre_delivery_commands` run once after finalize, before push/PR (used by Ticket → PR for a heavier `test:ci` bar). Under `mode: gate` a failure skips the LLM review entirely and feeds the command output tails into the revise loop as concrete issues; `mode: advisory` appends the results to the review prompt as evidence instead. Either way, `deliver.push`/`deliver.pr` only ship when the latest verification round passed (empty `commands` = you opted out and own the risk; `doctor` warns if push/pr is enabled unverified). Results are recorded on `state.verification_runs` and in the debug report's `## Verification` section. One-run override: `--override-verify 'commands=["uv run pytest -q"]'` (`commands=[]` is refused — disabling the gate is a `worker.yaml` decision, not a per-run flag).
 
 ### JSONL event log
 
@@ -1124,6 +1124,21 @@ workers:
 `doctor` probes the configured binary too. One-run override: `--override-worker-binary codex=/opt/bin/codex-nightly`.
 
 ## Triggering & Queueing (autonomy Phase 3)
+
+### Local dashboard (Ticket → PR)
+
+Canonical kick for Asure portal tickets. The dashboard wraps `enqueue` + an embedded `serve` loop, preselects `jira-workflow` + the portal UI repo, validates `AS-####` / Jira URL requests, parks conditional HITL on `pending_approval.json`, and shows draft PR URLs on completed jobs:
+
+```bash
+export ASURE_BASE_DIR=/path/to/asure   # parent of portal + webapi checkouts
+uv run python -m crewai_headless_flow dashboard \
+  --queue-dir ./queue \
+  --runs-dir ./runs
+```
+
+`--runs-dir` is required for the Awaiting approval tab (file-channel park/resume). Without `ASURE_BASE_DIR`, the repo picker is empty — paste an absolute portal path instead. Webapi paths are tagged reference-only and rejected as edit targets.
+
+Pack details: `examples/configs/jira-workflow` (`deliver.draft`, `verify.pre_delivery_commands`, conditional HITL). Operator notes: `docs/operator-playbook.md` §3.5.
 
 ### File-drop job queue
 

@@ -102,6 +102,8 @@ class QueueJob(BaseModel):
     exit_code: int | None = None
     run_id: str | None = None
     run_status: str | None = None
+    pr_url: str | None = None
+    branch: str | None = None
     started_at: str | None = None
     finished_at: str | None = None
     error: str | None = None
@@ -427,11 +429,18 @@ def _attach_run_result(queue_dir: Path, job: QueueJob) -> None:
         data: Any = json.loads(state_file.read_text())
     except (OSError, ValueError):
         return
-    if isinstance(data, dict):
-        run_id = data.get("run_id")
-        status = data.get("status")
-        job.run_id = str(run_id) if run_id else None
-        job.run_status = str(status) if status else None
+    if not isinstance(data, dict):
+        return
+    run_id = data.get("run_id")
+    status = data.get("status")
+    job.run_id = str(run_id) if run_id else None
+    job.run_status = str(status) if status else None
+    delivery = data.get("delivery_report")
+    if isinstance(delivery, dict):
+        pr_url = delivery.get("pr_url")
+        branch = delivery.get("branch")
+        job.pr_url = str(pr_url) if pr_url else None
+        job.branch = str(branch) if branch else None
 
 
 def _atomic_write_json(target: Path, job: QueueJob) -> None:

@@ -20,6 +20,7 @@ stages:
 
 # Ticket → PR: autonomous unless Phase 0 conditional HITL fires; park via file
 # so dashboard/queue jobs (stdin closed) can resume.
+# Kick with --max-revisions 3 (dashboard defaults to 3 when omitted).
 human_feedback:
   enabled: true
   mode: "conditional"

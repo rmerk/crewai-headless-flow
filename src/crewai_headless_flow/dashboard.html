@@ -812,6 +812,16 @@
                                 <span class="job-detail-label">Run Status:</span>
                                 <span style="color: ${job.run_status === 'completed' ? 'var(--status-success)' : 'var(--status-error)'}">${job.run_status}</span>
                             </div>` : ''}
+                            ${job.branch ? `
+                            <div class="job-detail-row">
+                                <span class="job-detail-label">Branch:</span>
+                                <span>${escapeHtml(job.branch)}</span>
+                            </div>` : ''}
+                            ${job.pr_url ? `
+                            <div class="job-detail-row">
+                                <span class="job-detail-label">Draft PR:</span>
+                                <span><a href="${escapeHtml(job.pr_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(job.pr_url)}</a></span>
+                            </div>` : ''}
                         </div>
                         <div class="job-actions">
                             <button class="btn btn-logs" onclick="openLogsDrawer('${job.job_id}', '${escapeJs(job.request)}')">📋 View Logs</button>
@@ -829,9 +839,16 @@
                 return;
             }
             jobListContainer.innerHTML = list.map(run => {
-                const trigger = run.trigger_reason
-                    ? (run.trigger_reason.kind || JSON.stringify(run.trigger_reason))
+                const triggerKind = run.trigger_reason
+                    ? (run.trigger_reason.kind || 'conditional HITL')
                     : 'conditional HITL';
+                const triggerDetail = run.trigger_reason && run.trigger_reason.detail
+                    ? JSON.stringify(run.trigger_reason.detail)
+                    : '';
+                const taskIds = (run.failed_task_ids || []).join(', ');
+                const openDebug = (run.has_debug_report || run.has_resume_log)
+                    ? `<button class="btn btn-logs" onclick="openRunDebugDrawer('${escapeJs(run.run_id)}', '${escapeJs(run.request || run.run_id)}')">📋 Open logs</button>`
+                    : '';
                 return `
                     <div class="job-item">
                         <div class="job-header">
@@ -840,18 +857,42 @@
                         </div>
                         <div class="job-details">
                             <div class="job-detail-row"><span class="job-detail-label">Gate:</span><span>${escapeHtml(run.gate || '')}</span></div>
-                            <div class="job-detail-row"><span class="job-detail-label">Trigger:</span><span>${escapeHtml(String(trigger))}</span></div>
+                            <div class="job-detail-row"><span class="job-detail-label">Trigger:</span><span>${escapeHtml(String(triggerKind))}${triggerDetail ? ` — ${escapeHtml(triggerDetail)}` : ''}</span></div>
                             <div class="job-detail-row"><span class="job-detail-label">Revisions:</span><span>${run.revisions || 0}/${run.max_revisions || '?'}</span></div>
+                            ${taskIds ? `<div class="job-detail-row"><span class="job-detail-label">Failed task(s):</span><span>${escapeHtml(taskIds)}</span></div>` : ''}
                             ${run.error_tail ? `<div class="job-detail-row"><span class="job-detail-label">Error:</span><span>${escapeHtml(run.error_tail)}</span></div>` : ''}
-                            <div class="job-detail-row"><span class="job-detail-label">Prompt:</span><span>${escapeHtml(run.prompt || '')}</span></div>
+                            ${run.run_dir ? `<div class="job-detail-row"><span class="job-detail-label">Run dir:</span><span><code>${escapeHtml(run.run_dir)}</code></span></div>` : ''}
                         </div>
                         <div class="job-actions">
+                            ${openDebug}
                             <button class="btn btn-primary" onclick="answerApproval('${escapeJs(run.run_id)}', 'continue')">Continue</button>
                             <button class="btn btn-cancel" onclick="answerApproval('${escapeJs(run.run_id)}', 'abort')">Abort</button>
                         </div>
                     </div>
                 `;
             }).join('');
+        }
+
+        async function openRunDebugDrawer(runId, title) {
+            activeLogJobId = null;
+            clearInterval(logPollInterval);
+            drawerJobRequest.textContent = title || runId;
+            drawerJobId.textContent = `Run ID: ${runId}`;
+            cancelJobBtn.style.display = 'none';
+            terminalViewport.textContent = "Loading run debug...";
+            drawerOverlay.style.display = 'flex';
+            try {
+                const res = await fetch(`/api/runs/${runId}/debug`);
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    terminalViewport.textContent = err.detail || `Failed to load debug for ${runId}`;
+                    return;
+                }
+                const data = await res.json();
+                terminalViewport.textContent = `[${data.name}]\n\n${data.content || '(empty)'}`;
+            } catch (err) {
+                terminalViewport.textContent = `Error loading run debug: ${err}`;
+            }
         }
 
         async function answerApproval(runId, answer) {

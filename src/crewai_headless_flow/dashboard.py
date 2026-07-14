@@ -90,6 +90,11 @@ class ApprovalAnswer(BaseModel):
 _RUN_ID_RE = re.compile(r"^[a-zA-Z0-9_\-]+$")
 
 
+def _is_reference_only_repo(path: Path) -> bool:
+    """True for Asure webapi (and similarly named) reference-only checkouts."""
+    return "webapi" in path.name.lower()
+
+
 def _require_runs_dir() -> Path:
     if RUNS_DIR is None:
         raise HTTPException(
@@ -135,10 +140,24 @@ def _approval_brief(run_dir: Path) -> Dict[str, Any]:
         if isinstance(last, dict):
             trigger = last.get("trigger_reason")
 
+    failed_task_ids: List[str] = []
+    if isinstance(trigger, dict):
+        detail = trigger.get("detail")
+        if isinstance(detail, dict):
+            task_id = detail.get("task_id")
+            if task_id:
+                failed_task_ids.append(str(task_id))
+            task_ids = detail.get("task_ids")
+            if isinstance(task_ids, list):
+                failed_task_ids.extend(str(t) for t in task_ids if t)
+
     errors = state.get("errors") or []
     error_tail = ""
     if isinstance(errors, list) and errors:
         error_tail = str(errors[-1])[-500:]
+
+    debug_path = run_dir / "debug_report.md"
+    resume_log = run_dir / "resume.log"
 
     return {
         "run_id": run_dir.name,
@@ -151,7 +170,10 @@ def _approval_brief(run_dir: Path) -> Dict[str, Any]:
         "max_revisions": state.get("max_revisions"),
         "target_repo": pending.get("target_repo") or state.get("target_repo"),
         "trigger_reason": trigger,
+        "failed_task_ids": failed_task_ids,
         "error_tail": error_tail,
+        "has_debug_report": debug_path.is_file(),
+        "has_resume_log": resume_log.is_file(),
         "status": state.get("status"),
         "actions": ["continue", "abort"],
     }
@@ -244,6 +266,14 @@ def create_job(payload: EnqueueRequest) -> Dict[str, Any]:
             status_code=400,
             detail=f"target_repo is not a directory: {payload.target_repo}",
         )
+    if _is_reference_only_repo(target):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"target_repo is reference-only (not an edit target): {target.name}. "
+                "Use the portal UI repo instead."
+            ),
+        )
 
     config_dir = payload.config_dir
     if config_dir:
@@ -254,11 +284,14 @@ def create_job(payload: EnqueueRequest) -> Dict[str, Any]:
                 detail=f"config_dir is not a directory: {config_dir}",
             )
 
+    # Ticket → PR pack expects 3; FlowState/CLI fall back to 2 when omitted.
+    max_revisions = payload.max_revisions if payload.max_revisions is not None else 3
+
     try:
         job = new_job(
             request=ticket,
             target_repo=str(target.resolve()),
-            max_revisions=payload.max_revisions,
+            max_revisions=max_revisions,
             config_dir=config_dir,
             overrides=payload.overrides,
         )
@@ -332,18 +365,17 @@ def cancel_job(job_id: str) -> Dict[str, str]:
 
 @app.get("/api/target-repos")
 def get_target_repos() -> List[Dict[str, str]]:
-    """Scan and return potential target subdirectories in the user's workspace."""
+    """Scan and return potential target subdirectories under ``ASURE_BASE_DIR``."""
     base_dir_env = os.environ.get("ASURE_BASE_DIR")
-    base_dir = (
-        Path(base_dir_env) if base_dir_env else Path("/Users/rchoi/Developer/asure")
-    )
+    if not base_dir_env:
+        return []
+    base_dir = Path(base_dir_env)
     repos = []
 
     if base_dir.exists() and base_dir.is_dir():
         for item in sorted(base_dir.iterdir(), key=lambda x: x.name):
             if item.is_dir() and not item.name.startswith("."):
-                # Tag it as Portal or WebAPI based on folder name
-                role = "reference-only" if "webapi" in item.name.lower() else "editable"
+                role = "reference-only" if _is_reference_only_repo(item) else "editable"
                 repos.append(
                     {"name": item.name, "path": str(item.resolve()), "role": role}
                 )
@@ -378,6 +410,25 @@ def get_runs(pending_approval: bool = False) -> Dict[str, Any]:
 def get_run_approval(run_id: str) -> Dict[str, Any]:
     """Return the dashboard HITL brief for a parked run."""
     return _approval_brief(_run_dir_for(run_id))
+
+
+@app.get("/api/runs/{run_id}/debug")
+def get_run_debug(run_id: str) -> Dict[str, str]:
+    """Return debug_report.md (or resume.log) for a parked/resumed run."""
+    run_dir = _run_dir_for(run_id)
+    debug_path = run_dir / "debug_report.md"
+    resume_log = run_dir / "resume.log"
+    if debug_path.is_file():
+        return {
+            "name": "debug_report.md",
+            "content": debug_path.read_text(encoding="utf-8", errors="replace"),
+        }
+    if resume_log.is_file():
+        return {
+            "name": "resume.log",
+            "content": resume_log.read_text(encoding="utf-8", errors="replace"),
+        }
+    raise HTTPException(status_code=404, detail="No debug_report.md or resume.log.")
 
 
 @app.post("/api/runs/{run_id}/approval")

@@ -344,6 +344,45 @@ def test_serve_records_run_result_and_routes_failures(tmp_path: Path):
     assert stored.run_status == "failed"
 
 
+def test_serve_attaches_delivery_pr_url_from_state(tmp_path: Path):
+    queue = tmp_path / "queue"
+    job = _job("shipped job")
+    enqueue_job(queue, job)
+
+    class DeliveryWritingLauncher(FakeLauncher):
+        def __call__(self, argv: list[str], log_path: Path) -> FakeProc:
+            state_file = Path(argv[argv.index("--state-file") + 1])
+            state_file.write_text(
+                json.dumps(
+                    {
+                        "run_id": "run-pr",
+                        "status": "completed",
+                        "delivery_report": {
+                            "status": "committed",
+                            "branch": "flow/AS-5245-run-pr",
+                            "pr_url": "https://github.com/org/repo/pull/42",
+                        },
+                    }
+                )
+            )
+            return super().__call__(argv, log_path)
+
+    report = serve_queue(
+        queue,
+        once=True,
+        launcher=DeliveryWritingLauncher(),
+        sleep_fn=lambda _s: None,
+        now_fn=lambda: NOW,
+    )
+
+    assert report.done == [job.job_id]
+    stored = QueueJob.model_validate_json(
+        (queue / DONE_DIR / f"{job.job_id}.json").read_text()
+    )
+    assert stored.pr_url == "https://github.com/org/repo/pull/42"
+    assert stored.branch == "flow/AS-5245-run-pr"
+
+
 def test_serve_launch_failure_moves_job_to_failed(tmp_path: Path):
     queue = tmp_path / "queue"
     job = _job()
